@@ -1,0 +1,205 @@
+# DataBug
+
+A fast, memory-light database client written in Rust for macOS, Windows and Linux, with a DataGrip-style workflow: a schema explorer that shows every kind of object, a SQL editor that understands your schema, a virtualized results grid, query plans, table and routine editing, schema compare, ER diagrams, CSV import, rename refactoring, and guard rails for production.
+
+![DataBug editor with schema-aware completion](docs/screenshot-editor.png)
+
+| Explorer: procedures, functions, mat views, triggers | Schema compare with migration DDL | ER diagram |
+|---|---|---|
+| ![explorer](docs/screenshot-explorer.png) | ![compare](docs/screenshot-compare.png) | ![er](docs/screenshot-er.png) |
+
+| Modify table | CSV import | Rename refactoring |
+|---|---|---|
+| ![table editor](docs/screenshot-table-editor.png) | ![csv](docs/screenshot-csv.png) | ![rename](docs/screenshot-rename.png) |
+
+| Query plan (Postgres `EXPLAIN ANALYZE`) | Connection dialog | Light theme |
+|---|---|---|
+| ![plan](docs/screenshot-plan.png) | ![connection](docs/screenshot-connection.png) | ![light](docs/screenshot-light.png) |
+
+## Download and platforms
+
+DataBug builds for **macOS** (Apple silicon and Intel, as `DataBug.app`), **Windows** (`DataBug.exe` with its icon, no console window) and **Linux** (binary, `.desktop` entry and icon). Push a `v*` tag and `.github/workflows/release.yml` builds all four and attaches them to a GitHub release. To build one yourself, see [Build and run](#build-and-run).
+
+## Databases
+
+| Engine | Driver crate | Queries and results | Schema introspection | Explain | Server-side cancel | Tested against a live server |
+|---|---|---|---|---|---|---|
+| PostgreSQL | `tokio-postgres` | ✔ | ✔ (pg_catalog) | JSON tree, `ANALYZE` | ✔ | ✔ Postgres 16 |
+| MySQL / MariaDB | `mysql_async` | ✔ | ✔ (information_schema) | JSON tree, `ANALYZE` text | ✔ (`KILL QUERY`) | ✔ MariaDB 10.11 |
+| SQLite | `rusqlite` (bundled) | ✔ | ✔ | `EXPLAIN QUERY PLAN` tree | ✔ (interrupt) | ✔ |
+| SQL Server | `tiberius` | ✔ | ✔ (sys catalog) | Showplan XML tree | drops connection | compiles, not yet run against a server |
+| MongoDB | `mongodb` | ✔ shell syntax | ✔ (sampled fields) | `explain` tree | drops connection | compiles, not yet run against a server |
+
+### What the explorer shows
+
+| | PostgreSQL | MySQL / MariaDB | SQL Server | SQLite | MongoDB |
+|---|---|---|---|---|---|
+| Tables, columns, keys, indexes, foreign keys | ✔ | ✔ | ✔ | ✔ | collections, sampled fields, indexes |
+| Views | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Materialized views | ✔ | | | | |
+| Stored procedures | ✔ | ✔ | ✔ | | |
+| Functions (scalar, table-valued, aggregates) | ✔ (with overloads) | ✔ | ✔ | | |
+| Triggers | ✔ | ✔ | ✔ | ✔ | |
+| Sequences | ✔ | | ✔ | | |
+| Synonyms | | | ✔ | | |
+| Events | | ✔ | | | |
+| CLR procedures, functions, aggregates, triggers, assemblies | | | ✔ | | |
+
+Every object with a definition has an **edit** button (the pencil that appears on hover or selection, also on double-click). Tables open the table editor. Views, materialized views, procedures, functions, triggers, sequences, synonyms and events open their definition as runnable DDL in a console: `CREATE OR REPLACE` on Postgres and MySQL views, `CREATE OR ALTER` on SQL Server (2016 SP1+), `DROP` + `CREATE` where the engine has no replace (MySQL routines, SQLite, Postgres materialized views). CLR objects open their `EXTERNAL NAME` binding, and assemblies show their details and the objects bound to them.
+
+Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb`), so a build can leave out the ones it doesn't need.
+
+MongoDB consoles accept shell-style statements: `db.orders.find({status: "open"}).sort({total: -1}).limit(20)`, `aggregate([...])`, `countDocuments`, `distinct`, `insertOne/Many`, `updateOne/Many`, `deleteOne/Many`, `createIndex`, `getIndexes`, `db.runCommand({...})`, `show collections`, `show dbs`. `ObjectId("…")` and `ISODate("…")` work inside filters.
+
+### SQL Server sign-in
+
+The connection dialog's **Authentication** row offers three options:
+
+| Option | What you enter | Windows | macOS / Linux |
+|---|---|---|---|
+| SQL Server | login + password | ✔ | ✔ |
+| Windows (current user) | nothing | ✔ SSPI, as the logged-in account | ✔ uses your Kerberos ticket (`kinit you@CORP.EXAMPLE.COM` first) |
+| Windows credentials | `DOMAIN\user` or `user@corp.example.com` + password | ✔ SSPI (NTLM or Kerberos) | ✔ DataBug runs `kinit` for that account, then signs in with the ticket |
+
+On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine needs a `krb5.conf` that knows your domain, and the **Host** must be the server's full DNS name (e.g. `sqlprod01.corp.example.com`), not an IP, so the `MSSQLSvc/` service name resolves. The release builds include Kerberos; when building yourself add `--features kerberos` (Linux needs `libkrb5-dev` / `krb5-devel` and clang). Passwords still go to the OS keychain, never the config file.
+
+## Features
+
+**Schema visibility** (like DataGrip's schema selection)
+- Under each connection, a **"3 of 12 schemas"** chip opens a checklist with **All**, **Default only** and **Non-empty** shortcuts and a filter for long lists. Also in the connection's right-click menu (**Choose schemas…**) and in the connection dialog.
+- The choice is saved per connection. Ticking every schema switches back to "All", which also picks up schemas created later. MySQL calls them databases.
+- Hidden schemas are only hidden in the explorer; completion, compare and the ER diagram still see everything.
+
+**Editor**
+- Syntax highlighting per dialect, line numbers, current-line highlight, toggle comment (`Ctrl/⌘ + /`), formatter (`Ctrl + Alt + L`).
+- Schema-aware completion that works on half-typed SQL: columns resolved through aliases (including aliases defined *after* the cursor), tables after `FROM`/`JOIN`, `schema.` drill-down, fuzzy matching (`cid` → `customer_id`), and join conditions after `ON` inferred from `<table>_id` naming.
+- Inspections as you type: unknown tables, unknown `alias.column` references, `DELETE`/`UPDATE` without `WHERE`, `DROP`/`TRUNCATE`.
+- Runs the statement under the cursor, the selection, or the whole script. The running statement is highlighted, and a failing statement is tinted red.
+
+**Results**
+- Virtualized grid (only visible rows are laid out), with column types in the header, click-to-sort (numeric and natural ordering), row filter, keyboard navigation, and copy cell/row.
+- In-place editing for single-table queries with a primary key. Edited cells are highlighted, and *Submit* runs `UPDATE … WHERE pk = …` (or *Preview SQL* copies them).
+- Streams rows in batches with a configurable row limit (default 10,000). Postgres cancels the rest of an over-limit result on the server instead of draining it.
+- Export to CSV, JSON, SQL `INSERT`s or Markdown, or copy as TSV/CSV.
+- Multiple result tabs per run, an Output log with timings, messages (Postgres `NOTICE`, MySQL warnings) and errors, and a searchable query history.
+
+**Schema tools**
+- **Modify table / New table**: edit columns (name, type, not null, primary key, default), indexes and foreign keys, with a live preview of the exact DDL for the engine. *Execute* runs it and reloads the schema; *Open in console* lets you review first. SQLite changes it can't make in place (types, keys, constraints) are done with a safe rebuild: create, copy, swap.
+- **Schema compare**: pick any two connection + schema pairs. Lists what's only in the source, only in the target, or different (columns, types, nullability, defaults, keys, indexes, foreign keys, and optionally the text of views and routines). Each difference shows its DDL. Changes that can lose data are flagged and start unchecked. *Open migration in console* or *Run on target*.
+- **ER diagrams**: tables and foreign keys with crow's-foot edges, auto-arranged by relationship, pan/zoom/drag, *Copy as Mermaid*, double-click a table to modify it.
+- **CSV import**: into an existing table (columns matched by name, or mapped by hand) or a new table (column names cleaned up, types inferred). Delimiter auto-detected; runs in one transaction.
+- **Rename refactoring** (`Shift + F6` on an identifier, or *Rename…* in the explorer): aliases are renamed throughout the statement; tables and columns are renamed in the console, and DataBug generates the `ALTER`/`sp_rename` plus rewritten definitions of every view, procedure and function that references them, for you to review and run.
+
+**Plans**
+- Explain and Explain Analyze render as a tree with time/cost bars. Selecting a node shows its details. *Copy original plan* gives you the plan in the engine's native JSON/XML/text. `EXPLAIN ANALYZE` of a write runs inside a transaction that's rolled back.
+
+**Safety**
+- Per-connection color, **Production** flag (red marker and a confirmation before anything that changes data), and **Read-only** flag (blocked in the client, and set at session level on Postgres, MySQL and SQLite).
+- Confirmation for `DELETE`/`UPDATE` without `WHERE`, `DROP` and `TRUNCATE`.
+- Manual transaction mode with an "open transaction" indicator and Commit/Rollback buttons.
+- Cancel asks the server to stop the query. Pressing it again (or on engines without server cancel) drops and reopens the connection.
+
+**Explorer**
+- Connections → schemas → object groups → objects, with columns, indexes, foreign keys and triggers under each table, and filtering across all of them.
+- The selected row gets a darker background with an accent bar.
+- Engine logos ship with DataBug: they live in `crates/databug-app/assets/logos`, are compiled into the binary, and every release download includes them in a `logos` folder next to the application (next to `DataBug.exe` / `databug`; on macOS next to `DataBug.app`, and inside it). To swap one, replace `postgresql`, `mysql`, `sqlserver`, `sqlite` or `mongodb` (`.svg` or `.png`) in that folder and restart DataBug. `mariadb.png` and `couchdb.svg` are included for later (MariaDB detection, a CouchDB driver).
+
+**Connections**
+- Passwords go to the OS keychain (macOS Keychain, Windows Credential Manager, Secret Service on Linux), never into config files. If no keychain is available, they're kept in memory for the session.
+- `connections.json` and `settings.json` are plain JSON with no secrets, so they can live in Git.
+- TLS for Postgres (`prefer`/`require`, encrypt without verifying, like libpq), MySQL (`require`) and SQL Server (with an optional *trust server certificate*).
+
+**Performance**
+- Result cells live in one string arena per result with a `u32` offset and a null bit per cell. That's about 4 bytes of overhead per cell instead of a heap-allocated `String` each.
+- The UI repaints only when something changes, so CPU use is zero while idle. All database I/O runs on a 2-thread Tokio runtime and never blocks the UI.
+- The schema catalog is cached on disk and refreshed in the background, so completion works immediately on startup.
+
+## Build and run
+
+Requires Rust 1.81 or newer and a C compiler (for bundled SQLite and the vendored D-Bus used for the Linux keychain). No other system packages are needed on macOS, Windows (MSVC or GNU) or Linux.
+
+```sh
+cargo run --release
+```
+
+On first launch, choose **Open sample database** to get a SQLite store database (customers, products, orders, order items) with a demo query.
+
+To build with only some drivers:
+
+```sh
+cargo build --release -p databug --no-default-features --features databug-drivers/postgres,databug-drivers/sqlite
+```
+
+Add `--features kerberos` for SQL Server Windows authentication on macOS/Linux (see [SQL Server sign-in](#sql-server-sign-in)); Windows always has it.
+
+For a macOS app bundle: `cargo install cargo-bundle`, then `cd crates/databug-app && cargo bundle --release --features kerberos`. On Linux, `packaging/linux/install.sh` installs the binary, icon and menu entry for your user.
+
+Settings live in your platform's config directory (`~/.config/databug` on Linux, `~/Library/Application Support/dev.DataBug.DataBug` on macOS, `%APPDATA%\DataBug\DataBug\config` on Windows). Set `DATABUG_HOME` to keep everything in one folder instead.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl/⌘ + Enter` | Run statement at cursor (or selection) |
+| `Ctrl/⌘ + Shift + Enter` | Run whole script |
+| `Ctrl/⌘ + Shift + E` | Explain plan |
+| `Ctrl + Space` | Completion |
+| `Ctrl + Alt + L` or `Ctrl/⌘ + Shift + F` | Format |
+| `Ctrl/⌘ + /` | Toggle comment |
+| `Shift + F6` | Rename the table, column or alias under the cursor |
+| `Ctrl/⌘ + T` / `Ctrl/⌘ + W` | New console / close console |
+| Arrows, `F2`, `Ctrl/⌘ + C` in the grid | Move, edit, copy cell |
+| `Ctrl/⌘ + +` / `Ctrl/⌘ + −` / `Ctrl/⌘ + 0` | Larger / smaller / reset text size everywhere (also *Settings → Text size*, 70–200%, remembered) |
+
+## Architecture
+
+```
+crates/
+  databug-core     Shared types: connection config, schema catalog, compact ResultSet, plans
+  databug-sql      SQL intelligence with no UI or driver deps: tolerant lexer, statement
+                  splitter (handles BEGIN…END blocks, GO, $$ bodies), completion, inspections,
+                  safety checks, formatter, Mongo shell parser, per-dialect DDL generation,
+                  schema diff, rename refactoring
+  databug-drivers  One async trait (DbConnection) with an implementation per engine,
+                  each behind a cargo feature
+  databug-app      egui/eframe desktop app: sessions on background tasks, explorer, editor,
+                  grid, plan view, table editor, schema compare, ER diagram, CSV import,
+                  rename dialog
+```
+
+Each console owns its own session (one connection on a background task), so a long query in one tab never blocks another. Each connection also has a separate metadata session for introspection. The UI talks to sessions over channels and is woken by the session when events arrive.
+
+`databug-sql` is deliberately standalone so it can back a language server: wrapping it in `tower-lsp` would give the same completion and inspections in VS Code, Neovim or Zed.
+
+## Tests
+
+```sh
+cargo test --workspace                       # unit tests + SQLite end-to-end
+DATABUG_TEST_PG=localhost:5432:store:postgres \
+DATABUG_TEST_MYSQL=127.0.0.1:3306:store:root:pw \
+cargo test --workspace                       # adds live Postgres and MySQL tests
+```
+
+The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
+
+`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`.
+
+`DATABUG_TEST_KRB="user@REALM:password"` with `--features databug-drivers/kerberos` adds a test that signs in to a Kerberos realm through the SQL Server Windows-credentials path.
+
+## Not done yet
+
+- **macOS and Windows builds haven't been run yet.** Dependency resolution checks out for both, and the wgpu renderer they use was exercised on Linux. CI (`ci.yml`) and the release workflow (`release.yml`) build and test on real macOS and Windows runners; push to GitHub to run them.
+- SQL Server and MongoDB still haven't run against live servers. That includes SQL Server's CLR objects, sequences and synonyms, and `CREATE OR ALTER` editing.
+- SSH tunnels, client certificates, and cloud sign-in (AWS IAM, Microsoft Entra ID).
+- SQL Server Windows authentication hasn't been tried against a real domain. The macOS/Linux `kinit` step was tested against a local Kerberos realm (right and wrong passwords); the handshake with SQL Server itself is tiberius' and is untested here.
+- Schema visibility doesn't skip hidden schemas during introspection yet, so very large servers still load everything once.
+- Certificate verification mode (`verify-full`) for Postgres TLS; MySQL "prefer" TLS.
+- Schema compare across different engines compares types textually, so Postgres `text` vs MySQL `TEXT` matches but `int8` vs `BIGINT` mapping across engines is basic.
+- Rename refactoring rewrites references it can resolve from SQL text; dynamic SQL inside routines isn't touched.
+- A `databug-lsp` crate and an MCP server for AI agents.
+- More engines (CouchDB, Redis, ClickHouse) behind the same `DbConnection` trait.
+- The UI is pinned to egui 0.31; moving to the current egui release is a mechanical upgrade.
+
+## License
+
+Apache-2.0. Bundled fonts: Inter and JetBrains Mono, both under the SIL Open Font License (see `crates/databug-app/assets/fonts`).

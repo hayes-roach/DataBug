@@ -1,0 +1,57 @@
+[package]
+name = "databug"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A fast, memory-efficient database client"
+
+build = "build.rs"
+
+[[bin]]
+name = "databug"
+path = "src/main.rs"
+
+# `cargo bundle --release` builds DataBug.app on macOS (and .deb on Linux).
+[package.metadata.bundle]
+name = "DataBug"
+identifier = "dev.databug.DataBug"
+icon = ["assets/icon/icon-1024.png", "assets/icon/icon.png"]
+category = "public.app-category.developer-tools"
+short_description = "A fast, memory-light database client"
+osx_minimum_system_version = "11.0"
+copyright = "Apache-2.0"
+
+[features]
+default = ["all-drivers"]
+all-drivers = ["databug-drivers/default"]
+# Windows authentication for SQL Server on macOS/Linux via Kerberos (see README).
+kerberos = ["databug-drivers/kerberos"]
+
+[build-dependencies]
+winresource = "0.1"
+
+[dependencies]
+databug-core.workspace = true
+databug-sql.workspace = true
+databug-drivers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+egui_extras = { version = "=0.31.1", default-features = false, features = ["file", "image", "svg"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+csv = "1"
+directories = "6"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "vendored", "crypto-rust"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+png = "0.17"
+
+# Rendering: Metal (macOS) and DirectX 12 (Windows) through wgpu, which keeps
+# working where OpenGL is deprecated or missing (macOS, Windows VMs and remote
+# desktops). Linux uses the lighter OpenGL renderer, which also runs on
+# software rendering in VMs.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+eframe = { version = "=0.31.1", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
+
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+eframe = { version = "=0.31.1", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }

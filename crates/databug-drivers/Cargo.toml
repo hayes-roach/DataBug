@@ -1,0 +1,42 @@
+[package]
+name = "databug-drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["postgres", "mysql", "mssql", "sqlite", "mongodb"]
+postgres = ["dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls", "dep:webpki-roots"]
+mysql = ["dep:mysql_async", "dep:rustls"]
+mssql = ["dep:tiberius", "dep:tokio-util", "dep:chrono"]
+# Windows authentication on macOS/Linux through a Kerberos ticket (`kinit`).
+# Needs the GSSAPI headers at build time (libkrb5-dev / krb5-devel); macOS has them.
+# On Windows, Windows authentication is always built in (SSPI).
+kerberos = ["mssql", "tiberius/integrated-auth-gssapi", "tokio/process"]
+sqlite = ["dep:rusqlite"]
+mongodb = ["dep:mongodb", "dep:json5"]
+
+[dependencies]
+databug-core.workspace = true
+databug-sql.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+
+tokio-postgres = { version = "0.7", optional = true }
+tokio-postgres-rustls = { version = "0.13", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = { version = "0.26", optional = true }
+mysql_async = { version = "0.36", optional = true, default-features = false, features = ["minimal-rust", "default-rustls-no-provider"] }
+tiberius = { version = "0.12", optional = true, default-features = false, features = ["tds73", "rustls", "chrono", "winauth"] }
+tokio-util = { version = "0.7", optional = true, features = ["compat"] }
+chrono = { version = "0.4", optional = true, default-features = false, features = ["std"] }
+rusqlite = { version = "0.37", optional = true, features = ["bundled", "column_decltype"] }
+mongodb = { version = "3", optional = true }
+json5 = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

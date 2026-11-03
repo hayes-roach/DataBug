@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: pw
+          MYSQL_DATABASE: store
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -ppw" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Kerberos headers
+        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev
+      - name: Seed databases
+        run: |
+          psql -h localhost -U postgres -c "create database store"
+          psql -h localhost -U postgres -d store -v ON_ERROR_STOP=1 -f crates/databug-app/assets/sample.sql
+          psql -h localhost -U postgres -d store -c "create schema audit; create table audit.events(id serial primary key, actor text, payload jsonb)"
+          (echo "SET SESSION sql_mode='PIPES_AS_CONCAT,ANSI_QUOTES'; SET SESSION cte_max_recursion_depth=20000;"; cat crates/databug-app/assets/sample.sql) | mysql -h 127.0.0.1 -uroot -ppw store
+      - name: Test
+        run: cargo test --workspace --features databug-drivers/kerberos
+        env:
+          DATABUG_TEST_PG: localhost:5432:store:postgres
+          DATABUG_TEST_MYSQL: 127.0.0.1:3306:store:root:pw
+      - name: Build release
+        run: cargo build --release --features kerberos
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo build --release ${{ startsWith(matrix.os, 'macos') && '--features kerberos' || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: databug-${{ matrix.os }}
+          path: |
+            target/release/databug
+            target/release/databug.exe

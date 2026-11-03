@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = ["crates/databug-core", "crates/databug-sql", "crates/databug-drivers", "crates/databug-app"]
+default-members = ["crates/databug-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.81"
+
+[workspace.dependencies]
+databug-core = { path = "crates/databug-core" }
+databug-sql = { path = "crates/databug-sql" }
+databug-drivers = { path = "crates/databug-drivers", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+async-trait = "0.1"
+futures-util = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 1

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DataBug
+GenericName=Database Client
+Comment=A fast, memory-light database client
+Exec=databug
+Icon=databug
+Terminal=false
+Categories=Development;Database;
+StartupWMClass=dev.databug.DataBug

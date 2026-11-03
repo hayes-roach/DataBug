@@ -1,0 +1,86 @@
+name: Release
+
+# Push a tag like v0.2.0 to build DataBug for macOS, Windows and Linux and
+# attach the downloads to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macos-arm64
+          - os: macos-13
+            name: macos-x86_64
+          - os: windows-latest
+            name: windows-x86_64
+          - os: ubuntu-22.04
+            name: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: macOS app bundle
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          cargo install cargo-bundle --locked
+          cd crates/databug-app && cargo bundle --release --features kerberos
+          cd ../../target/release/bundle/osx
+          mkdir -p DataBug.app/Contents/Resources/logos
+          cp "$GITHUB_WORKSPACE"/crates/databug-app/assets/logos/* DataBug.app/Contents/Resources/logos/
+          mkdir -p DataBug/logos
+          mv DataBug.app DataBug/
+          cp "$GITHUB_WORKSPACE"/crates/databug-app/assets/logos/* DataBug/logos/
+          ditto -c -k --keepParent DataBug "$GITHUB_WORKSPACE/DataBug-${{ matrix.name }}.zip"
+
+      - name: Windows executable
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target/release/databug.exe out/DataBug.exe
+          Copy-Item -Recurse crates/databug-app/assets/logos out/logos
+          Compress-Archive -Path out/* -DestinationPath DataBug-${{ matrix.name }}.zip
+
+      - name: Linux binary
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update && sudo apt-get install -y libkrb5-dev
+          cargo build --release --features kerberos
+          mkdir -p DataBug
+          cp target/release/databug DataBug/
+          cp packaging/linux/databug.desktop packaging/linux/install.sh DataBug/
+          cp crates/databug-app/assets/icon/icon.png DataBug/databug.png
+          cp -r crates/databug-app/assets/logos DataBug/logos
+          tar czf DataBug-${{ matrix.name }}.tar.gz DataBug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DataBug-${{ matrix.name }}
+          path: DataBug-${{ matrix.name }}.*
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: DataBug-*
+          generate_release_notes: true

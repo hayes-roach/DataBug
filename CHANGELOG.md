@@ -6,6 +6,16 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
+### Added
+
+- New engines: CockroachDB, TimescaleDB, QuestDB and H2 (PostgreSQL protocol, each with its own introspection), DuckDB (embedded), Apache Cassandra (CQL), CouchDB (Mango queries in shell syntax) and InfluxDB (InfluxQL, Flux and line protocol), all in the default build
+- Opt-in drivers for Oracle (`oracle` feature, needs Oracle Instant Client), IBM Db2 (`db2`) and Spark SQL through its Thrift server (`spark`), both over ODBC; not yet tested against a live server
+- The new-connection dialog groups engines by type (relational, analytical, document, wide-column, time series, distributed) and has the fields each engine needs: Oracle service name or SID, DuckDB file, Cassandra keyspace, InfluxDB organization, bucket and token, ODBC driver and options, H2 database path
+- Monogram icons for the new engines, with the source and license of every logo in `assets/logos/SOURCES.md`
+- Legal notices: a NOTICE file and a Disclaimer section in the README (use at your own risk, no warranty, not responsible for anything that happens from using DataBug, no affiliation with JetBrains or database vendors), a short notice in the app and installers, and LICENSE/NOTICE shipped with every download
+
 ### Changed
 
 - DuckDB is no longer built into DataBug. Choosing DuckDB in the new-connection dialog offers *Download DuckDB*, which fetches DuckDB's official library (1.5.6) from its GitHub releases, checks it against a pinned SHA-256 and loads it when you connect; `DATABUG_DUCKDB_LIB` uses a library you already have. The download is about 13–41 MB depending on the platform, and DataBug itself is much smaller (27 MB instead of 72 MB on macOS)
@@ -16,10 +26,7 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 ### Fixed
 
 - The one-line installer on macOS could fail to reopen DataBug with `_LSOpenURLsWithCompletionHandler() failed with error -609` when DataBug was open during the install. It now waits for DataBug to close, registers the new copy with macOS, and retries the launch
-
-### Added
-
-- Legal notices: a NOTICE file and a Disclaimer section in the README (use at your own risk, no warranty, not responsible for anything that happens from using DataBug, no affiliation with JetBrains or database vendors), a short notice in the app and installers, and LICENSE/NOTICE shipped with every download
+- Postgres: when a result stopped at the row limit, the cancel request for the rest of it could cancel the next statement instead
 
 ## [0.2.0] - 2026-11-04
 
@@ -28,14 +35,6 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 - In-app updates: DataBug checks GitHub for new releases and offers *Update and restart*, which downloads the new version, verifies its checksum, installs it and reopens; automatic checks can be turned off in settings. Coming from 0.1.0, install this release manually once; later updates install from inside the app
 - Row editing in the results grid: select whole rows, delete them, add new rows or duplicate one, and save everything with Submit
 - Contributing guide, code of conduct, security policy, issue and pull request templates
-- New engines: CockroachDB, TimescaleDB, QuestDB and H2 (PostgreSQL protocol, each with its own introspection), DuckDB (embedded), Apache Cassandra (CQL), CouchDB (Mango queries in shell syntax) and InfluxDB (InfluxQL, Flux and line protocol), all in the default build
-- Opt-in drivers for Oracle (`oracle` feature, needs Oracle Instant Client), IBM Db2 (`db2`) and Spark SQL through its Thrift server (`spark`), both over ODBC; not yet tested against a live server
-- The new-connection dialog groups engines by type (relational, analytical, document, wide-column, time series, distributed) and has the fields each engine needs: Oracle service name or SID, DuckDB file, Cassandra keyspace, InfluxDB organization, bucket and token, ODBC driver and options, H2 database path
-- Monogram icons for the new engines, with the source and license of every logo in `assets/logos/SOURCES.md`
-
-### Fixed
-
-- Postgres: when a result stopped at the row limit, the cancel request for the rest of it could cancel the next statement instead
 
 ### Changed
 
@@ -80,6 +79,7 @@ First public release.
 
 - Editor text appeared grey in the light theme
 
-[Unreleased]: https://github.com/hayes-roach/DataBug/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/hayes-roach/DataBug/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/hayes-roach/DataBug/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hayes-roach/DataBug/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hayes-roach/DataBug/releases/tag/v0.1.0

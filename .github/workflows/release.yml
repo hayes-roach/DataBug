@@ -11,7 +11,30 @@ permissions:
   contents: write
 
 jobs:
+  # The tag must match the version in Cargo.toml. Otherwise the app inside
+  # the release reports a different version than the release, and the
+  # in-app updater would offer the same update forever.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "::error::Releases are made by pushing a tag (v$version), not by running this workflow on a branch"
+            exit 1
+          fi
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml. Bump the version (and CHANGELOG), commit, then tag that commit."
+            exit 1
+          fi
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          echo "Releasing $version"
+
   build:
+    needs: check-version
     strategy:
       fail-fast: false
       matrix:

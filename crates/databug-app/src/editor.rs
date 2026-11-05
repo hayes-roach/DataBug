@@ -15,6 +15,75 @@ struct Popup {
     scroll_to_selected: bool,
 }
 
+/// The find / replace bar (Ctrl/⌘ + F, Ctrl + H), modelled on VS Code:
+/// match case, whole word and regex toggles, "3 of 12", Enter / Shift+Enter
+/// to step, Esc to close.
+#[derive(Default)]
+pub struct Find {
+    pub open: bool,
+    pub query: String,
+    pub replace: String,
+    pub show_replace: bool,
+    pub case: bool,
+    pub word: bool,
+    pub regex: bool,
+    /// index into `matches` of the highlighted match
+    current: Option<usize>,
+    matches: Vec<Range<usize>>,
+    error: Option<String>,
+    key: Option<(u64, String, bool, bool, bool)>,
+    focus_query: bool,
+    scroll_to: Option<Range<usize>>,
+}
+
+impl Find {
+    pub fn query_id(editor: egui::Id) -> egui::Id {
+        editor.with("find-query")
+    }
+
+    fn regex(&self) -> Result<Option<regex::Regex>, String> {
+        if self.query.is_empty() {
+            return Ok(None);
+        }
+        let pat = if self.regex { self.query.clone() } else { regex::escape(&self.query) };
+        let pat = if self.word { format!(r"\b(?:{pat})\b") } else { pat };
+        regex::RegexBuilder::new(&pat).case_insensitive(!self.case).multi_line(true).build().map(Some).map_err(|e| {
+            let msg = e.to_string();
+            msg.lines().last().unwrap_or("invalid pattern").trim().to_string()
+        })
+    }
+
+    fn refresh(&mut self, text: &str, version: u64) {
+        let key = (version, self.query.clone(), self.case, self.word, self.regex);
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        self.key = Some(key);
+        self.matches.clear();
+        self.error = None;
+        match self.regex() {
+            Ok(Some(re)) => {
+                for m in re.find_iter(text) {
+                    if m.start() == m.end() {
+                        continue;
+                    }
+                    self.matches.push(m.range());
+                    if self.matches.len() >= 20_000 {
+                        break;
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => self.error = Some(e),
+        }
+        if let Some(c) = self.current {
+            if c >= self.matches.len() {
+                self.current = None;
+            }
+        }
+    }
+}
+
 pub struct Editor {
     pub text: String,
     pub id: egui::Id,
@@ -32,6 +101,9 @@ pub struct Editor {
     last_galley: Option<(Arc<Galley>, Pos2)>,
     pending_cursor: Option<(usize, Option<usize>)>,
     wants_focus: bool,
+    pub find: Find,
+    /// Set when the user asks to search the whole database for the find text.
+    pub search_database: Option<String>,
 }
 
 fn char_to_byte(s: &str, ci: usize) -> usize {
@@ -64,6 +136,253 @@ impl Editor {
             last_galley: None,
             pending_cursor: None,
             wants_focus: true,
+            find: Find::default(),
+            search_database: None,
+        }
+    }
+
+    /// Open the find bar (or the find + replace bar), seeded with the
+    /// selection when it's on one line, and focus the search field.
+    pub fn open_find(&mut self, replace: bool) {
+        if let Some(sel) = self.selected_text() {
+            if !sel.contains('\n') && sel.len() < 200 {
+                self.find.query = sel.to_string();
+            }
+        }
+        self.find.open = true;
+        self.find.show_replace |= replace;
+        self.find.focus_query = true;
+        self.find.key = None;
+    }
+
+    pub fn close_find(&mut self) {
+        self.find.open = false;
+        self.find.current = None;
+        self.wants_focus = true;
+    }
+
+    pub fn find_focused(&self, ctx: &egui::Context) -> bool {
+        let q = Find::query_id(self.id);
+        ctx.memory(|m| m.focused() == Some(q) || m.focused() == Some(self.id.with("find-replace")))
+    }
+
+    /// Step to the next (or previous) match after the cursor.
+    pub fn find_step(&mut self, forward: bool) {
+        self.find.refresh(&self.text, self.version);
+        let n = self.find.matches.len();
+        if n == 0 {
+            return;
+        }
+        let i = match self.find.current {
+            Some(c) => {
+                if forward {
+                    (c + 1) % n
+                } else {
+                    (c + n - 1) % n
+                }
+            }
+            None => {
+                let at = self.selection.as_ref().map(|r| r.start).unwrap_or(self.cursor);
+                if forward {
+                    self.find.matches.iter().position(|m| m.start >= at).unwrap_or(0)
+                } else {
+                    self.find.matches.iter().rposition(|m| m.start < at).unwrap_or(n - 1)
+                }
+            }
+        };
+        self.go_to_match(i);
+    }
+
+    fn go_to_match(&mut self, i: usize) {
+        let Some(m) = self.find.matches.get(i).cloned() else { return };
+        self.find.current = Some(i);
+        self.find.scroll_to = Some(m.clone());
+        // select the match without taking focus from the find field
+        self.pending_cursor = Some((m.end, Some(m.start)));
+        self.selection = Some(m.clone());
+        self.cursor = m.end;
+    }
+
+    fn replacement_for(&self, re: &regex::Regex, matched: &str) -> String {
+        if self.find.regex {
+            re.replace(matched, self.find.replace.as_str()).into_owned()
+        } else {
+            self.find.replace.clone()
+        }
+    }
+
+    pub fn replace_current(&mut self) {
+        self.find.refresh(&self.text, self.version);
+        let Ok(Some(re)) = self.find.regex() else { return };
+        let Some(i) = self.find.current.filter(|i| *i < self.find.matches.len()) else {
+            self.find_step(true);
+            return;
+        };
+        let m = self.find.matches[i].clone();
+        let new = self.replacement_for(&re, &self.text[m.clone()]);
+        self.text.replace_range(m.clone(), &new);
+        self.version += 1;
+        self.job_cache = None;
+        self.find.refresh(&self.text, self.version);
+        // continue with the first match after the replaced text
+        let after = m.start + new.len();
+        let next = self.find.matches.iter().position(|r| r.start >= after).or(if self.find.matches.is_empty() { None } else { Some(0) });
+        self.find.current = None;
+        match next {
+            Some(n) => self.go_to_match(n),
+            None => self.pending_cursor = Some((after, None)),
+        }
+    }
+
+    pub fn replace_all(&mut self) -> usize {
+        self.find.refresh(&self.text, self.version);
+        let Ok(Some(re)) = self.find.regex() else { return 0 };
+        let n = self.find.matches.len();
+        if n == 0 {
+            return 0;
+        }
+        let new = if self.find.regex { re.replace_all(&self.text, self.find.replace.as_str()).into_owned() } else { re.replace_all(&self.text, regex::NoExpand(&self.find.replace)).into_owned() };
+        let cursor = self.cursor.min(new.len());
+        self.text = new;
+        self.version += 1;
+        self.job_cache = None;
+        self.find.current = None;
+        self.pending_cursor = Some((cursor, None));
+        n
+    }
+
+    /// The find bar row. Returns true when the editor should take focus back.
+    fn find_bar(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let ctx = ui.ctx().clone();
+        let qid = Find::query_id(self.id);
+        let rid = self.id.with("find-replace");
+        let focused = ctx.memory(|m| m.focused() == Some(qid) || m.focused() == Some(rid));
+        let mut step: Option<bool> = None;
+        let mut close = false;
+        let mut replace_one = false;
+        let mut replace_all = false;
+        if focused {
+            ui.input_mut(|i| {
+                if i.consume_key(Modifiers::SHIFT, Key::Enter) {
+                    step = Some(false);
+                } else if i.consume_key(Modifiers::NONE, Key::Enter) {
+                    if ctx.memory(|m| m.focused() == Some(rid)) {
+                        replace_one = true;
+                    } else {
+                        step = Some(true);
+                    }
+                }
+                if i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::Enter) {
+                    replace_all = true;
+                }
+                if i.consume_key(Modifiers::NONE, Key::Escape) {
+                    close = true;
+                }
+                if i.consume_key(Modifiers::ALT, Key::C) {
+                    self.find.case = !self.find.case;
+                }
+                if i.consume_key(Modifiers::ALT, Key::W) {
+                    self.find.word = !self.find.word;
+                }
+                if i.consume_key(Modifiers::ALT, Key::R) {
+                    self.find.regex = !self.find.regex;
+                }
+            });
+        }
+        let toggle = |ui: &mut egui::Ui, on: &mut bool, label: &str, tip: &str| {
+            let rt = RichText::new(label).font(FontId::monospace(11.5)).color(if *on { p.text } else { p.muted });
+            let b = egui::Button::new(rt).fill(if *on { p.selection } else { Color32::TRANSPARENT }).stroke(if *on { Stroke::new(1.0_f32, p.accent) } else { Stroke::NONE }).min_size(egui::vec2(22.0, 20.0));
+            if ui.add(b).on_hover_text(tip).clicked() {
+                *on = !*on;
+            }
+        };
+        egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0_f32, p.border)).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(6, 4)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let arrow = if self.find.show_replace { "▼" } else { "▶" };
+                if ui.add(egui::Button::new(RichText::new(arrow).color(p.muted)).frame(false)).on_hover_text("Toggle replace  (Ctrl + H)").clicked() {
+                    self.find.show_replace = !self.find.show_replace;
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        let te = egui::TextEdit::singleline(&mut self.find.query).id(qid).hint_text("Find").desired_width(220.0).font(FontId::monospace(12.0));
+                        let r = ui.add(te);
+                        if self.find.focus_query {
+                            r.request_focus();
+                            let mut st = egui::TextEdit::load_state(&ctx, qid).unwrap_or_default();
+                            let n = self.find.query.chars().count();
+                            st.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(n))));
+                            st.store(&ctx, qid);
+                            self.find.focus_query = false;
+                        }
+                        if r.changed() {
+                            self.find.current = None;
+                            self.find.refresh(&self.text, self.version);
+                            // jump as you type, like VS Code
+                            if !self.find.matches.is_empty() {
+                                let at = self.selection.as_ref().map(|r| r.start).unwrap_or(self.cursor);
+                                let i = self.find.matches.iter().position(|m| m.end >= at).unwrap_or(0);
+                                self.go_to_match(i);
+                            }
+                        }
+                        toggle(ui, &mut self.find.case, "Aa", "Match case  (Alt + C)");
+                        toggle(ui, &mut self.find.word, "ab", "Match whole word  (Alt + W)");
+                        toggle(ui, &mut self.find.regex, ".*", "Use regular expression  (Alt + R)");
+                        self.find.refresh(&self.text, self.version);
+                        let n = self.find.matches.len();
+                        let (status, color) = if let Some(e) = &self.find.error {
+                            (e.chars().take(40).collect::<String>(), p.danger)
+                        } else if self.find.query.is_empty() {
+                            (String::new(), p.muted)
+                        } else if n == 0 {
+                            ("No results".to_string(), p.danger)
+                        } else {
+                            let cur = self.find.current.map(|c| (c + 1).to_string()).unwrap_or_else(|| "?".into());
+                            (format!("{cur} of {n}{}", if n >= 20_000 { "+" } else { "" }), p.muted)
+                        };
+                        ui.add_sized([74.0, 20.0], egui::Label::new(RichText::new(status).size(11.5).color(color)));
+                        if ui.add_enabled(n > 0, egui::Button::new("↑").frame(false)).on_hover_text("Previous match  (Shift + Enter)").clicked() {
+                            step = Some(false);
+                        }
+                        if ui.add_enabled(n > 0, egui::Button::new("↓").frame(false)).on_hover_text("Next match  (Enter)").clicked() {
+                            step = Some(true);
+                        }
+                        if ui.add_enabled(!self.find.query.is_empty(), egui::Button::new(RichText::new("Search DB").size(11.5).color(p.accent)).frame(false)).on_hover_text("Search the whole database for this text  (Ctrl/⌘ + F again)").clicked() {
+                            self.search_database = Some(self.find.query.clone());
+                        }
+                        if ui.add(egui::Button::new(RichText::new("×").size(14.0).color(p.muted)).frame(false)).on_hover_text("Close  (Esc)").clicked() {
+                            close = true;
+                        }
+                    });
+                    if self.find.show_replace {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            ui.add(egui::TextEdit::singleline(&mut self.find.replace).id(rid).hint_text(if self.find.regex { "Replace ($1 for groups)" } else { "Replace" }).desired_width(220.0).font(FontId::monospace(12.0)));
+                            let n = self.find.matches.len();
+                            if ui.add_enabled(n > 0, egui::Button::new("Replace")).on_hover_text("Replace this match  (Enter in the replace field)").clicked() {
+                                replace_one = true;
+                            }
+                            if ui.add_enabled(n > 0, egui::Button::new("All")).on_hover_text("Replace all  (Ctrl/⌘ + Alt + Enter)").clicked() {
+                                replace_all = true;
+                            }
+                        });
+                    }
+                });
+            });
+        });
+        if let Some(f) = step {
+            self.find_step(f);
+        }
+        if replace_one {
+            self.replace_current();
+        }
+        if replace_all {
+            self.replace_all();
+        }
+        if close {
+            self.close_find();
         }
     }
 
@@ -174,6 +493,10 @@ impl Editor {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut h);
             self.diag_key.hash(&mut h);
+            // the theme: without it, switching themes kept the old colors
+            // (light grey identifiers on the light background)
+            crate::theme::fingerprint(p).hash(&mut h);
+            font.size.to_bits().hash(&mut h);
             h.finish()
         };
         if let Some((k, w, job)) = &self.job_cache {
@@ -266,6 +589,27 @@ impl Editor {
                 }
             });
         }
+        if self.find.open && (has_focus || self.find_focused(ui.ctx())) {
+            let (next, prev, esc) = ui.input_mut(|i| {
+                let prev = i.consume_key(Modifiers::SHIFT, Key::F3) || i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
+                let next = i.consume_key(Modifiers::NONE, Key::F3) || i.consume_key(Modifiers::COMMAND, Key::G);
+                let esc = has_focus && self.popup.is_none() && i.consume_key(Modifiers::NONE, Key::Escape);
+                (next, prev, esc)
+            });
+            if next {
+                self.find_step(true);
+            }
+            if prev {
+                self.find_step(false);
+            }
+            if esc {
+                self.close_find();
+            }
+        }
+        if self.find.open {
+            ui.horizontal(|ui| self.find_bar(ui, p));
+            ui.add_space(2.0);
+        }
         if let Some(idx) = accept {
             self.accept(idx);
         }
@@ -288,7 +632,9 @@ impl Editor {
             state.cursor.set_char_range(Some(range));
             state.store(ui.ctx(), self.id);
             self.cursor = c;
-            self.wants_focus = true;
+            if !(self.find.open && self.find_focused(ui.ctx())) {
+                self.wants_focus = true;
+            }
         }
 
         let font = FontId::monospace(font_size);
@@ -314,6 +660,33 @@ impl Editor {
                         paint_bg(ui, &g, origin, r, &self.text, p.accent.gamma_multiply(0.14));
                     } else if let Some(r) = &self.error {
                         paint_bg(ui, &g, origin, r, &self.text, p.danger.gamma_multiply(0.12));
+                    }
+                    if self.find.open {
+                        let cur = self.find.current.and_then(|i| self.find.matches.get(i)).cloned();
+                        let top = ui.clip_rect().top() - origin.y - 40.0;
+                        let bottom = ui.clip_rect().bottom() - origin.y + 40.0;
+                        for m in &self.find.matches {
+                            let a = pos_of(&g, byte_to_char(&self.text, m.start));
+                            if a.max.y < top {
+                                continue;
+                            }
+                            if a.min.y > bottom {
+                                break;
+                            }
+                            let b = pos_of(&g, byte_to_char(&self.text, m.end));
+                            let is_cur = cur.as_ref() == Some(m);
+                            let fill = if is_cur { p.warning.gamma_multiply(0.55) } else { p.warning.gamma_multiply(0.22) };
+                            let r = if (a.min.y - b.min.y).abs() < 1.0 {
+                                Rect::from_min_max(egui::pos2(a.min.x, a.min.y), egui::pos2(b.max.x.max(a.min.x + 2.0), a.max.y))
+                            } else {
+                                Rect::from_min_max(a.min, egui::pos2(g.rect.right(), a.max.y))
+                            }
+                            .translate(origin.to_vec2());
+                            ui.painter().rect_filled(r, CornerRadius::same(2), fill);
+                            if is_cur {
+                                ui.painter().rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0_f32, p.warning), egui::StrokeKind::Outside);
+                            }
+                        }
                     }
                     if has_focus && self.selection.is_none() {
                         let cr = pos_of(&g, byte_to_char(&self.text, self.cursor));
@@ -395,6 +768,10 @@ impl Editor {
                 }
             }
 
+            if let Some(m) = self.find.scroll_to.take() {
+                let a = pos_of(g, byte_to_char(&self.text, m.start.min(self.text.len())));
+                ui.scroll_to_rect(a.translate(origin.to_vec2()).expand2(egui::vec2(40.0, 30.0)), Some(egui::Align::Center));
+            }
             if self.wants_focus {
                 out.response.request_focus();
                 self.wants_focus = false;

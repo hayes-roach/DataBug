@@ -2,7 +2,7 @@ use crate::compare::{CompareAction, CompareView, Phase};
 use crate::csv_import::{CsvImport, ImportOutcome};
 use crate::dialogs::{ConnDialog, DialogOutcome};
 use crate::er::{ErAction, ErView};
-use crate::explorer::{Action, CatalogView, ExplorerState};
+use crate::explorer::{Action, CatalogView, DbList, ExplorerCtx, ExplorerState};
 use crate::icons::Logos;
 use crate::rename_dialog::{RenameDialog, RenameOutcome};
 use crate::table_editor::{EditorOutcome, TableEditor};
@@ -10,14 +10,14 @@ use crate::editor::Editor;
 use crate::grid::{fmt_duration, group, EditTarget, GridAction, ResultView};
 use crate::plan_view::PlanView;
 use crate::session::{Cmd, Ev, EvSender, Session, SessionId};
-use crate::store::{HistoryEntry, Settings, Store};
-use crate::theme::{self, bold, connection_color, palette, Palette, ThemeKind};
+use crate::store::{HistoryEntry, Project, Settings, Store};
+use crate::theme::{self, bold, connection_color, Palette, ThemeKind};
 use eframe::egui::{self, Color32, CornerRadius, FontId, Key, KeyboardShortcut, Margin, Modifiers, RichText, Sense, Stroke};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use databug_core::{Capabilities, Catalog, ConnectionConfig, DbKind, Dialect, ObjectKind, QueryEvent, TableInfo};
+use databug_core::{Capabilities, Catalog, ConnectionConfig, DbKind, DbObject, Dialect, ObjectKind, QueryEvent, TableInfo};
 use databug_drivers::{ExecOptions, SourceRef};
 use databug_sql::rename::{rename_references, target_at, RenameTarget};
 use databug_sql::{classify, dangers, single_table_source, split_statements, statement_at, StatementKind};
@@ -109,6 +109,41 @@ enum SourcePurpose {
     Edit { conn_id: String },
     Compare { tab_id: u64, side: u8 },
     Rename { conn_id: String, schema: String, target: RenameTarget, new_name: String, script: String },
+    /// Definitions fetched for "Find in database".
+    Search { conn_id: String, schema: String, generation: u64 },
+}
+
+/// One result of "Find in database".
+struct Hit {
+    conn_id: String,
+    schema: String,
+    /// What matched: a relation or object kind; `None` for a column.
+    kind: Option<ObjectKind>,
+    name: String,
+    /// Table of a column; the object for a definition match.
+    table: Option<String>,
+    /// Text around the match (definition hits) or the column type.
+    context: String,
+    object: Option<DbObject>,
+    in_definition: bool,
+}
+
+/// "Find in database": object names, columns, definitions of views and
+/// routines, and (as a generated query) table data.
+struct DbSearch {
+    query: String,
+    all_connections: bool,
+    conn_id: String,
+    names: bool,
+    columns: bool,
+    definitions: bool,
+    case: bool,
+    hits: Vec<Hit>,
+    pending: HashSet<u64>,
+    generation: u64,
+    searched: bool,
+    focus: bool,
+    filter_kind: Option<u8>,
 }
 
 struct Confirm {
@@ -162,8 +197,19 @@ pub struct DataBugApp {
     screenshot: Option<ScreenshotPlan>,
     mem: (Instant, Option<u64>),
     applied_zoom: Option<f32>,
-    applied_theme: Option<(ThemeKind, f32)>,
+    applied_theme: Option<(u64, bool, f32)>,
     ctx: egui::Context,
+    /// Configs for the extra databases picked on a connection (`id@db`).
+    virtuals: Vec<ConnectionConfig>,
+    /// Databases listed per connection's server.
+    databases: HashMap<String, DbList>,
+    /// Connections the user disconnected (kept in the list).
+    disconnected: HashSet<String>,
+    projects: Vec<Project>,
+    theme_editor: bool,
+    theme_dirty: bool,
+    pending_search: Option<String>,
+    db_search: Option<DbSearch>,
 }
 
 fn now_hms() -> String {
@@ -235,6 +281,7 @@ impl DataBugApp {
         let store = Store::open();
         let settings = store.load_settings();
         let connections = store.load_connections();
+        let projects = store.load_projects();
         let history = store.load_history(2000);
         let (tx, rx) = mpsc::channel();
         let mut app = DataBugApp {
@@ -267,10 +314,22 @@ impl DataBugApp {
             applied_theme: None,
             applied_zoom: None,
             ctx: cc.egui_ctx.clone(),
+            virtuals: Vec::new(),
+            databases: HashMap::new(),
+            disconnected: HashSet::new(),
+            projects,
+            theme_editor: false,
+            theme_dirty: false,
+            pending_search: None,
+            db_search: None,
         };
+        if app.settings.current_project.as_ref().map(|id| !app.projects.iter().any(|p| &p.id == id)).unwrap_or(false) {
+            app.settings.current_project = None;
+        }
+        app.rebuild_virtuals();
         egui_extras::install_image_loaders(&cc.egui_ctx);
         app.logos = Logos::discover(&cc.egui_ctx);
-        for c in app.connections.clone() {
+        for c in app.connections.iter().chain(app.virtuals.iter()).cloned().collect::<Vec<_>>() {
             if let Some(cat) = app.store.load_catalog(&c.id) {
                 app.catalogs.insert(c.id.clone(), CatalogEntry { catalog: cat, generation: 1, loading: false, error: None });
             }
@@ -287,8 +346,64 @@ impl DataBugApp {
         self.toasts.push(Toast { text: text.into(), until: Instant::now() + Duration::from_secs(4) });
     }
 
+    /// A saved connection, or one of the extra databases picked on it (`id@db`).
     fn conn(&self, id: &str) -> Option<&ConnectionConfig> {
-        self.connections.iter().find(|c| c.id == id)
+        self.connections.iter().find(|c| c.id == id).or_else(|| self.virtuals.iter().find(|c| c.id == id))
+    }
+
+    /// Regenerate the configs of the extra databases after connections change.
+    fn rebuild_virtuals(&mut self) {
+        self.virtuals = self
+            .connections
+            .iter()
+            .filter(|c| c.supports_databases())
+            .flat_map(|c| c.visible_databases.iter().flatten().map(move |d| c.for_database(d)))
+            .collect();
+    }
+
+    /// Connections the explorer lists: the current project's, in its order.
+    fn visible_connections(&self) -> Vec<ConnectionConfig> {
+        match self.settings.current_project.as_ref().and_then(|id| self.projects.iter().find(|p| &p.id == id)) {
+            Some(pr) => pr.connections.iter().filter_map(|id| self.connections.iter().find(|c| &c.id == id)).cloned().collect(),
+            None => self.connections.clone(),
+        }
+    }
+
+    fn palette(&self) -> Palette {
+        theme::palette(self.settings.theme, &self.settings.overrides())
+    }
+
+    /// Close every session of a connection (and its extra databases).
+    fn disconnect(&mut self, base: &str) {
+        let mut rolled_back = false;
+        for t in self.tabs.iter_mut().filter(|t| ConnectionConfig::base_id(&t.conn_id) == base) {
+            if let Some(s) = t.session.take() {
+                s.abort();
+            }
+            rolled_back |= t.in_tx;
+            t.in_tx = false;
+            t.state = ConnState::Idle;
+            if t.running.take().is_some() {
+                t.editor.running = None;
+                t.output.push(LogLine { at: now_hms(), kind: LogKind::Warn, text: "Disconnected; the running statement was abandoned".into(), sql: None });
+            }
+        }
+        self.meta.retain(|k, s| {
+            let keep = ConnectionConfig::base_id(k) != base;
+            if !keep {
+                s.abort();
+            }
+            keep
+        });
+        for (k, e) in self.catalogs.iter_mut() {
+            if ConnectionConfig::base_id(k) == base {
+                e.loading = false;
+            }
+        }
+        self.refreshed.retain(|k| ConnectionConfig::base_id(k) != base);
+        if rolled_back {
+            self.toast("Open transactions were rolled back");
+        }
     }
 
     fn catalog(&self, conn_id: &str) -> Option<&Catalog> {
@@ -298,7 +413,7 @@ impl DataBugApp {
     // ---------- sessions and catalogs ----------
 
     fn spawn_session(&self, id: SessionId, cfg: &ConnectionConfig, ctx: &egui::Context) -> Session {
-        let pw = self.store.password(&cfg.id);
+        let pw = self.store.password(ConnectionConfig::base_id(&cfg.id));
         Session::spawn(self.rt.handle(), id, cfg.clone(), pw, self.tx.clone(), ctx.clone())
     }
 
@@ -310,6 +425,12 @@ impl DataBugApp {
             self.meta.insert(conn_id.to_string(), s);
         }
         self.meta[conn_id].send(Cmd::Introspect);
+        if cfg.supports_databases() && !conn_id.contains('@') {
+            self.meta[conn_id].send(Cmd::ListDatabases);
+            let d = self.databases.entry(conn_id.to_string()).or_insert(DbList { names: Vec::new(), current: String::new(), loading: false, error: None });
+            d.loading = true;
+        }
+        self.disconnected.remove(ConnectionConfig::base_id(conn_id));
         self.refreshed.insert(conn_id.to_string());
         let e = self.catalogs.entry(conn_id.to_string()).or_insert(CatalogEntry { catalog: Catalog::default(), generation: 0, loading: false, error: None });
         e.loading = true;
@@ -438,6 +559,7 @@ impl DataBugApp {
     fn dispatch(&mut self, ti: usize, mut stmts: Vec<(String, Range<usize>)>, explain: Option<bool>, edit_refresh: Option<usize>, ctx: &egui::Context) {
         let job = self.id();
         let Some(cfg) = self.conn(&self.tabs[ti].conn_id).cloned() else { return };
+        self.disconnected.remove(ConnectionConfig::base_id(&cfg.id));
         if self.tabs[ti].session.is_none() {
             let sid = self.tabs[ti].id;
             let s = self.spawn_session(sid, &cfg, ctx);
@@ -517,7 +639,23 @@ impl DataBugApp {
                     Ev::Sources { req, results } => {
                         sources_done.push((req, results));
                     }
+                    Ev::Databases(r) => {
+                        let d = self.databases.entry(conn_id.clone()).or_insert(DbList { names: Vec::new(), current: String::new(), loading: false, error: None });
+                        d.loading = false;
+                        match r {
+                            Ok((names, current)) => {
+                                d.names = names;
+                                d.current = current;
+                                d.error = None;
+                            }
+                            Err(e) => d.error = Some(e),
+                        }
+                    }
                     Ev::Catalog(Err(msg)) | Ev::ConnectFailed(msg) => {
+                        if let Some(d) = self.databases.get_mut(&conn_id).filter(|d| d.loading) {
+                            d.loading = false;
+                            d.error = Some(msg.clone());
+                        }
                         if let Some(e) = self.catalogs.get_mut(&conn_id) {
                             e.loading = false;
                             e.error = Some(msg);
@@ -556,7 +694,7 @@ impl DataBugApp {
                         }
                         tab.in_tx = false;
                     }
-                    Ev::Catalog(_) | Ev::Sources { .. } => {}
+                    Ev::Catalog(_) | Ev::Sources { .. } | Ev::Databases(_) => {}
                     Ev::Query { job, idx, ev } => {
                         let Some(run) = tab.running.as_mut().filter(|r| r.job == job) else { continue };
                         match ev {
@@ -741,9 +879,153 @@ impl DataBugApp {
             }
             Action::Refresh(id) => self.refresh_catalog(&id, ctx),
             Action::SetSchemas(id, list) => {
-                if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
+                if let Some((base, db)) = id.split_once('@') {
+                    if let Some(c) = self.connections.iter_mut().find(|c| c.id == base) {
+                        match list {
+                            Some(l) => c.database_schemas.insert(db.to_string(), l),
+                            None => c.database_schemas.remove(db),
+                        };
+                    }
+                } else if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
                     c.visible_schemas = list;
+                }
+                self.store.save_connections(&self.connections);
+                self.rebuild_virtuals();
+            }
+            Action::SetDatabases(id, list) => {
+                if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
+                    c.visible_databases = list.map(|l| {
+                        let mut v: Vec<String> = Vec::new();
+                        for d in l {
+                            if !v.contains(&d) {
+                                v.push(d);
+                            }
+                        }
+                        v
+                    });
                     self.store.save_connections(&self.connections);
+                }
+                self.rebuild_virtuals();
+                self.explorer.open_key(format!("c:{id}"));
+            }
+            Action::LoadDatabases(id) => {
+                if self.ensure_meta(&id, ctx) {
+                    self.meta[&id].send(Cmd::ListDatabases);
+                    let d = self.databases.entry(id.clone()).or_insert(DbList { names: Vec::new(), current: String::new(), loading: false, error: None });
+                    d.loading = true;
+                    d.error = None;
+                    self.disconnected.remove(&id);
+                }
+            }
+            Action::Disconnect(id) => {
+                self.disconnect(&id);
+                self.disconnected.insert(id.clone());
+                let name = self.conn(&id).map(|c| c.name.clone()).unwrap_or_default();
+                self.toast(format!("Disconnected from {name}"));
+            }
+            Action::Connect(id) => {
+                self.disconnected.remove(&id);
+                self.explorer.open_key(format!("c:{id}"));
+                self.refresh_catalog(&id, ctx);
+                // reopen the extra databases whose schemas are on screen
+                let extra: Vec<String> = self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == id).map(|v| v.id.clone()).collect();
+                for v in extra {
+                    if self.catalogs.contains_key(&v) {
+                        self.refresh_catalog(&v, ctx);
+                    }
+                }
+            }
+            Action::MoveConn(id, to) => {
+                let mut order: Vec<String> = self.visible_connections().iter().map(|c| c.id.clone()).collect();
+                if let Some(from) = order.iter().position(|c| *c == id) {
+                    let to = if from < to { to - 1 } else { to }.min(order.len() - 1);
+                    if from != to {
+                        let item = order.remove(from);
+                        order.insert(to, item);
+                        match self.settings.current_project.clone().and_then(|pid| self.projects.iter_mut().find(|p| p.id == pid)) {
+                            Some(pr) => {
+                                pr.connections = order;
+                                self.store.save_projects(&self.projects);
+                            }
+                            None => {
+                                self.connections.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
+                                self.store.save_connections(&self.connections);
+                            }
+                        }
+                    }
+                }
+            }
+            Action::ExecRoutine(id, schema, obj) => {
+                let Some(cfg) = self.conn(&id).cloned() else { return };
+                let d = cfg.kind.dialect();
+                let Some(sql) = databug_sql::ddl::exec_template(d, &schema, &obj.name, obj.kind, &obj.detail) else { return };
+                let has_params = sql.contains("NULL");
+                let ti = match self.tabs.get(self.active).filter(|t| t.conn_id == id && t.running.is_none() && t.tool.is_none()) {
+                    Some(_) => self.active,
+                    None => self.open_console(&id, None, ctx),
+                };
+                let tab = &mut self.tabs[ti];
+                let mut text = tab.editor.text.trim_end().to_string();
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                let start = text.len();
+                text.push_str(&sql);
+                tab.editor.set_text(text);
+                let end = tab.editor.text.len();
+                self.active = ti;
+                if has_params {
+                    // select the statement so Ctrl/⌘ + Enter runs it once the arguments are filled in
+                    self.tabs[ti].editor.select(start..end);
+                    self.toast(format!("Fill in the arguments of {}, then run with Ctrl/⌘ + Enter", obj.name));
+                } else {
+                    let tab_id = self.tabs[ti].id;
+                    self.tabs[ti].editor.select(end..end);
+                    self.check_and_dispatch(tab_id, vec![(sql.trim_end_matches(';').to_string(), start..end)], None, None, ctx);
+                }
+            }
+            Action::SearchDatabase => self.open_db_search(None),
+            Action::SwitchProject(id) => {
+                self.settings.current_project = id;
+                self.store.save_settings(&self.settings);
+            }
+            Action::SaveProject(id, name) => {
+                match id.and_then(|id| self.projects.iter_mut().find(|p| p.id == id)) {
+                    Some(pr) => pr.name = name,
+                    None => {
+                        let id = ConnectionConfig::new(DbKind::Sqlite).id;
+                        self.projects.push(Project { id: id.clone(), name: name.clone(), connections: Vec::new() });
+                        self.settings.current_project = Some(id);
+                        self.store.save_settings(&self.settings);
+                        self.toast(format!("Project “{name}” created. New connections are added to it; right-click a connection → Add to project to bring existing ones in"));
+                    }
+                }
+                self.store.save_projects(&self.projects);
+            }
+            Action::DeleteProject(id) => {
+                self.projects.retain(|p| p.id != id);
+                if self.settings.current_project.as_deref() == Some(id.as_str()) {
+                    self.settings.current_project = None;
+                    self.store.save_settings(&self.settings);
+                }
+                self.store.save_projects(&self.projects);
+            }
+            Action::AddToProject(conn, pid) => {
+                if let Some(pr) = self.projects.iter_mut().find(|p| p.id == pid) {
+                    if !pr.connections.contains(&conn) {
+                        pr.connections.push(conn);
+                    }
+                    let name = pr.name.clone();
+                    self.store.save_projects(&self.projects);
+                    self.toast(format!("Added to {name}"));
+                }
+            }
+            Action::RemoveFromProject(conn) => {
+                if let Some(pid) = self.settings.current_project.clone() {
+                    if let Some(pr) = self.projects.iter_mut().find(|p| p.id == pid) {
+                        pr.connections.retain(|c| *c != conn);
+                        self.store.save_projects(&self.projects);
+                    }
                 }
             }
             Action::EditConn(id) => {
@@ -771,10 +1053,20 @@ impl DataBugApp {
                 self.connections.retain(|c| c.id != id);
                 self.store.save_connections(&self.connections);
                 self.store.forget_password(&id);
-                self.store.delete_catalog(&id);
-                self.catalogs.remove(&id);
-                self.meta.remove(&id);
-                self.tabs.retain(|t| t.conn_id != id);
+                let ids: Vec<String> = self.catalogs.keys().filter(|k| ConnectionConfig::base_id(k) == id).cloned().collect();
+                for k in ids {
+                    self.store.delete_catalog(&k);
+                    self.catalogs.remove(&k);
+                }
+                self.meta.retain(|k, _| ConnectionConfig::base_id(k) != id);
+                self.tabs.retain(|t| ConnectionConfig::base_id(&t.conn_id) != id);
+                self.databases.remove(&id);
+                self.disconnected.remove(&id);
+                for pr in self.projects.iter_mut() {
+                    pr.connections.retain(|c| *c != id);
+                }
+                self.store.save_projects(&self.projects);
+                self.rebuild_virtuals();
                 self.active = self.active.min(self.tabs.len().saturating_sub(1));
             }
             Action::Copy(s) => {
@@ -791,7 +1083,6 @@ impl DataBugApp {
                 self.dialog = Some(ConnDialog::new(ConnectionConfig::new(kind), String::new(), true));
                 self.editing_conn = None;
             }
-            Action::OpenSample => self.open_sample(ctx),
             Action::EditTable(id, schema, table) => {
                 let Some(cfg) = self.conn(&id).cloned() else { return };
                 let Some(cat) = self.catalog(&id) else { return };
@@ -849,6 +1140,8 @@ impl DataBugApp {
         }
     }
 
+    /// Test fixture for `--screenshot` only: a SQLite store database in the
+    /// data directory. Not offered in the UI.
     fn open_sample(&mut self, ctx: &egui::Context) {
         let path = self.store.data_dir().join("sample-store.db");
         if !path.exists() {
@@ -998,6 +1291,432 @@ impl DataBugApp {
                 self.toast(if changed.is_empty() { "Review the rename script, then run it with Ctrl/⌘ + Shift + Enter".to_string() } else { format!("Also updates {} — review, then run with Ctrl/⌘ + Shift + Enter", changed.join(", ")) });
                 let _ = schema;
             }
+            SourcePurpose::Search { conn_id, schema, generation } => {
+                let Some(ds) = self.db_search.as_mut().filter(|d| d.generation == generation) else { return };
+                ds.pending.remove(&req);
+                let re = search_regex(&ds.query, ds.case);
+                let Some(re) = re else { return };
+                for (r, res) in results {
+                    let Ok(text) = res else { continue };
+                    let mut lines = 0;
+                    for (ln, line) in text.lines().enumerate() {
+                        if re.is_match(line) {
+                            lines += 1;
+                            if lines > 3 {
+                                break;
+                            }
+                            let obj = DbObject { name: r.name.clone(), kind: r.kind, detail: r.detail.clone(), ident: r.ident.clone(), table: r.table.clone() };
+                            ds.hits.push(Hit { conn_id: conn_id.clone(), schema: schema.clone(), kind: Some(r.kind), name: r.name.clone(), table: None, context: format!("line {}: {}", ln + 1, one_line(line, 120)), object: Some(obj), in_definition: true });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- find in database ----------
+
+    fn open_db_search(&mut self, query: Option<String>) {
+        let conn_id = self.tabs.get(self.active).map(|t| t.conn_id.clone()).or_else(|| self.visible_connections().first().map(|c| c.id.clone())).unwrap_or_default();
+        match self.db_search.as_mut() {
+            Some(ds) => {
+                if let Some(q) = query {
+                    ds.query = q;
+                }
+                ds.focus = true;
+            }
+            None => {
+                self.db_search = Some(DbSearch {
+                    query: query.unwrap_or_default(),
+                    all_connections: false,
+                    conn_id,
+                    names: true,
+                    columns: true,
+                    definitions: false,
+                    case: false,
+                    hits: Vec::new(),
+                    pending: HashSet::new(),
+                    generation: 0,
+                    searched: false,
+                    focus: true,
+                    filter_kind: None,
+                });
+            }
+        }
+        let run = self.db_search.as_ref().map(|d| !d.query.trim().is_empty()).unwrap_or(false);
+        if run {
+            let ctx = self.ctx.clone();
+            self.run_db_search(&ctx);
+        }
+    }
+
+    /// Connection ids a search covers: one connection (with its extra
+    /// databases) or every connection in the current project.
+    fn search_scope(&self) -> Vec<String> {
+        let Some(ds) = &self.db_search else { return vec![] };
+        let bases: Vec<String> = if ds.all_connections { self.visible_connections().iter().map(|c| c.id.clone()).collect() } else { vec![ConnectionConfig::base_id(&ds.conn_id).to_string()] };
+        let mut out = Vec::new();
+        for b in bases {
+            out.push(b.clone());
+            for v in self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == b) {
+                out.push(v.id.clone());
+            }
+        }
+        out
+    }
+
+    fn run_db_search(&mut self, ctx: &egui::Context) {
+        let scope = self.search_scope();
+        for id in &scope {
+            if !self.catalogs.contains_key(id) && !self.disconnected.contains(ConnectionConfig::base_id(id)) {
+                self.refresh_catalog(id, ctx);
+            }
+        }
+        let gen = self.id();
+        let Some(ds) = self.db_search.as_mut() else { return };
+        ds.generation = gen;
+        ds.hits.clear();
+        ds.pending.clear();
+        ds.searched = true;
+        let Some(re) = search_regex(&ds.query, ds.case) else { return };
+        let mut requests: Vec<(String, String, Vec<SourceRef>)> = Vec::new();
+        for id in &scope {
+            let Some(cat) = self.catalogs.get(id).map(|e| &e.catalog) else { continue };
+            for sch in &cat.schemas {
+                if ds.names {
+                    for t in &sch.tables {
+                        if re.is_match(&t.name) {
+                            ds.hits.push(Hit { conn_id: id.clone(), schema: sch.name.clone(), kind: Some(t.kind), name: t.name.clone(), table: None, context: format!("{} columns", t.columns.len()), object: None, in_definition: false });
+                        }
+                    }
+                    for o in &sch.objects {
+                        if re.is_match(&o.name) {
+                            ds.hits.push(Hit { conn_id: id.clone(), schema: sch.name.clone(), kind: Some(o.kind), name: o.name.clone(), table: o.table.clone(), context: o.detail.clone(), object: Some(o.clone()), in_definition: false });
+                        }
+                    }
+                }
+                if ds.columns {
+                    for t in &sch.tables {
+                        for c in t.columns.iter().filter(|c| re.is_match(&c.name)) {
+                            ds.hits.push(Hit { conn_id: id.clone(), schema: sch.name.clone(), kind: None, name: c.name.clone(), table: Some(t.name.clone()), context: c.data_type.clone(), object: None, in_definition: false });
+                        }
+                    }
+                }
+                if ds.definitions {
+                    let mut items: Vec<SourceRef> = sch.tables.iter().filter(|t| matches!(t.kind, ObjectKind::View | ObjectKind::MaterializedView)).map(|t| SourceRef::relation(&t.name, t.kind)).collect();
+                    items.extend(sch.objects.iter().filter(|o| matches!(o.kind, ObjectKind::Procedure | ObjectKind::Function | ObjectKind::TableFunction | ObjectKind::Trigger | ObjectKind::Event)).map(SourceRef::from_object));
+                    if !items.is_empty() {
+                        requests.push((id.clone(), sch.name.clone(), items));
+                    }
+                }
+            }
+        }
+        for (id, schema, items) in requests {
+            let req = self.request_sources(&id, &schema, items, SourcePurpose::Search { conn_id: id.clone(), schema: schema.clone(), generation: gen }, ctx);
+            if let Some(ds) = self.db_search.as_mut() {
+                ds.pending.insert(req);
+            }
+        }
+    }
+
+    /// A query that counts matching rows in every text column of every table
+    /// in the searched connection's visible schemas.
+    fn data_search_script(&self, conn_id: &str, query: &str) -> Option<String> {
+        let cfg = self.conn(conn_id)?;
+        let d = cfg.kind.dialect();
+        if d == Dialect::Mongo {
+            return None;
+        }
+        let cat = self.catalog(conn_id)?;
+        let pat = d.quote_literal(&format!("%{query}%"));
+        let texty = |t: &str| {
+            let t = t.to_ascii_lowercase();
+            ["char", "text", "clob", "string", "citext", "uuid", "json", "xml", "name"].iter().any(|k| t.contains(k))
+        };
+        let mut parts = Vec::new();
+        for sch in cat.schemas.iter().filter(|s| cfg.schema_visible(&s.name) || cat.schemas.len() == 1) {
+            for t in sch.tables.iter().filter(|t| t.kind == ObjectKind::Table) {
+                let cols: Vec<String> = t
+                    .columns
+                    .iter()
+                    .filter(|c| texty(&c.data_type))
+                    .map(|c| {
+                        let q = d.quote_ident(&c.name);
+                        match d {
+                            Dialect::Postgres => format!("{q}::text ILIKE {pat}"),
+                            Dialect::MsSql => format!("CAST({q} AS nvarchar(max)) LIKE {pat}"),
+                            _ => format!("{q} LIKE {pat}"),
+                        }
+                    })
+                    .collect();
+                if cols.is_empty() {
+                    continue;
+                }
+                let label = d.quote_literal(&format!("{}.{}", sch.name, t.name));
+                parts.push(format!("SELECT {label} AS table_name, COUNT(*) AS matches FROM {} WHERE {}", databug_sql::ddl::qualified(d, &sch.name, &t.name), cols.join(" OR ")));
+                if parts.len() >= 300 {
+                    break;
+                }
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "-- Rows containing “{}” in text columns ({} tables)\nSELECT * FROM (\n{}\n) found\nWHERE matches > 0\nORDER BY matches DESC;",
+            query.replace('\n', " "),
+            parts.len(),
+            parts.join("\nUNION ALL\n")
+        ))
+    }
+
+    fn db_search_window(&mut self, ctx: &egui::Context, p: &Palette) {
+        let Some(ds) = self.db_search.as_mut() else { return };
+        let mut open = true;
+        let mut run = false;
+        let mut data = false;
+        let mut chosen: Option<usize> = None;
+        let mut double: Option<usize> = None;
+        let conns: Vec<(String, String)> = self.connections.iter().map(|c| (c.id.clone(), c.name.clone())).chain(self.virtuals.iter().map(|c| (c.id.clone(), c.name.clone()))).collect();
+        egui::Window::new(RichText::new("Find in database").font(bold(14.0)))
+            .id(egui::Id::new("db-search"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([560.0, 460.0])
+            .default_pos(ctx.screen_rect().center() - egui::vec2(280.0, 260.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut ds.query).hint_text("Table, column, procedure or text in definitions").desired_width(ui.available_width() - 80.0));
+                    if ds.focus {
+                        r.request_focus();
+                        ds.focus = false;
+                    }
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        run = true;
+                    }
+                    if ui.add_enabled(!ds.query.trim().is_empty(), egui::Button::new("Search")).clicked() {
+                        run = true;
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("In").color(p.muted));
+                    let current = conns.iter().find(|c| c.0 == ds.conn_id).map(|c| c.1.clone()).unwrap_or_else(|| "—".into());
+                    egui::ComboBox::from_id_salt("search-conn").selected_text(if ds.all_connections { "All connections".to_string() } else { current }).show_ui(ui, |ui| {
+                        if ui.selectable_label(ds.all_connections, "All connections").clicked() {
+                            ds.all_connections = true;
+                        }
+                        for (id, name) in &conns {
+                            if ui.selectable_label(!ds.all_connections && ds.conn_id == *id, name).clicked() {
+                                ds.conn_id = id.clone();
+                                ds.all_connections = false;
+                            }
+                        }
+                    });
+                    ui.checkbox(&mut ds.names, "Object names");
+                    ui.checkbox(&mut ds.columns, "Columns");
+                    ui.checkbox(&mut ds.definitions, "Definitions").on_hover_text("Search the SQL of views, procedures, functions and triggers (fetched from the server)");
+                    ui.checkbox(&mut ds.case, "Match case");
+                });
+                ui.horizontal(|ui| {
+                    let can_data = !ds.all_connections && !ds.query.trim().is_empty();
+                    if ui.add_enabled(can_data, egui::Button::new("Search table data…")).on_hover_text("Opens a query that counts rows containing the text in every text column of the connection's tables").clicked() {
+                        data = true;
+                    }
+                    if !ds.pending.is_empty() {
+                        ui.add(egui::Spinner::new().size(12.0));
+                        ui.label(RichText::new("Searching definitions…").size(11.5).color(p.muted));
+                    }
+                });
+                ui.separator();
+                if ds.searched {
+                    let n_def = ds.hits.iter().filter(|h| h.in_definition).count();
+                    let n_col = ds.hits.iter().filter(|h| h.kind.is_none()).count();
+                    let n_obj = ds.hits.len() - n_def - n_col;
+                    ui.horizontal(|ui| {
+                        let mut chip = |ui: &mut egui::Ui, k: Option<u8>, label: String| {
+                            if ui.selectable_label(ds.filter_kind == k, label).clicked() {
+                                ds.filter_kind = k;
+                            }
+                        };
+                        chip(ui, None, format!("All {}", ds.hits.len()));
+                        chip(ui, Some(0), format!("Objects {n_obj}"));
+                        chip(ui, Some(1), format!("Columns {n_col}"));
+                        chip(ui, Some(2), format!("Definitions {n_def}"));
+                    });
+                }
+                let multi = ds.all_connections || conns.iter().filter(|c| ConnectionConfig::base_id(&c.0) == ConnectionConfig::base_id(&ds.conn_id)).count() > 1;
+                let rows: Vec<usize> = (0..ds.hits.len())
+                    .filter(|i| {
+                        let h = &ds.hits[*i];
+                        match ds.filter_kind {
+                            None => true,
+                            Some(0) => h.kind.is_some() && !h.in_definition,
+                            Some(1) => h.kind.is_none(),
+                            _ => h.in_definition,
+                        }
+                    })
+                    .collect();
+                if ds.searched && rows.is_empty() && ds.pending.is_empty() {
+                    ui.label(RichText::new("No matches").color(p.faint));
+                }
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 34.0, rows.len(), |ui, range| {
+                    for &i in &rows[range] {
+                        let h = &ds.hits[i];
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+                        }
+                        let icon = egui::Rect::from_center_size(egui::pos2(rect.left() + 14.0, rect.center().y), egui::vec2(15.0, 15.0));
+                        match h.kind {
+                            Some(k) => crate::icons::paint_kind(ui.painter(), icon, k, p),
+                            None => crate::icons::paint_column(ui.painter(), icon, false, false, p),
+                        }
+                        let title = match (&h.table, h.kind) {
+                            (Some(t), None) => format!("{t}.{}", h.name),
+                            _ => h.name.clone(),
+                        };
+                        let what = match h.kind {
+                            Some(k) if h.in_definition => format!("{} definition", k.label()),
+                            Some(k) => k.label().to_string(),
+                            None => "column".to_string(),
+                        };
+                        let conn = conns.iter().find(|c| c.0 == h.conn_id).map(|c| c.1.as_str()).unwrap_or("");
+                        let where_ = if multi { format!("{conn} · {}", h.schema) } else { h.schema.clone() };
+                        ui.painter().text(egui::pos2(rect.left() + 30.0, rect.top() + 10.0), egui::Align2::LEFT_CENTER, title, bold(12.5), p.text);
+                        ui.painter().text(egui::pos2(rect.right() - 8.0, rect.top() + 10.0), egui::Align2::RIGHT_CENTER, format!("{what} · {where_}"), FontId::proportional(11.0), p.faint);
+                        ui.painter().text(egui::pos2(rect.left() + 30.0, rect.top() + 25.0), egui::Align2::LEFT_CENTER, one_line(&h.context, ((rect.width() - 40.0) / 6.8).max(10.0) as usize), FontId::monospace(11.0), p.muted);
+                        if resp.clicked() {
+                            chosen = Some(i);
+                        }
+                        if resp.double_clicked() {
+                            double = Some(i);
+                        }
+                        resp.on_hover_text("Click to show in the explorer · double-click to open");
+                    }
+                });
+            });
+        if !open {
+            self.db_search = None;
+            return;
+        }
+        if run {
+            self.run_db_search(ctx);
+        }
+        if data {
+            let (id, q) = (ds_conn(&self.db_search), self.db_search.as_ref().map(|d| d.query.clone()).unwrap_or_default());
+            match self.data_search_script(&id, &q) {
+                Some(script) => self.run_in_console(&id, script, false, None, ctx),
+                None => self.toast("No tables with text columns to search (or the schema isn't loaded yet)"),
+            }
+        }
+        if let Some(i) = chosen.or(double) {
+            let Some(h) = self.db_search.as_ref().and_then(|d| d.hits.get(i)) else { return };
+            let (conn, schema, kind, name, table, obj, def) = (h.conn_id.clone(), h.schema.clone(), h.kind, h.name.clone(), h.table.clone(), h.object.clone(), h.in_definition);
+            let base = ConnectionConfig::base_id(&conn).to_string();
+            self.disconnected.remove(&base);
+            match (kind, &obj) {
+                (None, _) => {
+                    let t = table.clone().unwrap_or_default();
+                    let tk = self.catalog(&conn).and_then(|c| c.find_table(Some(&schema), &t)).map(|t| t.kind).unwrap_or(ObjectKind::Table);
+                    let key = format!("t:{conn}:{schema}:{t}");
+                    self.explorer.open_key(key.clone());
+                    self.explorer.reveal_object(&conn, &base, &schema, Some(tk), format!("{key}:col:{name}"));
+                }
+                (Some(k), None) => self.explorer.reveal_object(&conn, &base, &schema, Some(k), format!("t:{conn}:{schema}:{name}")),
+                (Some(k), Some(o)) => {
+                    let key = format!("o:{}:{}:{:?}:{}:{}:{}", conn, schema, o.kind, o.name, o.detail, o.table.as_deref().unwrap_or(""));
+                    self.explorer.reveal_object(&conn, &base, &schema, Some(k), key);
+                }
+            }
+            if double.is_some() {
+                match (kind, obj) {
+                    (Some(_), Some(o)) => self.apply(Action::EditObject(conn, schema, SourceRef::from_object(&o)), ctx),
+                    (Some(k), None) if k.is_relation() => self.apply(Action::SelectTop(conn, schema, name), ctx),
+                    (None, _) => self.apply(Action::SelectTop(conn, schema, table.unwrap_or_default()), ctx),
+                    _ => {}
+                }
+                let _ = def;
+            }
+        }
+    }
+
+    // ---------- themes ----------
+
+    fn theme_window(&mut self, ctx: &egui::Context, p: &Palette) {
+        if !self.theme_editor {
+            return;
+        }
+        let mut open = true;
+        let key = self.settings.theme_key();
+        egui::Window::new(RichText::new("Theme and colors").font(bold(14.0)))
+            .id(egui::Id::new("theme-editor"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([420.0, 560.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Theme").color(p.muted));
+                ui.horizontal_wrapped(|ui| {
+                    for k in ThemeKind::ALL {
+                        let pal = theme::palette(k, self.settings.custom_colors.get(&format!("{k:?}")).unwrap_or(&Default::default()));
+                        let selected = self.settings.theme == k;
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(118.0, 54.0), Sense::click());
+                        ui.painter().rect_filled(rect, CornerRadius::same(7), pal.canvas);
+                        ui.painter().rect_filled(rect.shrink2(egui::vec2(8.0, 8.0)).translate(egui::vec2(0.0, 6.0)), CornerRadius::same(4), pal.island);
+                        ui.painter().text(rect.left_top() + egui::vec2(10.0, 9.0), egui::Align2::LEFT_CENTER, k.label(), bold(11.5), pal.text);
+                        for (i, c) in [pal.syn_keyword, pal.syn_string, pal.syn_function, pal.accent].iter().enumerate() {
+                            ui.painter().rect_filled(egui::Rect::from_min_size(rect.left_top() + egui::vec2(14.0 + i as f32 * 22.0, 28.0), egui::vec2(16.0, 6.0)), CornerRadius::same(2), *c);
+                        }
+                        ui.painter().rect_filled(egui::Rect::from_min_size(rect.left_top() + egui::vec2(14.0, 38.0), egui::vec2(70.0, 4.0)), CornerRadius::same(2), pal.syn_ident);
+                        ui.painter().rect_stroke(rect, CornerRadius::same(7), if selected { Stroke::new(2.0_f32, p.accent) } else { Stroke::new(1.0_f32, p.border) }, egui::StrokeKind::Inside);
+                        if resp.clicked() {
+                            self.settings.theme = k;
+                            self.theme_dirty = true;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Customize “{}”", self.settings.theme.label())).font(bold(12.5)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let customized = self.settings.custom_colors.get(&key).map(|m| !m.is_empty()).unwrap_or(false);
+                        if ui.add_enabled(customized, egui::Button::new("Reset to theme")).clicked() {
+                            self.settings.custom_colors.remove(&key);
+                            self.theme_dirty = true;
+                        }
+                    });
+                });
+                ui.label(RichText::new("Changes apply instantly and are saved per theme.").size(11.0).color(p.faint));
+                ui.separator();
+                let base = *theme::preset(self.settings.theme);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    egui::Grid::new("colors").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                        for (k, label, get) in theme::SLOTS {
+                            let mut cur = *p;
+                            let c = *get(&mut cur);
+                            let mut rgb = [c.r(), c.g(), c.b()];
+                            ui.label(*label);
+                            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                self.settings.custom_colors.entry(key.clone()).or_default().insert(k.to_string(), rgb);
+                                self.theme_dirty = true;
+                            }
+                            let mut b = base;
+                            let orig = *get(&mut b);
+                            let changed = orig != c;
+                            if ui.add_enabled(changed, egui::Button::new(RichText::new("↺").color(p.muted)).frame(false)).on_hover_text("Back to the theme's color").clicked() {
+                                if let Some(m) = self.settings.custom_colors.get_mut(&key) {
+                                    m.remove(*k);
+                                }
+                                self.theme_dirty = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            });
+        if !open {
+            self.theme_editor = false;
         }
     }
 
@@ -1151,6 +1870,29 @@ impl DataBugApp {
         if self.dialog.is_some() || self.confirm.is_some() || self.table_editor.is_some() || self.csv.is_some() || self.rename.is_some() {
             return;
         }
+        // Ctrl/⌘ + F: find in the editor when it has focus (again: search the
+        // database); anywhere else, find in the database.
+        let (find, replace) = ctx.input_mut(|i| {
+            let f = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::F));
+            let r = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::CTRL, Key::H)) || i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F));
+            (f, r)
+        });
+        if find || replace {
+            let focused = ctx.memory(|m| m.focused());
+            let in_search = focused == Some(egui::Id::new("db-search")) || self.db_search.is_some() && focused.is_none() && !find;
+            match self.tabs.get_mut(self.active).filter(|t| t.tool.is_none()) {
+                Some(t) if t.editor.find_focused(ctx) && find => {
+                    let q = t.editor.find.query.clone();
+                    self.open_db_search(Some(q).filter(|q| !q.is_empty()));
+                }
+                Some(t) if focused == Some(t.editor.id) || replace || (focused.is_none() && !in_search && self.db_search.is_none()) => t.editor.open_find(replace),
+                _ => {
+                    let sel = self.tabs.get(self.active).and_then(|t| t.editor.selected_text().map(str::to_string)).filter(|s| !s.contains('\n'));
+                    self.open_db_search(sel);
+                }
+            }
+            return;
+        }
         if self.tabs.get(self.active).map(|t| t.tool.is_some()).unwrap_or(false) {
             return;
         }
@@ -1298,11 +2040,25 @@ impl DataBugApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let icon = if self.settings.theme == ThemeKind::Dark { "☀" } else { "🌙" };
-                if ui.button(icon).on_hover_text("Switch theme").clicked() {
-                    self.settings.theme = if self.settings.theme == ThemeKind::Dark { ThemeKind::Light } else { ThemeKind::Dark };
-                    self.store.save_settings(&self.settings);
-                }
+                let icon = if self.settings.theme.is_dark() { "🌙" } else { "☀" };
+                ui.menu_button(icon, |ui| {
+                    ui.set_min_width(180.0);
+                    ui.label(RichText::new("Theme").font(bold(13.0)));
+                    for k in ThemeKind::ALL {
+                        if ui.selectable_label(self.settings.theme == k, k.label()).clicked() {
+                            self.settings.theme = k;
+                            self.store.save_settings(&self.settings);
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Customize colors…").clicked() {
+                        self.theme_editor = true;
+                        ui.close_menu();
+                    }
+                })
+                .response
+                .on_hover_text("Theme and colors");
                 ui.menu_button("⚙", |ui| {
                     ui.set_min_width(240.0);
                     ui.label(RichText::new("Settings").font(bold(13.0)));
@@ -1442,10 +2198,6 @@ impl DataBugApp {
             let big = |t: &str| egui::Button::new(RichText::new(t).size(14.0)).min_size(egui::vec2(220.0, 34.0));
             if ui.add(big("New connection")).clicked() {
                 actions.push(Action::NewConnection);
-            }
-            ui.add_space(4.0);
-            if ui.add(big("Open sample database")).clicked() {
-                actions.push(Action::OpenSample);
             }
             if let Some(c) = self.connections.first() {
                 ui.add_space(4.0);
@@ -1707,6 +2459,8 @@ impl DataBugApp {
                     for v in [&mut a, &mut b].into_iter().flatten() {
                         if let Some(o) = v.as_object_mut() {
                             o.remove("visible_schemas");
+                            o.remove("visible_databases");
+                            o.remove("database_schemas");
                             o.remove("name");
                             o.remove("color");
                         }
@@ -1715,22 +2469,33 @@ impl DataBugApp {
                 }).unwrap_or(false) && d.password == self.store.password(&cfg.id).unwrap_or_default();
                 match self.connections.iter_mut().find(|c| c.id == cfg.id) {
                     Some(existing) => *existing = cfg.clone(),
-                    None => self.connections.push(cfg.clone()),
+                    None => {
+                        self.connections.push(cfg.clone());
+                        // new connections join the project you're in
+                        if let Some(pid) = self.settings.current_project.clone() {
+                            if let Some(pr) = self.projects.iter_mut().find(|p| p.id == pid) {
+                                pr.connections.push(cfg.id.clone());
+                                self.store.save_projects(&self.projects);
+                            }
+                        }
+                    }
                 }
                 self.store.save_connections(&self.connections);
+                self.rebuild_virtuals();
                 if only_view {
                     self.editing_conn = None;
                     return;
                 }
                 // settings changed: drop open sessions so they reconnect with the new values
-                for t in self.tabs.iter_mut().filter(|t| t.conn_id == cfg.id && t.running.is_none()) {
+                for t in self.tabs.iter_mut().filter(|t| ConnectionConfig::base_id(&t.conn_id) == cfg.id && t.running.is_none()) {
                     t.session = None;
                     t.state = ConnState::Idle;
                     t.in_tx = false;
                     t.editor.dialect = cfg.kind.dialect();
                 }
-                self.meta.remove(&cfg.id);
-                self.refreshed.remove(&cfg.id);
+                self.meta.retain(|k, _| ConnectionConfig::base_id(k) != cfg.id);
+                self.refreshed.retain(|k| ConnectionConfig::base_id(k) != cfg.id);
+                self.databases.remove(&cfg.id);
                 if d.is_new {
                     self.open_console(&cfg.id, None, ctx);
                 } else {
@@ -2006,6 +2771,43 @@ impl DataBugApp {
                                 }
                             }
                         }
+                        "find" => {
+                            if let Some(t) = self.tabs.get_mut(self.active) {
+                                t.editor.select(0..0);
+                                t.editor.open_find(true);
+                                t.editor.find.query = "o.".into();
+                                t.editor.find_step(true);
+                                t.editor.find_step(true);
+                            }
+                        }
+                        "multidb" => {
+                            let sample = self.tabs[self.active].conn_id.clone();
+                            let cat = self.catalog(&sample).cloned().unwrap_or_default();
+                            let mut pg = ConnectionConfig::new(DbKind::Postgres);
+                            pg.id = "pgdemo".into();
+                            pg.name = "Warehouse".into();
+                            pg.visible_databases = Some(vec!["analytics".into(), "billing".into()]);
+                            let mut ms = ConnectionConfig::new(DbKind::MsSql);
+                            ms.id = "msdemo".into();
+                            ms.name = "OpsHub".into();
+                            self.connections.push(pg.clone());
+                            self.connections.push(ms);
+                            self.rebuild_virtuals();
+                            for id in ["pgdemo", "pgdemo@analytics", "pgdemo@billing"] {
+                                self.catalogs.insert(id.into(), CatalogEntry { catalog: cat.clone(), generation: 1, loading: false, error: None });
+                                self.refreshed.insert(id.into());
+                            }
+                            self.databases.insert("pgdemo".into(), DbList { names: ["analytics", "billing", "postgres", "staging", "warehouse"].map(String::from).to_vec(), current: "postgres".into(), loading: false, error: None });
+                            self.disconnected.insert("msdemo".into());
+                            self.explorer.open_key("c:pgdemo");
+                            self.explorer.open_key("c:msdemo");
+                            self.explorer.open_key("d:pgdemo:analytics");
+                            self.explorer.open_key(format!("c:{sample}"));
+                        }
+                        "theme" => {
+                            self.settings.theme = ThemeKind::Midnight;
+                            self.theme_editor = true;
+                        }
                         "pg-schemas" => {
                             let id = self.connections.first().map(|c| c.id.clone()).unwrap_or_default();
                             self.apply(Action::SetSchemas(id.clone(), Some(vec!["public".into(), "analytics".into(), "reporting".into()])), ctx);
@@ -2147,6 +2949,19 @@ impl DataBugApp {
     }
 }
 
+fn ds_conn(ds: &Option<DbSearch>) -> String {
+    ds.as_ref().map(|d| d.conn_id.clone()).unwrap_or_default()
+}
+
+/// Plain-text search (not a pattern), optionally case-sensitive.
+fn search_regex(q: &str, case: bool) -> Option<regex::Regex> {
+    let q = q.trim();
+    if q.is_empty() {
+        return None;
+    }
+    regex::RegexBuilder::new(&regex::escape(q)).case_insensitive(!case).build().ok()
+}
+
 fn human_bytes(b: usize) -> String {
     if b < 1024 * 1024 {
         format!("{:.0} KB", b as f64 / 1024.0)
@@ -2193,13 +3008,17 @@ impl DataBugApp {
 
 impl eframe::App for DataBugApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let key = (self.settings.theme, self.settings.code_font_size);
+        let p = self.palette();
+        let key = (theme::fingerprint(&p), self.settings.theme.is_dark(), self.settings.code_font_size);
         if self.applied_theme != Some(key) {
-            theme::apply(ctx, key.0, key.1);
+            theme::apply(ctx, &p, key.1, key.2);
             self.applied_theme = Some(key);
         }
+        if self.theme_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            self.store.save_settings(&self.settings);
+            self.theme_dirty = false;
+        }
         self.sync_zoom(ctx);
-        let p = *palette(self.settings.theme);
         self.pump_events(ctx);
         self.drive_screenshot(ctx);
         self.shortcuts(ctx);
@@ -2213,6 +3032,8 @@ impl eframe::App for DataBugApp {
         let island = egui::Frame::new().fill(p.island).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(8));
         let mut actions = Vec::new();
         let width = self.settings.explorer_width;
+        let visible = self.visible_connections();
+        let connected: HashSet<String> = self.meta.keys().map(|k| ConnectionConfig::base_id(k).to_string()).chain(self.tabs.iter().filter(|t| t.session.is_some()).map(|t| ConnectionConfig::base_id(&t.conn_id).to_string())).collect();
         let views: HashMap<String, CatalogView> = self
             .catalogs
             .iter()
@@ -2227,7 +3048,8 @@ impl eframe::App for DataBugApp {
             .show(ctx, |ui| {
                 island.show(ui, |ui| {
                     ui.set_min_height(ui.available_height());
-                    let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &self.connections, &views);
+                    let cx = ExplorerCtx { connected: &connected, disconnected: &self.disconnected, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
+                    let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
                     // don't start another refresh while one is loading
                     acts.retain(|a| match a {
                         Action::Refresh(id) => !views.get(id).map(|e| e.loading).unwrap_or(false),
@@ -2301,14 +3123,25 @@ impl eframe::App for DataBugApp {
                         let entry = self.catalogs.get(&tab.conn_id);
                         let gen = entry.map(|e| e.generation).unwrap_or(0);
                         tab.editor.show(ui, &p, entry.map(|e| &e.catalog), gen, self.settings.auto_complete, self.settings.code_font_size);
+                        if let Some(q) = tab.editor.search_database.take() {
+                            actions.push(Action::SearchDatabase);
+                            self.pending_search = Some(q);
+                        }
                     }
                 });
             });
         });
 
         for a in actions {
+            if matches!(a, Action::SearchDatabase) {
+                let q = self.pending_search.take();
+                self.open_db_search(q);
+                continue;
+            }
             self.apply(a, ctx);
         }
+        self.db_search_window(ctx, &p);
+        self.theme_window(ctx, &p);
         self.confirm_window(ctx, &p);
         self.dialog_window(ctx, &p);
         self.modal_windows(ctx, &p);

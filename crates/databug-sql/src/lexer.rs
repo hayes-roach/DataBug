@@ -49,7 +49,7 @@ impl Token {
 
 /// Reserved and common keywords, uppercase and sorted for binary search.
 pub const KEYWORDS: &[&str] = &[
-    "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BEGIN", "BETWEEN", "BY", "CASCADE", "CASE",
+    "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BEGIN", "BETWEEN", "BY", "CALL", "CASCADE", "CASE",
     "CAST", "CHECK", "COLUMN", "COMMIT", "CONSTRAINT", "CREATE", "CROSS", "CURRENT_DATE",
     "CURRENT_TIMESTAMP", "DATABASE", "DECLARE", "DEFAULT", "DELETE", "DESC", "DESCRIBE", "DISTINCT",
     "DROP", "ELSE", "END", "EXCEPT", "EXEC", "EXECUTE", "EXISTS", "EXPLAIN", "FALSE", "FETCH",

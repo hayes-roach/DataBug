@@ -293,6 +293,12 @@ impl DbConnection for MsConn {
         Ok(())
     }
 
+    async fn list_databases(&mut self) -> anyhow::Result<(Vec<String>, String)> {
+        let names = collect(self, "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY CASE WHEN database_id <= 4 THEN 1 ELSE 0 END, name").await?;
+        let current = scalar(self, "SELECT DB_NAME()").await?.unwrap_or_default();
+        Ok((names.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect(), current))
+    }
+
     async fn introspect(&mut self) -> anyhow::Result<Catalog> {
         let rows = collect(self, INTROSPECT).await?;
         let schemas = collect(self, "SELECT name FROM sys.schemas WHERE schema_id < 16384 AND name NOT IN ('sys','INFORMATION_SCHEMA','guest') ORDER BY name").await?;
@@ -331,6 +337,22 @@ impl DbConnection for MsConn {
             };
             let table = matches!(kind, ObjectKind::Trigger | ObjectKind::ClrTrigger).then_some(parent).filter(|p| !p.is_empty());
             extras.objects.push((cell(&r, 0), DbObject { name: cell(&r, 1), kind, detail, ident: String::new(), table }));
+        }
+        // parameter lists for routines, e.g. "@id int, @name nvarchar OUTPUT"
+        let mut params: std::collections::HashMap<(String, String), String> = Default::default();
+        for r in collect(self, PARAMS).await.unwrap_or_default() {
+            let e = params.entry((cell(&r, 0), cell(&r, 1))).or_default();
+            if !e.is_empty() {
+                e.push_str(", ");
+            }
+            e.push_str(&format!("{} {}{}", cell(&r, 2), cell(&r, 3), if truthy(r.get(4).and_then(|v| v.as_deref())) { " OUTPUT" } else { "" }));
+        }
+        for (schema, o) in extras.objects.iter_mut() {
+            if matches!(o.kind, ObjectKind::Procedure | ObjectKind::Function | ObjectKind::TableFunction | ObjectKind::ClrProcedure | ObjectKind::ClrFunction | ObjectKind::ClrTableFunction) {
+                if let Some(p) = params.get(&(schema.clone(), o.name.clone())) {
+                    o.detail = p.clone();
+                }
+            }
         }
         let current = collect(self, "SELECT SCHEMA_NAME()").await?;
         let default = current.first().and_then(|r| r[0].clone()).unwrap_or_else(|| "dbo".into());
@@ -485,6 +507,11 @@ JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id JOIN sys.schemas rs
 const OBJECTS: &str = "SELECT SCHEMA_NAME(o.schema_id), o.name, o.type, ISNULL(OBJECT_NAME(o.parent_object_id), ''), ISNULL(sn.base_object_name, '') \
 FROM sys.objects o LEFT JOIN sys.synonyms sn ON sn.object_id = o.object_id \
 WHERE o.type IN ('P','PC','FN','IF','TF','FS','FT','AF','TR','TA','SO','SN') AND o.is_ms_shipped = 0";
+
+const PARAMS: &str = "SELECT SCHEMA_NAME(o.schema_id), o.name, p.name, TYPE_NAME(p.user_type_id), p.is_output \
+FROM sys.parameters p JOIN sys.objects o ON o.object_id = p.object_id \
+WHERE o.type IN ('P','PC','FN','IF','TF','FS','FT') AND o.is_ms_shipped = 0 AND p.parameter_id > 0 \
+ORDER BY o.object_id, p.parameter_id";
 
 #[cfg(test)]
 mod auth_tests {

@@ -13,6 +13,8 @@ pub enum Cmd {
     Execute { job: u64, stmts: Vec<String>, opts: ExecOptions },
     Explain { job: u64, stmt: String, analyze: bool },
     Introspect,
+    /// List the databases on the server.
+    ListDatabases,
     /// Fetch definitions of views, routines and other objects.
     Sources { req: u64, schema: String, items: Vec<SourceRef> },
 }
@@ -24,6 +26,8 @@ pub enum Ev {
     /// The connection was dropped (after a forced cancel) and will reopen on demand.
     Dropped,
     Catalog(Result<Catalog, String>),
+    /// Databases on the server and the one this connection uses.
+    Databases(Result<(Vec<String>, String), String>),
     Query { job: u64, idx: usize, ev: QueryEvent },
     StmtDone { job: u64, idx: usize, elapsed: Duration, error: Option<String> },
     JobDone { job: u64 },
@@ -68,6 +72,11 @@ impl Session {
                 self.cancel_requested = None;
             }
         }
+    }
+
+    /// Abandon whatever is running (used when disconnecting).
+    pub fn abort(&self) {
+        self.abort.notify_waiters();
     }
 
     pub fn job_finished(&mut self) {
@@ -115,6 +124,7 @@ async fn worker(
                         }
                         Cmd::Explain { job, .. } => send(Ev::Plan { job, result: Err(msg), elapsed: Duration::ZERO }),
                         Cmd::Introspect => send(Ev::Catalog(Err(msg))),
+                        Cmd::ListDatabases => send(Ev::Databases(Err(msg))),
                         Cmd::Sources { req, items, .. } => send(Ev::Sources { req, results: items.into_iter().map(|i| (i, Err(msg.clone()))).collect() }),
                     }
                     continue;
@@ -178,6 +188,10 @@ async fn worker(
             Cmd::Introspect => {
                 let r = c.introspect().await.map_err(|e| format!("{e:#}"));
                 send(Ev::Catalog(r));
+            }
+            Cmd::ListDatabases => {
+                let r = c.list_databases().await.map_err(|e| format!("{e:#}"));
+                send(Ev::Databases(r));
             }
             Cmd::Sources { req, schema, items } => {
                 let mut results = Vec::with_capacity(items.len());

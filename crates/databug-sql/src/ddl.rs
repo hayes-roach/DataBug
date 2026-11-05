@@ -407,6 +407,102 @@ pub fn insert_batches(d: Dialect, target: &str, columns: &[String], numeric: &[b
         .collect()
 }
 
+/// Split a parameter list on commas outside parentheses
+/// (`a numeric(10,2), b text` → two parameters).
+pub fn split_params(list: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in list.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                if !cur.trim().is_empty() {
+                    out.push(cur.trim().to_string());
+                }
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(ch);
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// A ready-to-edit statement that runs a procedure or function: `EXEC` on
+/// SQL Server, `CALL` for PostgreSQL and MySQL procedures, and `SELECT` for
+/// functions. Each parameter gets a `NULL` placeholder with its declaration
+/// as a comment. `params` is the routine's parameter list as introspected.
+pub fn exec_template(d: Dialect, schema: &str, name: &str, kind: ObjectKind, params: &str) -> Option<String> {
+    let target = qualified(d, schema, name);
+    let mut params = split_params(params);
+    let is_proc = matches!(kind, ObjectKind::Procedure | ObjectKind::ClrProcedure);
+    let is_table_fn = matches!(kind, ObjectKind::TableFunction | ObjectKind::ClrTableFunction);
+    let is_fn = matches!(kind, ObjectKind::Function | ObjectKind::ClrFunction | ObjectKind::Aggregate) || is_table_fn;
+    if !is_proc && !is_fn {
+        return None;
+    }
+    if matches!(d, Dialect::Sqlite | Dialect::Mongo) {
+        return None;
+    }
+    if is_fn {
+        // OUT parameters are results, not arguments, when calling a function
+        params.retain(|p| {
+            let u = p.to_ascii_uppercase();
+            !(u.starts_with("OUT ") || u.ends_with(" OUTPUT"))
+        });
+    }
+    let args = |named: bool| -> String {
+        if params.is_empty() {
+            return String::new();
+        }
+        let n = params.len();
+        let lines: Vec<String> = params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let sep = if i + 1 < n { "," } else { "" };
+                let value = if named {
+                    let pname = p.split_whitespace().next().unwrap_or("");
+                    if pname.starts_with('@') {
+                        format!("{pname} = NULL")
+                    } else {
+                        "NULL".to_string()
+                    }
+                } else {
+                    "NULL".to_string()
+                };
+                format!("    {value}{sep}  -- {p}")
+            })
+            .collect();
+        format!("\n{}\n", lines.join("\n"))
+    };
+    let sql = match (d, is_proc) {
+        (Dialect::MsSql, true) => {
+            if params.is_empty() {
+                format!("EXEC {target};")
+            } else {
+                // named arguments, each on its own line; the last comment sits after `;`
+                let a = args(true);
+                let a = a.trim_end_matches('\n');
+                match a.rfind("  -- ") {
+                    Some(i) => format!("EXEC {target}{};{}", &a[..i], &a[i..]),
+                    None => format!("EXEC {target}{a};"),
+                }
+            }
+        }
+        (_, true) => format!("CALL {target}({});", args(false)),
+        (_, false) if is_table_fn => format!("SELECT * FROM {target}({});", args(false)),
+        (_, false) => format!("SELECT {target}({});", args(false)),
+    };
+    Some(sql)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +612,16 @@ mod tests {
         let rows = vec![vec![Some("1".into()), Some("it's".into())], vec![Some("2".into()), None]];
         let s = insert_batches(Dialect::Postgres, "t", &["id".into(), "name".into()], &[true, false], &rows, 500);
         assert_eq!(s, vec!["INSERT INTO t (id, name) VALUES\n(1, 'it''s'),\n(2, NULL)"]);
+    }
+
+    #[test]
+    fn exec_templates() {
+        assert_eq!(exec_template(Dialect::MsSql, "dbo", "usp_refresh", ObjectKind::Procedure, "").unwrap(), "EXEC dbo.usp_refresh;");
+        let t = exec_template(Dialect::MsSql, "etl", "load", ObjectKind::Procedure, "@id int, @amount decimal(10,2), @out nvarchar OUTPUT").unwrap();
+        assert_eq!(t, "EXEC etl.load\n    @id = NULL,  -- @id int\n    @amount = NULL,  -- @amount decimal(10,2)\n    @out = NULL;  -- @out nvarchar OUTPUT");
+        assert_eq!(exec_template(Dialect::Postgres, "public", "archive", ObjectKind::Procedure, "days integer").unwrap(), "CALL public.archive(\n    NULL  -- days integer\n);");
+        assert_eq!(exec_template(Dialect::Postgres, "public", "f", ObjectKind::TableFunction, "").unwrap(), "SELECT * FROM public.f();");
+        assert_eq!(exec_template(Dialect::MySql, "shop", "total", ObjectKind::Function, "a INT, OUT b INT").unwrap(), "SELECT shop.total(\n    NULL  -- a INT\n);");
+        assert!(exec_template(Dialect::Postgres, "public", "t", ObjectKind::Table, "").is_none());
     }
 }

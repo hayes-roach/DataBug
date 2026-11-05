@@ -4,7 +4,7 @@
 
 use crate::icons::{self, Logos};
 use crate::theme::{bold, connection_color, Palette};
-use databug_core::{Catalog, ConnectionConfig, DbKind, ObjectKind, SchemaInfo, TableInfo};
+use databug_core::{Catalog, ConnectionConfig, DbKind, DbObject, ObjectKind, SchemaInfo, TableInfo};
 use databug_drivers::SourceRef;
 use databug_sql::rename::RenameTarget;
 use eframe::egui::{self, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke};
@@ -21,7 +21,6 @@ pub enum Action {
     Copy(String),
     Insert(String),
     NewConnection,
-    OpenSample,
     EditTable(String, String, String),
     NewTable(String, String),
     EditObject(String, String, SourceRef),
@@ -32,6 +31,44 @@ pub enum Action {
     Rename(String, String, RenameTarget),
     /// Change which schemas the explorer shows (`None` = all).
     SetSchemas(String, Option<Vec<String>>),
+    /// Change which databases of a server the explorer shows (`None` = only the connection's own).
+    SetDatabases(String, Option<Vec<String>>),
+    /// Fetch the list of databases on a connection's server.
+    LoadDatabases(String),
+    /// Close every session of a connection but keep it in the list.
+    Disconnect(String),
+    Connect(String),
+    /// Move a connection to this position in the visible list (drag and drop).
+    MoveConn(String, usize),
+    /// Open an EXEC / CALL / SELECT template for a routine.
+    ExecRoutine(String, String, DbObject),
+    /// Open "Find in database".
+    SearchDatabase,
+    SwitchProject(Option<String>),
+    /// Create (id `None`) or rename a project.
+    SaveProject(Option<String>, String),
+    DeleteProject(String),
+    AddToProject(String, String),
+    RemoveFromProject(String),
+}
+
+/// Databases on a connection's server, as listed by the driver.
+pub struct DbList {
+    pub names: Vec<String>,
+    pub current: String,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+/// Everything about connections the explorer shows beyond their config.
+pub struct ExplorerCtx<'a> {
+    /// Connections with an open session.
+    pub connected: &'a HashSet<String>,
+    /// Connections the user disconnected.
+    pub disconnected: &'a HashSet<String>,
+    pub databases: &'a HashMap<String, DbList>,
+    pub projects: &'a [crate::store::Project],
+    pub current_project: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -44,6 +81,14 @@ pub struct ExplorerState {
     /// Open the schema picker for this connection on the next frame.
     picker_request: Option<String>,
     picker_search: String,
+    /// Open the database picker for this connection on the next frame.
+    db_picker_request: Option<String>,
+    db_picker_search: String,
+    /// Connection being dragged to a new position.
+    dragging: Option<String>,
+    /// Project name being edited: (project id or None for a new one, name).
+    project_edit: Option<(Option<String>, String)>,
+    scroll_to_selected: bool,
 }
 
 impl ExplorerState {
@@ -55,6 +100,24 @@ impl ExplorerState {
 
     pub fn open_key(&mut self, key: impl Into<String>) {
         self.open.insert(key.into());
+    }
+
+    /// Expand the path to an object and select it.
+    pub fn reveal_object(&mut self, conn_id: &str, base_id: &str, schema: &str, group: Option<ObjectKind>, key: String) {
+        self.open.insert(format!("c:{base_id}"));
+        if conn_id != base_id {
+            if let Some((_, db)) = conn_id.split_once('@') {
+                self.open.insert(format!("d:{base_id}:{db}"));
+            }
+        } else {
+            self.open.insert(format!("d:{base_id}:"));
+        }
+        self.open.insert(format!("s:{conn_id}:{schema}"));
+        if let Some(k) = group {
+            self.open.insert(format!("g:{conn_id}:{schema}:{k:?}"));
+        }
+        self.selected = Some(key);
+        self.scroll_to_selected = true;
     }
 }
 
@@ -74,6 +137,7 @@ struct RowOut {
 
 enum Glyph {
     Engine(DbKind, [u8; 3]),
+    Database,
     Schema,
     Group(ObjectKind),
     Kind(ObjectKind),
@@ -86,8 +150,17 @@ const ROW_H: f32 = 22.0;
 
 #[allow(clippy::too_many_arguments)]
 fn row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, key: &str, depth: usize, expandable: bool, glyph: Glyph, label: &str, detail: &str, editable: bool, strong: bool) -> RowOut {
+    row_ex(ui, p, st, logos, key, depth, expandable, glyph, label, detail, editable, strong, Sense::click(), false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, key: &str, depth: usize, expandable: bool, glyph: Glyph, label: &str, detail: &str, editable: bool, strong: bool, sense: Sense, dim: bool) -> RowOut {
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ROW_H), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ROW_H), sense);
+    if st.scroll_to_selected && st.selected.as_deref() == Some(key) {
+        resp.scroll_to_me(Some(egui::Align::Center));
+        st.scroll_to_selected = false;
+    }
     let selected = st.selected.as_deref() == Some(key);
     let open = st.open.contains(key);
     let painter = ui.painter_at(rect.expand2(egui::vec2(0.0, 0.0)));
@@ -117,6 +190,13 @@ fn row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, ke
             painter.circle_filled(dot, 3.6, p.island);
             painter.circle_filled(dot, 2.6, connection_color(color));
         }
+        Glyph::Database => {
+            let c = icon.center();
+            let col = p.syn_function;
+            painter.rect_stroke(Rect::from_center_size(c, egui::vec2(10.0, 11.0)), CornerRadius::same(3), Stroke::new(1.3_f32, col), egui::StrokeKind::Inside);
+            painter.line_segment([c + egui::vec2(-5.0, -1.5), c + egui::vec2(5.0, -1.5)], Stroke::new(1.0_f32, col));
+            painter.line_segment([c + egui::vec2(-5.0, 1.8), c + egui::vec2(5.0, 1.8)], Stroke::new(1.0_f32, col));
+        }
         Glyph::Schema => {
             painter.add(egui::Shape::convex_polygon(
                 vec![icon.center() + egui::vec2(0.0, -5.5), icon.center() + egui::vec2(5.0, 0.0), icon.center() + egui::vec2(0.0, 5.5), icon.center() + egui::vec2(-5.0, 0.0)],
@@ -138,7 +218,13 @@ fn row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, ke
     let text_x = icon.right() + 7.0;
     let avail = (rect.right() - right_pad - text_x).max(10.0);
     let font = if strong { bold(13.0) } else { FontId::proportional(12.8) };
-    let color = if strong || selected { p.text } else { Color32::from_rgba_unmultiplied(p.text.r(), p.text.g(), p.text.b(), 225) };
+    let color = if dim {
+        p.muted
+    } else if strong || selected {
+        p.text
+    } else {
+        Color32::from_rgba_unmultiplied(p.text.r(), p.text.g(), p.text.b(), 225)
+    };
     let g = ui.painter().layout(label.to_string(), font, color, f32::INFINITY);
     let label_w = g.size().x.min(avail);
     painter.with_clip_rect(Rect::from_min_max(egui::pos2(text_x, rect.top()), egui::pos2(text_x + avail, rect.bottom()))).galley(egui::pos2(text_x, rect.center().y - g.size().y / 2.0), g, color);
@@ -179,7 +265,7 @@ fn is_open(st: &ExplorerState, key: &str, filtering: bool) -> bool {
     filtering || st.open.contains(key)
 }
 
-pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, connections: &[ConnectionConfig], catalogs: &HashMap<String, CatalogView<'_>>) -> Vec<Action> {
+pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, connections: &[ConnectionConfig], catalogs: &HashMap<String, CatalogView<'_>>, cx: &ExplorerCtx<'_>) -> Vec<Action> {
     let mut actions = Vec::new();
     ui.horizontal(|ui| {
         ui.label(RichText::new("Database explorer").font(bold(13.0)));
@@ -187,13 +273,17 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             if ui.small_button("+").on_hover_text("New connection").clicked() {
                 actions.push(Action::NewConnection);
             }
+            if ui.small_button("Find").on_hover_text("Find in database: tables, columns, routines, definitions and data  (Ctrl/⌘ + F outside the editor)").clicked() {
+                actions.push(Action::SearchDatabase);
+            }
         });
     });
+    project_bar(ui, p, st, cx, &mut actions);
     ui.add_space(2.0);
     ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text("🔍  Filter objects").desired_width(f32::INFINITY));
     ui.add_space(4.0);
     if let Some(id) = st.reveal.take() {
-        st.open.insert(format!("c:{id}"));
+        st.open.insert(format!("c:{}", ConnectionConfig::base_id(&id)));
     }
     let filter = st.filter.to_lowercase();
     let filtering = !filter.is_empty();
@@ -202,41 +292,72 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
         if connections.is_empty() {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No connections yet").color(p.muted));
+                if cx.current_project.is_some() {
+                    ui.label(RichText::new("No connections in this project").color(p.muted));
+                    ui.label(RichText::new("New connections are added to the current project").size(11.0).color(p.faint));
+                } else {
+                    ui.label(RichText::new("No connections yet").color(p.muted));
+                }
                 ui.add_space(6.0);
                 if ui.button("New connection").clicked() {
                     actions.push(Action::NewConnection);
                 }
-                if ui.button("Open sample database").clicked() {
-                    actions.push(Action::OpenSample);
-                }
             });
         }
+        let mut headers: Vec<Rect> = Vec::new();
         for cfg in connections {
             let ck = format!("c:{}", cfg.id);
             let view = catalogs.get(&cfg.id);
-            let detail = match cfg.kind {
+            let disconnected = cx.disconnected.contains(&cfg.id);
+            let connected = cx.connected.contains(&cfg.id);
+            let engine = match cfg.kind {
                 DbKind::Postgres => "postgres",
                 DbKind::MySql => "mysql",
                 DbKind::MsSql => "sql server",
                 DbKind::Sqlite => "sqlite",
                 DbKind::MongoDb => "mongodb",
             };
-            let r = row(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, cfg.color), &cfg.name, detail, false, true);
-            if r.double {
-                actions.push(Action::NewConsole(cfg.id.clone()));
+            let detail = if disconnected {
+                "disconnected".to_string()
+            } else if connected {
+                format!("{engine} · connected")
+            } else {
+                engine.to_string()
+            };
+            let sense = if filtering { Sense::click() } else { Sense::click_and_drag() };
+            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, cfg.color), &cfg.name, &detail, false, true, sense, disconnected);
+            headers.push(r.resp.rect);
+            if connected && !disconnected {
+                // green "live" dot at the right edge of the row
+                let c = egui::pos2(r.resp.rect.right() - 9.0, r.resp.rect.center().y);
+                ui.painter().circle_filled(c, 3.0, p.success);
             }
-            if r.clicked && view.is_none() {
+            if r.resp.drag_started() {
+                st.dragging = Some(cfg.id.clone());
+            }
+            if r.double {
+                actions.push(if disconnected { Action::Connect(cfg.id.clone()) } else { Action::NewConsole(cfg.id.clone()) });
+            }
+            if r.clicked && view.is_none() && !disconnected {
                 actions.push(Action::Refresh(cfg.id.clone()));
             }
+            let dbs = cx.databases.get(&cfg.id);
+            let multi_db = multi_db(cfg, dbs);
+            let primary = primary_db(cfg, dbs);
             let default_schema = view.as_ref().map(|v| v.catalog.default_schema.clone()).unwrap_or_default();
             let multi_schema = view.map(|v| v.catalog.schemas.len() > 1).unwrap_or(false);
             let mut st_picker = false;
-            r.resp.on_hover_text(cfg.display_target()).context_menu(|ui| {
-                for (label, a) in [
-                    ("New console", Action::NewConsole(cfg.id.clone())),
-                    ("Refresh schema", Action::Refresh(cfg.id.clone())),
-                ] {
+            let mut db_picker = false;
+            let hover = if disconnected { format!("{}\nDisconnected — double-click or right-click → Connect", cfg.display_target()) } else { format!("{}\nDrag to reorder", cfg.display_target()) };
+            r.resp.on_hover_text(hover).context_menu(|ui| {
+                if disconnected {
+                    if ui.button(RichText::new("Connect").color(p.success)).clicked() {
+                        actions.push(Action::Connect(cfg.id.clone()));
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                }
+                for (label, a) in [("New console", Action::NewConsole(cfg.id.clone())), ("Refresh schema", Action::Refresh(cfg.id.clone()))] {
                     if ui.button(label).clicked() {
                         actions.push(a);
                         ui.close_menu();
@@ -261,19 +382,40 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                     actions.push(Action::ImportCsv(cfg.id.clone(), default_schema.clone(), None));
                     ui.close_menu();
                 }
-                if multi_schema {
-                    if ui.button("Choose schemas…").clicked() {
-                        st_picker = true;
-                        ui.close_menu();
-                    }
+                if cfg.supports_databases() && ui.button("Choose databases…").clicked() {
+                    db_picker = true;
+                    ui.close_menu();
+                }
+                if multi_schema && !multi_db && ui.button("Choose schemas…").clicked() {
+                    st_picker = true;
+                    ui.close_menu();
                 }
                 ui.separator();
+                if !disconnected && ui.button("Disconnect").on_hover_text("Close its sessions; the connection stays in the list").clicked() {
+                    actions.push(Action::Disconnect(cfg.id.clone()));
+                    ui.close_menu();
+                }
                 if ui.button("Edit connection…").clicked() {
                     actions.push(Action::EditConn(cfg.id.clone()));
                     ui.close_menu();
                 }
                 if ui.button("Duplicate").clicked() {
                     actions.push(Action::DuplicateConn(cfg.id.clone()));
+                    ui.close_menu();
+                }
+                if !cx.projects.is_empty() {
+                    ui.menu_button("Add to project", |ui| {
+                        for pr in cx.projects {
+                            let has = pr.connections.iter().any(|c| c == &cfg.id);
+                            if ui.add_enabled(!has, egui::Button::new(&pr.name)).clicked() {
+                                actions.push(Action::AddToProject(cfg.id.clone(), pr.id.clone()));
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                }
+                if cx.current_project.is_some() && ui.button("Remove from project").on_hover_text("Keeps the connection; it stays in “All connections”").clicked() {
+                    actions.push(Action::RemoveFromProject(cfg.id.clone()));
                     ui.close_menu();
                 }
                 if ui.button(RichText::new("Delete connection").color(p.danger)).clicked() {
@@ -285,68 +427,369 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 st.open.insert(ck.clone());
                 st.picker_request = Some(cfg.id.clone());
             }
+            if db_picker {
+                st.open.insert(ck.clone());
+                st.db_picker_request = Some(cfg.id.clone());
+                if dbs.map(|d| d.names.is_empty() && !d.loading).unwrap_or(true) {
+                    actions.push(Action::LoadDatabases(cfg.id.clone()));
+                }
+            }
             if !is_open(st, &ck, filtering) {
                 continue;
             }
-            let Some(v) = view else {
-                ui.label(RichText::new("    Loading schema…").size(12.0).color(p.muted));
-                continue;
-            };
-            if let Some(err) = v.error {
+            if disconnected {
                 ui.horizontal(|ui| {
                     ui.add_space(30.0);
-                    ui.label(RichText::new(err.chars().take(140).collect::<String>()).size(11.5).color(p.danger));
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(30.0);
-                    if ui.small_button("Retry").clicked() {
-                        actions.push(Action::Refresh(cfg.id.clone()));
+                    ui.label(RichText::new("Disconnected").size(11.5).color(p.faint));
+                    if ui.small_button("Connect").clicked() {
+                        actions.push(Action::Connect(cfg.id.clone()));
                     }
-                });
-            }
-            if v.catalog.schemas.is_empty() && v.loading {
-                ui.label(RichText::new("      Loading schema…").size(12.0).color(p.muted));
-            }
-            let single = v.catalog.schemas.len() == 1;
-            if !single && !v.catalog.schemas.is_empty() {
-                schema_picker(ui, p, st, cfg, v.catalog, &mut actions);
-            }
-            for s in &v.catalog.schemas {
-                if !single && !cfg.schema_visible(&s.name) {
-                    continue;
-                }
-                if filtering && !schema_matches(s, &filter) {
-                    continue;
-                }
-                let depth = if single {
-                    1
-                } else {
-                    let sk = format!("s:{}:{}", cfg.id, s.name);
-                    let is_default = s.name == v.catalog.default_schema;
-                    if is_default && !st.open.contains(&format!("{sk}:seen")) {
-                        st.open.insert(sk.clone());
-                        st.open.insert(format!("{sk}:seen"));
-                    }
-                    let n = s.tables.len() + s.objects.len();
-                    let r = row(ui, p, st, logos, &sk, 1, true, Glyph::Schema, &s.name, &if n == 0 { "empty".to_string() } else { n.to_string() }, false, false);
-                    schema_menu(r.resp, cfg, &s.name, &mut actions);
-                    if !is_open(st, &sk, filtering) {
-                        continue;
-                    }
-                    2
-                };
-                schema_body(ui, p, st, logos, cfg, s, depth, &filter, &mut actions);
-            }
-            if v.catalog.introspected_at > 0 && !filtering {
-                ui.horizontal(|ui| {
-                    ui.add_space(30.0);
-                    ui.label(RichText::new(format!("{} objects · {}", v.catalog.table_count(), v.age)).size(10.5).color(p.faint));
                 });
                 ui.add_space(2.0);
+                continue;
+            }
+            if cfg.supports_databases() {
+                db_picker_row(ui, p, st, cfg, dbs, &primary, &mut actions);
+            }
+            if !multi_db {
+                conn_body(ui, p, st, logos, cfg, view, 0, &filter, &mut actions);
+                continue;
+            }
+            // one node per database: the connection's own first, then the others
+            let mut list = vec![primary.clone()];
+            for d in cfg.visible_databases.iter().flatten() {
+                if !list.iter().any(|x| x.eq_ignore_ascii_case(d)) {
+                    list.push(d.clone());
+                }
+            }
+            for db in list {
+                let is_primary = db == primary;
+                let dk = format!("d:{}:{}", cfg.id, if is_primary { "" } else { db.as_str() });
+                let vcfg = if is_primary { cfg.clone() } else { cfg.for_database(&db) };
+                let vview = catalogs.get(&vcfg.id);
+                if is_primary && !st.open.contains(&format!("{dk}:seen")) {
+                    st.open.insert(dk.clone());
+                    st.open.insert(format!("{dk}:seen"));
+                }
+                if filtering && !vview.map(|v| v.catalog.schemas.iter().any(|s| schema_matches(s, &filter))).unwrap_or(false) {
+                    continue;
+                }
+                let detail = match vview {
+                    Some(v) if v.loading => "loading…".to_string(),
+                    Some(v) => format!("{}{}", if is_primary { "default · " } else { "" }, v.catalog.table_count()),
+                    None if is_primary => "default".to_string(),
+                    None => String::new(),
+                };
+                let label = if db.is_empty() { "(default database)".to_string() } else { db.clone() };
+                let r = row(ui, p, st, logos, &dk, 1, true, Glyph::Database, &label, &detail, false, false);
+                if (r.clicked || r.double) && vview.is_none() {
+                    actions.push(Action::Refresh(vcfg.id.clone()));
+                }
+                let vid = vcfg.id.clone();
+                let dbname = db.clone();
+                let base = cfg.id.clone();
+                let visible = cfg.visible_databases.clone().unwrap_or_default();
+                r.resp.context_menu(|ui| {
+                    if ui.button("New console").clicked() {
+                        actions.push(Action::NewConsole(vid.clone()));
+                        ui.close_menu();
+                    }
+                    if ui.button("Refresh schema").clicked() {
+                        actions.push(Action::Refresh(vid.clone()));
+                        ui.close_menu();
+                    }
+                    if !is_primary && ui.button("Hide database").clicked() {
+                        let rest: Vec<String> = visible.iter().filter(|d| **d != dbname).cloned().collect();
+                        actions.push(Action::SetDatabases(base.clone(), if rest.is_empty() { None } else { Some(rest) }));
+                        ui.close_menu();
+                    }
+                });
+                if !is_open(st, &dk, filtering) {
+                    continue;
+                }
+                if vview.is_none() && !st.open.contains(&format!("{dk}:req")) {
+                    // opened for the first time: load its schema
+                    st.open.insert(format!("{dk}:req"));
+                    actions.push(Action::Refresh(vcfg.id.clone()));
+                }
+                conn_body(ui, p, st, logos, &vcfg, vview, 1, &filter, &mut actions);
+            }
+        }
+        // drag and drop to reorder connections
+        if let Some(d) = st.dragging.clone() {
+            let released = ui.input(|i| i.pointer.any_released() || !i.pointer.any_down());
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                let idx = headers.iter().filter(|r| r.center().y < pos.y).count();
+                let y = if idx < headers.len() { headers[idx].top() } else { ui.min_rect().bottom() };
+                let x = ui.min_rect().x_range();
+                ui.painter().hline(x, y, Stroke::new(2.0_f32, p.accent));
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if released {
+                    actions.push(Action::MoveConn(d, idx));
+                }
+            }
+            if released {
+                st.dragging = None;
             }
         }
     });
     actions
+}
+
+fn primary_db(cfg: &ConnectionConfig, dbs: Option<&DbList>) -> String {
+    let own = cfg.effective_database();
+    if !own.is_empty() {
+        return own;
+    }
+    dbs.map(|d| d.current.clone()).unwrap_or_default()
+}
+
+/// Whether a connection shows database nodes (it has extra databases picked).
+fn multi_db(cfg: &ConnectionConfig, dbs: Option<&DbList>) -> bool {
+    if !cfg.supports_databases() {
+        return false;
+    }
+    let primary = primary_db(cfg, dbs);
+    cfg.visible_databases.as_ref().map(|l| l.iter().any(|d| !d.eq_ignore_ascii_case(&primary))).unwrap_or(false)
+}
+
+/// The project switcher above the tree: "All connections" or a named
+/// project, plus new / rename / delete.
+fn project_bar(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cx: &ExplorerCtx<'_>, actions: &mut Vec<Action>) {
+    let current = cx.current_project.and_then(|id| cx.projects.iter().find(|pr| pr.id == id));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let label = current.map(|pr| pr.name.clone()).unwrap_or_else(|| "All connections".into());
+        ui.menu_button(RichText::new(format!("Project: {label}  ▼")).size(12.0).color(p.muted), |ui| {
+            ui.set_min_width(200.0);
+            ui.label(RichText::new("Projects").font(bold(12.0)));
+            if ui.selectable_label(current.is_none(), "All connections").clicked() {
+                actions.push(Action::SwitchProject(None));
+                ui.close_menu();
+            }
+            for pr in cx.projects {
+                let on = current.map(|c| c.id == pr.id).unwrap_or(false);
+                if ui.selectable_label(on, format!("{}  ({})", pr.name, pr.connections.len())).clicked() {
+                    actions.push(Action::SwitchProject(Some(pr.id.clone())));
+                    ui.close_menu();
+                }
+            }
+            ui.separator();
+            if ui.button("New project…").clicked() {
+                st.project_edit = Some((None, String::new()));
+                ui.close_menu();
+            }
+            if let Some(pr) = current {
+                if ui.button("Rename project…").clicked() {
+                    st.project_edit = Some((Some(pr.id.clone()), pr.name.clone()));
+                    ui.close_menu();
+                }
+                if ui.button(RichText::new("Delete project").color(p.danger)).on_hover_text("Its connections stay in “All connections”").clicked() {
+                    actions.push(Action::DeleteProject(pr.id.clone()));
+                    ui.close_menu();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Each project keeps its own list of connections");
+    });
+    let mut done: Option<bool> = None;
+    if let Some((_, name)) = st.project_edit.as_mut() {
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(name).hint_text("Project name").desired_width((ui.available_width() - 90.0).max(60.0)));
+            if !r.has_focus() && !r.lost_focus() && name.is_empty() {
+                r.request_focus();
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                done = Some(true);
+            }
+            if ui.small_button("Save").clicked() {
+                done = Some(true);
+            }
+            if ui.small_button("✕").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                done = Some(false);
+            }
+        });
+    }
+    if let Some(save) = done {
+        if let Some((id, name)) = st.project_edit.take() {
+            if save && !name.trim().is_empty() {
+                actions.push(Action::SaveProject(id, name.trim().to_string()));
+            }
+        }
+    }
+}
+
+/// The "2 of 9 databases" row under a connection, and its checklist.
+fn db_picker_row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &ConnectionConfig, dbs: Option<&DbList>, primary: &str, actions: &mut Vec<Action>) {
+    let requested = st.db_picker_request.as_deref() == Some(cfg.id.as_str());
+    let Some(list) = dbs.filter(|d| d.names.len() > 1 || d.loading || d.error.is_some() || requested) else { return };
+    let shown: Vec<String> = {
+        let mut v = vec![primary.to_string()];
+        for d in cfg.visible_databases.iter().flatten() {
+            if !v.iter().any(|x| x.eq_ignore_ascii_case(d)) {
+                v.push(d.clone());
+            }
+        }
+        v
+    };
+    let total = list.names.len();
+    let text = if list.loading && total == 0 {
+        "Loading databases…".to_string()
+    } else if let Some(e) = &list.error {
+        format!("Couldn't list databases: {}", e.chars().take(60).collect::<String>())
+    } else {
+        format!("{} of {total} databases", shown.iter().filter(|d| list.names.iter().any(|n| n.eq_ignore_ascii_case(d))).count().max(1))
+    };
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 20.0), Sense::click());
+    let popup_id = ui.id().with(("db-picker", &cfg.id));
+    let painter = ui.painter_at(rect);
+    let open = ui.memory(|m| m.is_popup_open(popup_id));
+    let x = rect.left() + 26.0;
+    let color = if list.error.is_some() { p.danger } else if resp.hovered() || open { p.accent } else { p.muted };
+    let g = painter.layout_no_wrap(text, FontId::proportional(11.5), color);
+    let pill = Rect::from_min_size(egui::pos2(x - 6.0, rect.center().y - g.size().y / 2.0 - 2.0), g.size() + egui::vec2(26.0, 4.0));
+    if resp.hovered() || open {
+        painter.rect_filled(pill, CornerRadius::same(4), p.hover);
+    }
+    let arrow = Rect::from_center_size(egui::pos2(x + g.size().x + 9.0, rect.center().y), egui::vec2(10.0, 10.0));
+    painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, color);
+    icons::paint_arrow(&painter, arrow, true, color);
+    let resp = resp.on_hover_text("Choose which databases on this server the explorer shows");
+    if resp.clicked() || (requested && total > 0) {
+        st.db_picker_request = None;
+        st.db_picker_search.clear();
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+        if list.error.is_some() {
+            actions.push(Action::LoadDatabases(cfg.id.clone()));
+        }
+    }
+    egui::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_min_width(250.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Show databases").font(bold(12.5)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("⟳").on_hover_text("Reload the list").clicked() {
+                    actions.push(Action::LoadDatabases(cfg.id.clone()));
+                }
+            });
+        });
+        ui.add_space(2.0);
+        if total > 8 {
+            ui.add(egui::TextEdit::singleline(&mut st.db_picker_search).hint_text("Filter").desired_width(f32::INFINITY));
+        }
+        ui.horizontal(|ui| {
+            if ui.small_button("All").clicked() {
+                actions.push(Action::SetDatabases(cfg.id.clone(), Some(list.names.clone())));
+            }
+            if ui.small_button("Default only").on_hover_text(format!("Only {primary}")).clicked() {
+                actions.push(Action::SetDatabases(cfg.id.clone(), None));
+            }
+        });
+        ui.separator();
+        let search = st.db_picker_search.to_lowercase();
+        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+            for name in &list.names {
+                if !search.is_empty() && !name.to_lowercase().contains(&search) {
+                    continue;
+                }
+                let is_primary = name.eq_ignore_ascii_case(primary);
+                let mut on = is_primary || shown.iter().any(|d| d.eq_ignore_ascii_case(name));
+                ui.horizontal(|ui| {
+                    let r = ui.add_enabled(!is_primary, egui::Checkbox::new(&mut on, name.as_str()));
+                    if r.changed() {
+                        let mut l: Vec<String> = shown.iter().filter(|d| !d.eq_ignore_ascii_case(primary)).cloned().collect();
+                        if on {
+                            l.push(name.clone());
+                        } else {
+                            l.retain(|d| !d.eq_ignore_ascii_case(name));
+                        }
+                        actions.push(Action::SetDatabases(cfg.id.clone(), if l.is_empty() { None } else { Some(l) }));
+                    }
+                    if is_primary {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new("default").size(11.0).color(p.faint));
+                        });
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// Schemas and objects of one database (`d0` = extra depth when the
+/// database has its own node).
+#[allow(clippy::too_many_arguments)]
+fn conn_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, cfg: &ConnectionConfig, view: Option<&CatalogView<'_>>, d0: usize, filter: &str, actions: &mut Vec<Action>) {
+    let filtering = !filter.is_empty();
+    let pad = 30.0 + d0 as f32 * 14.0;
+    let Some(v) = view else {
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            ui.label(RichText::new("Loading schema…").size(12.0).color(p.muted));
+        });
+        return;
+    };
+    if let Some(err) = v.error {
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            ui.label(RichText::new(err.chars().take(140).collect::<String>()).size(11.5).color(p.danger));
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            if ui.small_button("Retry").clicked() {
+                actions.push(Action::Refresh(cfg.id.clone()));
+            }
+        });
+    }
+    if v.catalog.schemas.is_empty() && v.loading {
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            ui.label(RichText::new("Loading schema…").size(12.0).color(p.muted));
+        });
+    }
+    let single = v.catalog.schemas.len() == 1;
+    if !single && !v.catalog.schemas.is_empty() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(d0 as f32 * 14.0);
+            ui.vertical(|ui| schema_picker(ui, p, st, cfg, v.catalog, actions));
+        });
+    }
+    for s in &v.catalog.schemas {
+        if !single && !cfg.schema_visible(&s.name) {
+            continue;
+        }
+        if filtering && !schema_matches(s, filter) {
+            continue;
+        }
+        let depth = if single {
+            1 + d0
+        } else {
+            let sk = format!("s:{}:{}", cfg.id, s.name);
+            let is_default = s.name == v.catalog.default_schema;
+            if is_default && !st.open.contains(&format!("{sk}:seen")) {
+                st.open.insert(sk.clone());
+                st.open.insert(format!("{sk}:seen"));
+            }
+            let n = s.tables.len() + s.objects.len();
+            let r = row(ui, p, st, logos, &sk, 1 + d0, true, Glyph::Schema, &s.name, &if n == 0 { "empty".to_string() } else { n.to_string() }, false, false);
+            schema_menu(r.resp, cfg, &s.name, actions);
+            if !is_open(st, &sk, filtering) {
+                continue;
+            }
+            2 + d0
+        };
+        schema_body(ui, p, st, logos, cfg, s, depth, filter, actions);
+    }
+    if v.catalog.introspected_at > 0 && !filtering {
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            ui.label(RichText::new(format!("{} objects · {}", v.catalog.table_count(), v.age)).size(10.5).color(p.faint));
+        });
+        ui.add_space(2.0);
+    }
 }
 
 /// The "3 of 12 schemas" row under a connection, and its checkbox popup —
@@ -506,7 +949,20 @@ fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &L
                     actions.push(Action::EditObject(cfg.id.clone(), s.name.clone(), sref.clone()));
                 }
                 let name = o.name.clone();
+                let runnable = databug_sql::ddl::exec_template(cfg.kind.dialect(), &s.name, &o.name, o.kind, &o.detail).is_some();
+                let obj = o.clone();
                 r.resp.on_hover_text(format!("{} {}.{}{}", o.kind.label(), s.name, o.name, if o.detail.is_empty() { String::new() } else { format!(" {}", detail) })).context_menu(|ui| {
+                    if runnable {
+                        let label = match (cfg.kind, obj.kind) {
+                            (DbKind::MsSql, ObjectKind::Procedure | ObjectKind::ClrProcedure) => "Execute (EXEC)…",
+                            (_, ObjectKind::Procedure | ObjectKind::ClrProcedure) => "Execute (CALL)…",
+                            _ => "Run in console…",
+                        };
+                        if ui.button(RichText::new(label).color(p.success)).clicked() {
+                            actions.push(Action::ExecRoutine(cfg.id.clone(), s.name.clone(), obj.clone()));
+                            ui.close_menu();
+                        }
+                    }
                     if ui.button(if o.kind.is_clr() { "View definition" } else { "Edit definition" }).clicked() {
                         actions.push(Action::EditObject(cfg.id.clone(), s.name.clone(), sref.clone()));
                         ui.close_menu();

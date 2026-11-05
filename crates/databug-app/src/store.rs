@@ -4,7 +4,7 @@
 
 use crate::theme::ThemeKind;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use databug_core::{Catalog, ConnectionConfig};
@@ -20,12 +20,45 @@ pub struct Settings {
     pub row_limit: usize,
     pub explorer_width: f32,
     pub auto_complete: bool,
+    /// Color overrides per theme: theme → (color key → RGB).
+    pub custom_colors: BTreeMap<String, BTreeMap<String, [u8; 3]>>,
+    /// Project shown in the explorer; `None` shows every connection.
+    pub current_project: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemeKind::Dark, code_font_size: 13.5, ui_scale: 1.0, row_limit: 10_000, explorer_width: 270.0, auto_complete: true }
+        Settings {
+            theme: ThemeKind::Dark,
+            code_font_size: 13.5,
+            ui_scale: 1.0,
+            row_limit: 10_000,
+            explorer_width: 270.0,
+            auto_complete: true,
+            custom_colors: BTreeMap::new(),
+            current_project: None,
+        }
     }
+}
+
+impl Settings {
+    pub fn theme_key(&self) -> String {
+        format!("{:?}", self.theme)
+    }
+
+    pub fn overrides(&self) -> BTreeMap<String, [u8; 3]> {
+        self.custom_colors.get(&self.theme_key()).cloned().unwrap_or_default()
+    }
+}
+
+/// A named set of connections. The explorer shows the connections of the
+/// current project, in the project's order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub connections: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +119,14 @@ impl Store {
 
     pub fn save_connections(&self, conns: &[ConnectionConfig]) {
         self.write_json(self.config_dir.join("connections.json"), &conns);
+    }
+
+    pub fn load_projects(&self) -> Vec<Project> {
+        self.read_json(self.config_dir.join("projects.json")).unwrap_or_default()
+    }
+
+    pub fn save_projects(&self, projects: &[Project]) {
+        self.write_json(self.config_dir.join("projects.json"), &projects);
     }
 
     pub fn load_settings(&self) -> Settings {

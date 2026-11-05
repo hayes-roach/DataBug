@@ -93,9 +93,9 @@ impl PgConn {
         if !password.is_empty() {
             pc.password(password);
         }
-        if !cfg.database.is_empty() {
-            pc.dbname(&cfg.database);
-        }
+        // no database given: use the default `postgres` database rather than
+        // libpq's fallback of a database named after the user
+        pc.dbname(&cfg.effective_database());
         pc.ssl_mode(match cfg.ssl {
             SslMode::Disable => tokio_postgres::config::SslMode::Disable,
             SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
@@ -150,6 +150,12 @@ impl DbConnection for PgConn {
         let res = self.run(stmt, opts, sink).await;
         *self.notices.lock().unwrap() = None;
         res
+    }
+
+    async fn list_databases(&mut self) -> anyhow::Result<(Vec<String>, String)> {
+        let names = collect(self, "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1").await?;
+        let current = scalar(self, "SELECT current_database()").await?.unwrap_or_default();
+        Ok((names.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect(), current))
     }
 
     async fn introspect(&mut self) -> anyhow::Result<Catalog> {

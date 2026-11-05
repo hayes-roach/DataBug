@@ -95,7 +95,7 @@ jobs:
           if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress }
           & $iscc packaging/windows/databug.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DataBug-${{ startsWith(matrix.os, 'macos') && 'macos-universal' || 'windows-x86_64' }}
           path: |

@@ -16,9 +16,26 @@ A fast, memory-light database client written in Rust for macOS, Windows and Linu
 |---|---|---|
 | ![plan](docs/screenshot-plan.png) | ![connection](docs/screenshot-connection.png) | ![light](docs/screenshot-light.png) |
 
-## Download and platforms
+## Install
 
-DataBug builds for **macOS** (Apple silicon and Intel, as `DataBug.app`), **Windows** (`DataBug.exe` with its icon, no console window) and **Linux** (binary, `.desktop` entry and icon). Push a `v*` tag and `.github/workflows/release.yml` builds all four and attaches them to a GitHub release. To build one yourself, see [Build and run](#build-and-run).
+| Platform | Installer | One-line install |
+|---|---|---|
+| **macOS** (Apple silicon and Intel) | `DataBug-macos-universal.dmg`: open it and drag DataBug to Applications | `curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh \| sh` |
+| **Windows** 10/11 (x64) | `DataBug-windows-x86_64-setup.exe`: installs for your user (no admin needed), adds Start menu and optional desktop shortcuts, uninstall from Settings → Apps | `irm https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.ps1 \| iex` (PowerShell) |
+| **Linux** (x86_64) | `DataBug-linux-x86_64.tar.gz`: extract and run `DataBug/install.sh` (app, icon and menu entry in `~/.local`) | `curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh \| sh` |
+
+Download the installers from the [latest release](https://github.com/hayes-roach/DataBug/releases/latest). To uninstall: drag DataBug.app to the Trash on macOS, use Settings → Apps on Windows, or run `install.sh --uninstall` (either script) on macOS/Linux. Settings and history are kept.
+
+The apps aren't signed with a paid Apple or Microsoft certificate yet. On macOS, if Gatekeeper blocks the first launch of the DMG install, right-click DataBug in Applications → *Open* (the one-line installer avoids this). On Windows, SmartScreen may show "Windows protected your PC": click *More info* → *Run anyway*.
+
+### Making a release
+
+Push a tag like `v0.2.0`; `.github/workflows/release.yml` builds the DMG, setup .exe, portable Windows zip and Linux tarball, adds `SHA256SUMS.txt`, and publishes a GitHub release with install instructions. Every push to `main` also uploads the macOS and Windows installers as CI artifacts.
+
+To build installers yourself:
+- macOS: `packaging/macos/bundle.sh` (this Mac's architecture) or `packaging/macos/bundle.sh universal` → `dist/DataBug-macos-*.dmg` and `.zip`
+- Windows: `cargo build --release`, then `iscc packaging\windows\databug.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) → `dist\DataBug-windows-x86_64-setup.exe`
+- Linux: `cargo build --release`, then copy `target/release/databug` next to `packaging/linux/install.sh` and run it
 
 ## Databases
 

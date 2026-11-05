@@ -1,9 +1,17 @@
 name: CI
 
+# Runs when commits are pushed, to any branch, not on pull request events:
+# a pull request shows the result of its latest commit, so opening or
+# updating one doesn't start a second build. Tags are built by release.yml.
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+# a newer commit on the same branch cancels the older run
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:

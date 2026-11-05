@@ -82,7 +82,7 @@ DataBug uses **GitHub flow**: one long-lived branch, `main`, plus short-lived br
 - **Keep branches short-lived.** Aim to merge within a few days. Bring a long-running branch up to date by rebasing on `main` (`git pull --rebase origin main`) rather than merging `main` into it.
 - **One change per branch.** A bug fix and an unrelated refactor are two pull requests.
 - **Pull requests are squash-merged**, so the pull request title becomes the commit on `main`. The branch is deleted after merging.
-- **Forks work the same way.** Fork the repository, create a branch in your fork, and open a pull request against `main`.
+- **Forks work the same way.** Fork the repository, create a branch in your fork, and open a pull request against `main`. CI runs in your fork when you push (enable Actions there once); a maintainer can also start it with *Run workflow*.
 
 ### Releases and hotfixes
 
@@ -142,7 +142,7 @@ Before you ask for a review:
 - [ ] README and CHANGELOG are updated where it matters
 - [ ] The title follows Conventional Commits
 
-CI runs the tests against live Postgres 16 and MySQL 8.4 on Linux, and builds and tests on macOS and Windows. All checks must pass, and a maintainer must approve, before a pull request can merge. Draft pull requests are welcome for early feedback.
+CI runs whenever commits are pushed to a branch of this repository (not on pull request events): it tests against live Postgres 16 and MySQL 8.4 on Linux, and builds and tests on macOS and Windows. A pull request shows the result for its latest commit, and a newer push cancels the older run. All checks must pass, and a maintainer must approve, before a pull request can merge. Draft pull requests are welcome for early feedback.
 
 ## Reviews
 

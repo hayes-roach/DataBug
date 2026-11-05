@@ -153,7 +153,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 
 ## Build and run
 
-Requires Rust 1.81 or newer and a C compiler (for bundled SQLite and the vendored D-Bus used for the Linux keychain). No other system packages are needed on macOS, Windows (MSVC or GNU) or Linux.
+Requires Rust 1.89 or newer and a C compiler (for bundled SQLite and the vendored D-Bus used for the Linux keychain). No other system packages are needed on macOS, Windows (MSVC or GNU) or Linux.
 
 ```sh
 cargo run --release

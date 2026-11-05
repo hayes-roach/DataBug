@@ -15,7 +15,7 @@ For anything bigger than a bug fix (a new driver, a new panel, a change to how s
 
 ## Getting set up
 
-You need Rust 1.81 or newer and a C compiler. Nothing else is required on macOS, Windows or Linux.
+You need Rust 1.89 or newer and a C compiler. Nothing else is required on macOS, Windows or Linux.
 
 ```sh
 git clone https://github.com/hayes-roach/DataBug.git
@@ -95,6 +95,17 @@ DataBug uses **GitHub flow**: one long-lived branch, `main`, plus short-lived br
 
   The tag triggers `.github/workflows/release.yml`, which builds the installers and publishes the GitHub release. Tags are never moved or deleted once a release is published.
 - **Hotfixes** normally go to `main` like any fix, followed by a patch release. If `main` already holds unreleased work that shouldn't ship yet, a maintainer creates `release/X.Y` from the last tag, merges the fix there through a pull request, tags `vX.Y.Z+1` from that branch, and brings the fix back to `main` with a pull request.
+
+## Dependency updates
+
+Dependabot opens pull requests for dependency updates: Rust crates weekly, GitHub Actions monthly. They're set up so an update can't quietly break the build:
+
+- **Only compatible versions.** Dependabot only updates `Cargo.lock` within the version ranges in `Cargo.toml`, which Cargo treats as compatible (`1.2 → 1.3`, `0.15.1 → 0.15.4`). It never proposes major versions, and egui is left alone because it's pinned on purpose. Upgrades that need `Cargo.toml` changed are done by hand in a `chore/` branch.
+- **CI tests the exact update.** Every Dependabot commit runs the full CI with `--locked`: the live Postgres and MySQL tests, macOS and Windows builds and tests, and a build with the minimum supported Rust (`rust-version` in `Cargo.toml`, currently 1.89).
+- **Red means don't merge.** With checks required on `main`, a failing update can't be merged. If an update breaks something, comment `@dependabot ignore this minor version` (or `… this dependency`) on its pull request and open an issue for the real fix.
+- **Raising the minimum Rust** is a deliberate change: bump `rust-version` in `Cargo.toml` and the README in its own pull request, and note it in the changelog.
+
+When you update dependencies yourself, run `cargo update` (the repository's `.cargo/config.toml` makes it prefer versions that still build with the minimum Rust), then `cargo test --workspace --locked` and `cargo +1.89 check --workspace --all-targets --locked`.
 
 ## Commit messages and pull request titles
 

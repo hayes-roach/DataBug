@@ -1,22 +1,39 @@
+# Dependency updates. Each one arrives as a pull request whose commits run the
+# full CI (live Postgres/MySQL tests, macOS, Windows and the minimum Rust
+# version), so an update that breaks anything shows red and can't merge once
+# main requires those checks.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    # Only update Cargo.lock within the version ranges in Cargo.toml, which
+    # Cargo treats as compatible (1.2 -> 1.3, 0.15.1 -> 0.15.4). Upgrades that
+    # need Cargo.toml edited (2.0, or 0.15 -> 0.16) are done by hand.
+    versioning-strategy: lockfile-only
     open-pull-requests-limit: 5
+    labels: ["dependencies"]
     commit-message:
       prefix: "chore(deps)"
     groups:
-      minor-and-patch:
+      # one pull request for routine updates; anything that fails CI can be
+      # split out by ignoring it below
+      compatible:
         update-types: ["minor", "patch"]
     ignore:
       # egui is pinned on purpose; upgrading it is a planned, manual change
       - dependency-name: "eframe"
       - dependency-name: "egui_extras"
+      - dependency-name: "egui*"
+      # never propose major versions; they change APIs
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    labels: ["dependencies"]
     commit-message:
       prefix: "ci"

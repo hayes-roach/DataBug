@@ -27,7 +27,7 @@ async-trait.workspace = true
 futures-util.workspace = true
 
 tokio-postgres = { version = "0.7", optional = true }
-tokio-postgres-rustls = { version = "0.13", optional = true }
+tokio-postgres-rustls = { version = "0.14", optional = true }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = { version = "0.26", optional = true }
 mysql_async = { version = "0.36", optional = true, default-features = false, features = ["minimal-rust", "default-rustls-no-provider"] }

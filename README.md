@@ -28,7 +28,7 @@ A fast, memory-light, free and open source database client written in Rust for m
 | **Windows** 10/11 (x64) | `DataBug-windows-x86_64-setup.exe`: installs for your user (no admin needed), adds Start menu and optional desktop shortcuts, uninstall from Settings → Apps | `irm https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.ps1 \| iex` (PowerShell) |
 | **Linux** (x86_64) | `DataBug-linux-x86_64.tar.gz`: extract and run `DataBug/install.sh` (app, icon and menu entry in `~/.local`) | `curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh \| sh` |
 
-Download the installers from the [latest release](https://github.com/hayes-roach/DataBug/releases/latest). To uninstall: drag DataBug.app to the Trash on macOS, use Settings → Apps on Windows, or run `install.sh --uninstall` (either script) on macOS/Linux. Settings and history are kept.
+Download the installers from the [latest release](https://github.com/hayes-roach/DataBug/releases/latest). Running a one-line install again updates an existing install in place (it says "Updating 0.1.0 → 0.2.0", or "already up to date" and stops; add `-s -- --force` after `sh` to reinstall anyway). To uninstall: drag DataBug.app to the Trash on macOS, use Settings → Apps on Windows, or run `install.sh --uninstall` (either script) on macOS/Linux. Settings and history are kept.
 
 The apps aren't signed with a paid Apple or Microsoft certificate yet. On macOS, if Gatekeeper blocks the first launch of the DMG install, right-click DataBug in Applications → *Open* (the one-line installer avoids this). On Windows, SmartScreen may show "Windows protected your PC": click *More info* → *Run anyway*.
 

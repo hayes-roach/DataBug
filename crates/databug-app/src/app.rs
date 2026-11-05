@@ -2483,12 +2483,6 @@ impl DataBugApp {
             if ui.add(big("New connection")).clicked() {
                 actions.push(Action::NewConnection);
             }
-            if let Some(c) = self.connections.first() {
-                ui.add_space(4.0);
-                if ui.add(big(&format!("Open console on {}", c.name))).clicked() {
-                    actions.push(Action::NewConsole(c.id.clone()));
-                }
-            }
             ui.add_space(28.0);
             let shortcuts = [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run script"), ("Ctrl + Space", "Completion"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")];
             for (k, v) in shortcuts {

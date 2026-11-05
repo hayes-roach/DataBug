@@ -15,6 +15,8 @@ pub enum Action {
     SelectTop(String, String, String),
     OpenDdl(String, String, String),
     Refresh(String),
+    /// Sign in again after a failed attempt (only ever from a click).
+    Retry(String),
     EditConn(String),
     DuplicateConn(String),
     DeleteConn(String),
@@ -66,6 +68,8 @@ pub struct ExplorerCtx<'a> {
     pub connected: &'a HashSet<String>,
     /// Connections the user disconnected.
     pub disconnected: &'a HashSet<String>,
+    /// Connections whose last sign-in failed, with the error.
+    pub failed: &'a HashMap<String, String>,
     pub databases: &'a HashMap<String, DbList>,
     pub projects: &'a [crate::store::Project],
     pub current_project: Option<&'a str>,
@@ -270,16 +274,18 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
     ui.horizontal(|ui| {
         ui.label(RichText::new("Database explorer").font(bold(13.0)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("+").on_hover_text("New connection").clicked() {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if icon_button(ui, p, HeaderIcon::Plus, true).on_hover_text("New connection").clicked() {
                 actions.push(Action::NewConnection);
             }
-            if ui.small_button("Find").on_hover_text("Find in database: tables, columns, routines, definitions and data  (Ctrl/⌘ + F outside the editor)").clicked() {
+            if icon_button(ui, p, HeaderIcon::Search, false).on_hover_text("Find in database: tables, columns, routines, definitions and data  (Ctrl/⌘ + F outside the editor)").clicked() {
                 actions.push(Action::SearchDatabase);
             }
         });
     });
+    ui.add_space(4.0);
     project_bar(ui, p, st, cx, &mut actions);
-    ui.add_space(2.0);
+    ui.add_space(4.0);
     ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text("🔍  Filter objects").desired_width(f32::INFINITY));
     ui.add_space(4.0);
     if let Some(id) = st.reveal.take() {
@@ -309,6 +315,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             let ck = format!("c:{}", cfg.id);
             let view = catalogs.get(&cfg.id);
             let disconnected = cx.disconnected.contains(&cfg.id);
+            let failed = cx.failed.get(&cfg.id);
             let connected = cx.connected.contains(&cfg.id);
             let engine = match cfg.kind {
                 DbKind::Postgres => "postgres",
@@ -319,6 +326,8 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             };
             let detail = if disconnected {
                 "disconnected".to_string()
+            } else if failed.is_some() {
+                "sign-in failed".to_string()
             } else if connected {
                 format!("{engine} · connected")
             } else {
@@ -338,7 +347,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             if r.double {
                 actions.push(if disconnected { Action::Connect(cfg.id.clone()) } else { Action::NewConsole(cfg.id.clone()) });
             }
-            if r.clicked && view.is_none() && !disconnected {
+            if r.clicked && view.is_none() && !disconnected && failed.is_none() {
                 actions.push(Action::Refresh(cfg.id.clone()));
             }
             let dbs = cx.databases.get(&cfg.id);
@@ -357,7 +366,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                     }
                     ui.separator();
                 }
-                for (label, a) in [("New console", Action::NewConsole(cfg.id.clone())), ("Refresh schema", Action::Refresh(cfg.id.clone()))] {
+                for (label, a) in [("New console", Action::NewConsole(cfg.id.clone())), ("Refresh schema", Action::Retry(cfg.id.clone()))] {
                     if ui.button(label).clicked() {
                         actions.push(a);
                         ui.close_menu();
@@ -430,11 +439,29 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             if db_picker {
                 st.open.insert(ck.clone());
                 st.db_picker_request = Some(cfg.id.clone());
-                if dbs.map(|d| d.names.is_empty() && !d.loading).unwrap_or(true) {
+                if dbs.map(|d| d.names.is_empty() && !d.loading).unwrap_or(true) && failed.is_none() {
                     actions.push(Action::LoadDatabases(cfg.id.clone()));
                 }
             }
             if !is_open(st, &ck, filtering) {
+                continue;
+            }
+            if let (Some(err), false) = (failed, disconnected) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(30.0);
+                    ui.label(RichText::new(err.chars().take(160).collect::<String>()).size(11.5).color(p.danger));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(30.0);
+                    ui.label(RichText::new("Not retrying automatically").size(11.0).color(p.faint)).on_hover_text("Repeated failed sign-ins can lock an account, so DataBug waits for you. Fix the settings or retry when ready.");
+                    if ui.small_button("Retry").clicked() {
+                        actions.push(Action::Retry(cfg.id.clone()));
+                    }
+                    if ui.small_button("Edit…").clicked() {
+                        actions.push(Action::EditConn(cfg.id.clone()));
+                    }
+                });
+                ui.add_space(2.0);
                 continue;
             }
             if disconnected {
@@ -482,7 +509,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 };
                 let label = if db.is_empty() { "(default database)".to_string() } else { db.clone() };
                 let r = row(ui, p, st, logos, &dk, 1, true, Glyph::Database, &label, &detail, false, false);
-                if (r.clicked || r.double) && vview.is_none() {
+                if (r.clicked || r.double) && vview.is_none() && failed.is_none() {
                     actions.push(Action::Refresh(vcfg.id.clone()));
                 }
                 let vid = vcfg.id.clone();
@@ -495,7 +522,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                         ui.close_menu();
                     }
                     if ui.button("Refresh schema").clicked() {
-                        actions.push(Action::Refresh(vid.clone()));
+                        actions.push(Action::Retry(vid.clone()));
                         ui.close_menu();
                     }
                     if !is_primary && ui.button("Hide database").clicked() {
@@ -507,7 +534,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 if !is_open(st, &dk, filtering) {
                     continue;
                 }
-                if vview.is_none() && !st.open.contains(&format!("{dk}:req")) {
+                if vview.is_none() && failed.is_none() && !st.open.contains(&format!("{dk}:req")) {
                     // opened for the first time: load its schema
                     st.open.insert(format!("{dk}:req"));
                     actions.push(Action::Refresh(vcfg.id.clone()));
@@ -536,6 +563,43 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
     actions
 }
 
+#[derive(Clone, Copy)]
+enum HeaderIcon {
+    Search,
+    Plus,
+}
+
+/// A 26×26 rounded icon button for the explorer header.
+fn icon_button(ui: &mut egui::Ui, p: &Palette, icon: HeaderIcon, primary: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), Sense::click());
+    let hovered = resp.hovered();
+    let pressed = resp.is_pointer_button_down_on();
+    let (fill, fg) = if primary {
+        (if pressed { p.accent.gamma_multiply(0.8) } else if hovered { p.accent } else { p.accent.gamma_multiply(0.9) }, Color32::WHITE)
+    } else {
+        (if pressed { p.selection } else if hovered { p.hover } else { p.raised }, if hovered { p.text } else { p.muted })
+    };
+    let painter = ui.painter_at(rect.expand(1.0));
+    painter.rect(rect, CornerRadius::same(7), fill, if primary { Stroke::NONE } else { Stroke::new(1.0_f32, p.border.gamma_multiply(0.7)) }, egui::StrokeKind::Inside);
+    let c = rect.center();
+    let st = Stroke::new(1.7_f32, fg);
+    match icon {
+        HeaderIcon::Search => {
+            let o = c + egui::vec2(-1.5, -1.5);
+            painter.circle_stroke(o, 4.6, st);
+            painter.line_segment([o + egui::vec2(3.4, 3.4), o + egui::vec2(7.0, 7.0)], Stroke::new(2.0_f32, fg));
+        }
+        HeaderIcon::Plus => {
+            painter.line_segment([c + egui::vec2(-5.0, 0.0), c + egui::vec2(5.0, 0.0)], st);
+            painter.line_segment([c + egui::vec2(0.0, -5.0), c + egui::vec2(0.0, 5.0)], st);
+        }
+    }
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
 fn primary_db(cfg: &ConnectionConfig, dbs: Option<&DbList>) -> String {
     let own = cfg.effective_database();
     if !own.is_empty() {
@@ -557,41 +621,85 @@ fn multi_db(cfg: &ConnectionConfig, dbs: Option<&DbList>) -> bool {
 /// project, plus new / rename / delete.
 fn project_bar(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cx: &ExplorerCtx<'_>, actions: &mut Vec<Action>) {
     let current = cx.current_project.and_then(|id| cx.projects.iter().find(|pr| pr.id == id));
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let label = current.map(|pr| pr.name.clone()).unwrap_or_else(|| "All connections".into());
-        ui.menu_button(RichText::new(format!("Project: {label}  ▼")).size(12.0).color(p.muted), |ui| {
-            ui.set_min_width(200.0);
-            ui.label(RichText::new("Projects").font(bold(12.0)));
-            if ui.selectable_label(current.is_none(), "All connections").clicked() {
-                actions.push(Action::SwitchProject(None));
-                ui.close_menu();
+    let popup_id = ui.id().with("project-menu");
+    let open = ui.memory(|m| m.is_popup_open(popup_id));
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), Sense::click());
+    let hovered = resp.hovered();
+    let painter = ui.painter_at(rect);
+    painter.rect(rect, CornerRadius::same(7), if open || hovered { p.hover } else { p.raised }, Stroke::new(1.0_f32, if open { p.accent } else { p.border.gamma_multiply(0.7) }), egui::StrokeKind::Inside);
+    // folder glyph
+    let f = Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y + 0.5), egui::vec2(13.0, 10.0));
+    let folder = if current.is_some() { p.accent } else { p.muted };
+    painter.rect_filled(Rect::from_min_size(f.left_top() + egui::vec2(0.0, -2.0), egui::vec2(5.5, 3.0)), CornerRadius::same(1), folder);
+    painter.rect_filled(f, CornerRadius::same(2), folder.gamma_multiply(0.85));
+    let (label, count) = match current {
+        Some(pr) => (pr.name.clone(), pr.connections.len()),
+        None => ("All connections".to_string(), usize::MAX),
+    };
+    let caption = painter.layout_no_wrap("PROJECT".into(), FontId::proportional(9.5), p.faint);
+    let x = rect.left() + 30.0;
+    let name = painter.layout_no_wrap(label, bold(12.5), p.text);
+    let avail = rect.right() - 30.0 - x;
+    painter.galley(egui::pos2(x, rect.center().y - caption.size().y / 2.0), caption.clone(), p.faint);
+    let nx = x + caption.size().x + 7.0;
+    painter.with_clip_rect(Rect::from_min_max(egui::pos2(nx, rect.top()), egui::pos2(x + avail, rect.bottom()))).galley(egui::pos2(nx, rect.center().y - name.size().y / 2.0), name.clone(), p.text);
+    if count != usize::MAX && nx + name.size().x + 30.0 < x + avail {
+        let badge = painter.layout_no_wrap(count.to_string(), FontId::proportional(10.5), p.muted);
+        let br = Rect::from_min_size(egui::pos2(nx + name.size().x + 7.0, rect.center().y - 8.0), egui::vec2(badge.size().x + 10.0, 16.0));
+        painter.rect_filled(br, CornerRadius::same(8), p.island);
+        painter.galley(br.center() - badge.size() / 2.0, badge, p.muted);
+    }
+    // chevron
+    let c = egui::pos2(rect.right() - 15.0, rect.center().y);
+    let pts = if open { [c + egui::vec2(-4.0, 2.0), c + egui::vec2(0.0, -2.0), c + egui::vec2(4.0, 2.0)] } else { [c + egui::vec2(-4.0, -2.0), c + egui::vec2(0.0, 2.0), c + egui::vec2(4.0, -2.0)] };
+    painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.5_f32, if hovered || open { p.text } else { p.muted })));
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let resp = resp.on_hover_text("Switch project: each project keeps its own list of connections");
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    egui::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+        ui.set_min_width(rect.width() - 12.0);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.label(RichText::new("Projects").size(11.0).color(p.faint));
+        let item = |ui: &mut egui::Ui, on: bool, text: &str, n: Option<usize>| -> bool {
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::click());
+            if resp.hovered() || on {
+                ui.painter().rect_filled(r, CornerRadius::same(5), if on { p.selection.gamma_multiply(0.6) } else { p.hover });
             }
-            for pr in cx.projects {
-                let on = current.map(|c| c.id == pr.id).unwrap_or(false);
-                if ui.selectable_label(on, format!("{}  ({})", pr.name, pr.connections.len())).clicked() {
-                    actions.push(Action::SwitchProject(Some(pr.id.clone())));
-                    ui.close_menu();
-                }
+            if on {
+                let c = egui::pos2(r.left() + 12.0, r.center().y);
+                ui.painter().add(egui::Shape::line(vec![c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], Stroke::new(1.6_f32, p.accent)));
             }
-            ui.separator();
-            if ui.button("New project…").clicked() {
-                st.project_edit = Some((None, String::new()));
-                ui.close_menu();
+            ui.painter().text(egui::pos2(r.left() + 26.0, r.center().y), egui::Align2::LEFT_CENTER, text, if on { bold(12.5) } else { FontId::proportional(12.5) }, p.text);
+            if let Some(n) = n {
+                ui.painter().text(egui::pos2(r.right() - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), FontId::proportional(11.0), p.faint);
             }
-            if let Some(pr) = current {
-                if ui.button("Rename project…").clicked() {
-                    st.project_edit = Some((Some(pr.id.clone()), pr.name.clone()));
-                    ui.close_menu();
-                }
-                if ui.button(RichText::new("Delete project").color(p.danger)).on_hover_text("Its connections stay in “All connections”").clicked() {
-                    actions.push(Action::DeleteProject(pr.id.clone()));
-                    ui.close_menu();
-                }
+            resp.clicked()
+        };
+        if item(ui, current.is_none(), "All connections", None) {
+            actions.push(Action::SwitchProject(None));
+        }
+        for pr in cx.projects {
+            let on = current.map(|c| c.id == pr.id).unwrap_or(false);
+            if item(ui, on, &pr.name, Some(pr.connections.len())) {
+                actions.push(Action::SwitchProject(Some(pr.id.clone())));
             }
-        })
-        .response
-        .on_hover_text("Each project keeps its own list of connections");
+        }
+        ui.separator();
+        if item(ui, false, "New project…", None) {
+            st.project_edit = Some((None, String::new()));
+        }
+        if let Some(pr) = current {
+            if item(ui, false, "Rename project…", None) {
+                st.project_edit = Some((Some(pr.id.clone()), pr.name.clone()));
+            }
+            if item(ui, false, "Delete project", None) {
+                actions.push(Action::DeleteProject(pr.id.clone()));
+            }
+        }
     });
     let mut done: Option<bool> = None;
     if let Some((_, name)) = st.project_edit.as_mut() {
@@ -739,7 +847,7 @@ fn conn_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Log
         ui.horizontal(|ui| {
             ui.add_space(pad);
             if ui.small_button("Retry").clicked() {
-                actions.push(Action::Refresh(cfg.id.clone()));
+                actions.push(Action::Retry(cfg.id.clone()));
             }
         });
     }
@@ -994,6 +1102,13 @@ fn table_node(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Lo
         actions.push(edit_action());
     }
     if r.double {
+        // a double-click opens the rows; undo the expand/collapse that the
+        // shared row code does on double-click
+        if st.open.contains(&key) {
+            st.open.remove(&key);
+        } else {
+            st.open.insert(key.clone());
+        }
         actions.push(Action::SelectTop(cfg.id.clone(), schema.to_string(), t.name.clone()));
     }
     let sql = cfg.kind != DbKind::MongoDb;

@@ -2,9 +2,9 @@
 //! filterable, with in-place editing for single-table queries.
 
 use crate::theme::{bold, Palette};
-use eframe::egui::{self, Align, Color32, CornerRadius, FontId, Key, Layout, RichText, Sense, Stroke};
+use eframe::egui::{self, Align, Color32, CornerRadius, FontId, Key, Layout, Rect, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::time::Duration;
 use databug_core::{ColumnMeta, Dialect, ResultSet};
@@ -36,6 +36,15 @@ pub struct ResultView {
     edits: BTreeMap<(u32, u16), Option<String>>,
     editing: Option<(u32, u16, String)>,
     table_id: u64,
+    scroll_to_row: Option<usize>,
+    /// Whole rows selected by clicking the row numbers (data row indexes).
+    selected_rows: BTreeSet<u32>,
+    /// Visual row where a Shift-click range starts.
+    anchor: Option<usize>,
+    /// Rows marked for deletion (data row indexes).
+    deleted: BTreeSet<u32>,
+    /// Rows from this index on were added in the grid and aren't in the table yet.
+    inserted_from: Option<u32>,
 }
 
 pub enum GridAction {
@@ -75,7 +84,106 @@ impl ResultView {
             edits: BTreeMap::new(),
             editing: None,
             table_id,
+            scroll_to_row: None,
+            selected_rows: BTreeSet::new(),
+            anchor: None,
+            deleted: BTreeSet::new(),
+            inserted_from: None,
         }
+    }
+
+    fn is_inserted(&self, r: u32) -> bool {
+        self.inserted_from.map(|f| r >= f).unwrap_or(false)
+    }
+
+    /// Pending changes: (rows added, rows deleted, rows edited).
+    fn pending(&self) -> (usize, usize, usize) {
+        let added = self.inserted_from.map(|f| (f..self.data.rows() as u32).filter(|r| !self.deleted.contains(r)).count()).unwrap_or(0);
+        let deleted = self.deleted.iter().filter(|r| !self.is_inserted(**r)).count();
+        let edited = self.edits.keys().map(|k| k.0).filter(|r| !self.is_inserted(*r) && !self.deleted.contains(r)).collect::<BTreeSet<_>>().len();
+        (added, deleted, edited)
+    }
+
+    fn has_changes(&self) -> bool {
+        let (a, d, e) = self.pending();
+        a + d + e > 0
+    }
+
+    /// Add an empty row (or a copy of `from` without its primary key) at the
+    /// end and start editing its first cell.
+    pub(crate) fn add_row(&mut self, from: Option<u32>) {
+        let width = self.columns.len();
+        let r = self.data.rows() as u32;
+        for _ in 0..width {
+            self.data.push(None);
+        }
+        if self.inserted_from.is_none() {
+            self.inserted_from = Some(r);
+        }
+        let pk: Vec<usize> = self.edit_target.as_ref().map(|t| t.pk_cols.clone()).unwrap_or_default();
+        if let Some(src) = from {
+            for c in 0..width {
+                if pk.contains(&c) {
+                    continue;
+                }
+                if let Some(v) = self.cell(src, c).map(str::to_string) {
+                    self.edits.insert((r, c as u16), Some(v));
+                }
+            }
+        }
+        self.order_dirty = true;
+        self.rebuild_order();
+        let vr = self.order.iter().position(|x| *x == r).unwrap_or(0);
+        let first = (0..width).find(|c| !pk.contains(c)).unwrap_or(0);
+        self.selected = Some((vr, first));
+        self.selected_rows = [r].into();
+        self.scroll_to_row = Some(vr);
+        if from.is_none() {
+            self.editing = Some((r, first as u16, String::new()));
+        }
+    }
+
+    /// Select whole rows (data row indexes), as clicking their numbers would.
+    pub(crate) fn select_rows(&mut self, rows: &[u32]) {
+        self.selected_rows = rows.iter().copied().collect();
+    }
+
+    /// Mark rows for deletion, or restore them if they all already are.
+    pub(crate) fn toggle_delete(&mut self, rows: &BTreeSet<u32>) {
+        if rows.is_empty() {
+            return;
+        }
+        if rows.iter().all(|r| self.deleted.contains(r)) {
+            for r in rows {
+                self.deleted.remove(r);
+            }
+        } else {
+            self.deleted.extend(rows.iter().copied());
+        }
+        self.order_dirty = true;
+    }
+
+    /// Undo every pending change: edits, deletions and added rows.
+    pub(crate) fn revert(&mut self) {
+        self.edits.clear();
+        self.deleted.clear();
+        self.editing = None;
+        if let Some(f) = self.inserted_from.take() {
+            while self.data.rows() as u32 > f {
+                self.data.pop_row();
+            }
+        }
+        self.selected_rows.clear();
+        self.order_dirty = true;
+    }
+
+    /// Rows the row actions apply to: the selected rows, or the row of the
+    /// selected cell.
+    fn target_rows(&self) -> BTreeSet<u32> {
+        if !self.selected_rows.is_empty() {
+            return self.selected_rows.clone();
+        }
+        self.selected.and_then(|(vr, _)| self.order.get(vr).copied()).into_iter().collect()
     }
 
     pub fn append(&mut self, rows: ResultSet) {
@@ -137,6 +245,12 @@ impl ResultView {
                     o.reverse()
                 }
             });
+        }
+        // rows added in the grid always sit at the end, in the order added
+        if let Some(f) = self.inserted_from {
+            self.order.retain(|r| *r < f);
+            let deleted = &self.deleted;
+            self.order.extend((f..n).filter(|r| !deleted.contains(r)));
         }
         self.order_dirty = false;
     }
@@ -214,27 +328,58 @@ impl ResultView {
             if filter.changed() {
                 self.order_dirty = true;
             }
-            if !self.edits.is_empty() {
-                let changed_rows = self.edits.keys().map(|k| k.0).collect::<std::collections::BTreeSet<_>>().len();
+            let editable = self.edit_target.is_some();
+            let complete = self.elapsed.is_some();
+            ui.separator();
+            let why = "Editing rows needs a query on one table that includes its primary key";
+            let add = ui.add_enabled(editable && complete, egui::Button::new(RichText::new("+ Row").color(if editable { p.success } else { p.faint })));
+            if add.on_hover_text(if editable { "Add a row  (Alt + Insert)" } else { why }).on_disabled_hover_text(why).clicked() {
+                self.add_row(None);
+            }
+            let targets = self.target_rows();
+            let all_deleted = !targets.is_empty() && targets.iter().all(|r| self.deleted.contains(r));
+            let del_label = if all_deleted { "Restore" } else { "Delete" };
+            let del = ui.add_enabled(editable && !targets.is_empty(), egui::Button::new(RichText::new(format!("− {del_label}")).color(if editable && !targets.is_empty() { p.danger } else { p.faint })));
+            if del.on_hover_text(if all_deleted { "Keep the selected rows" } else { "Delete the selected rows  (Delete)" }).on_disabled_hover_text(if editable { "Select rows by clicking their numbers" } else { why }).clicked() {
+                self.toggle_delete(&targets);
+            }
+            let dup = ui.add_enabled(editable && complete && targets.len() == 1, egui::Button::new("Duplicate"));
+            if dup.on_hover_text("Add a copy of the selected row (without its primary key)").on_disabled_hover_text(if editable { "Select one row" } else { why }).clicked() {
+                if let Some(&r) = targets.iter().next() {
+                    self.add_row(Some(r));
+                }
+            }
+            if self.has_changes() {
+                let (added, deleted, edited) = self.pending();
+                let mut parts = Vec::new();
+                if added > 0 {
+                    parts.push(format!("{added} added"));
+                }
+                if edited > 0 {
+                    parts.push(format!("{edited} changed"));
+                }
+                if deleted > 0 {
+                    parts.push(format!("{deleted} deleted"));
+                }
                 ui.separator();
-                ui.label(RichText::new(format!("{changed_rows} row(s) changed")).color(p.warning));
-                if ui.button("Submit").on_hover_text("Run the UPDATE statements").clicked() {
+                ui.label(RichText::new(parts.join(" · ")).color(p.warning));
+                if ui.add(egui::Button::new(RichText::new("Submit").color(Color32::WHITE)).fill(p.accent)).on_hover_text("Save the changes: DELETE, UPDATE and INSERT statements, run in order").clicked() {
                     match self.update_statements() {
                         Ok(stmts) => action = GridAction::Run(stmts),
                         Err(e) => action = GridAction::Toast(e),
                     }
                 }
-                if ui.button("Preview SQL").clicked() {
+                if ui.button("Preview SQL").on_hover_text("Copy the statements to the clipboard").clicked() {
                     match self.update_statements() {
                         Ok(stmts) => {
                             ui.ctx().copy_text(stmts.join(";\n") + ";");
-                            action = GridAction::Toast("UPDATE statements copied to the clipboard".into());
+                            action = GridAction::Toast("Statements copied to the clipboard".into());
                         }
                         Err(e) => action = GridAction::Toast(e),
                     }
                 }
-                if ui.button("Revert").clicked() {
-                    self.edits.clear();
+                if ui.button("Revert").on_hover_text("Undo all pending changes").clicked() {
+                    self.revert();
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -267,7 +412,7 @@ impl ResultView {
                     }
                 });
                 if self.edit_target.is_some() {
-                    ui.label(RichText::new("editable").color(p.faint).small()).on_hover_text("Double-click a cell to edit it. Changes run as UPDATEs keyed on the primary key.");
+                    ui.label(RichText::new("editable").color(p.faint).small()).on_hover_text("Double-click a cell (or F2) to edit it, click row numbers to select rows, Delete to remove them, Alt + Insert to add one. Nothing is saved until you Submit.");
                 }
             });
         });
@@ -275,6 +420,17 @@ impl ResultView {
 
         // ---- keyboard navigation ----
         let no_text_focus = ui.ctx().memory(|m| m.focused().is_none());
+        // row shortcuts while the grid has a selection and no text field has focus
+        if no_text_focus && self.editing.is_none() && self.edit_target.is_some() && (self.selected.is_some() || !self.selected_rows.is_empty()) {
+            let (del, add) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::Delete) || i.consume_key(egui::Modifiers::NONE, Key::Backspace), i.consume_key(egui::Modifiers::ALT, Key::Insert)));
+            if del {
+                let t = self.target_rows();
+                self.toggle_delete(&t);
+            }
+            if add && self.elapsed.is_some() {
+                self.add_row(None);
+            }
+        }
         if let (Some((r, c)), true, None) = (self.selected, no_text_focus, &self.editing) {
             let (mut r, mut c) = (r, c);
             let (up, down, left, right, copy, enter) = ui.input_mut(|i| {
@@ -324,6 +480,7 @@ impl ResultView {
         let mut cancel_edit = false;
         let mut header_click: Option<usize> = None;
         let mut ctx_action: Option<(usize, usize, &'static str)> = None;
+        let mut gutter_click: Option<(usize, egui::Modifiers)> = None;
 
         let sel = self.selected;
         let editable = self.edit_target.is_some();
@@ -342,6 +499,10 @@ impl ResultView {
                 .column(Column::exact(gutter_w));
             for w in &self.widths {
                 tb = tb.column(Column::initial(*w).at_least(36.0).clip(true));
+            }
+            // virtualized rows: ask the table to scroll a new row into view
+            if let Some(r) = self.scroll_to_row.take() {
+                tb = tb.scroll_to_row(r, Some(Align::Center));
             }
             tb.header(28.0, |mut h| {
                 h.col(|ui| {
@@ -381,14 +542,39 @@ impl ResultView {
                 body.rows(row_h, n_rows, |mut row| {
                     let vr = row.index();
                     let dr = self.order[vr];
+                    let row_selected = self.selected_rows.contains(&dr);
+                    let row_deleted = self.deleted.contains(&dr);
+                    let row_inserted = self.is_inserted(dr);
                     row.col(|ui| {
                         let rect = ui.max_rect();
-                        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.raised.gamma_multiply(0.5));
+                        let resp = ui.interact(rect, ui.id().with(("gutter", vr)), Sense::click());
+                        let fill = if row_selected { p.accent.gamma_multiply(0.35) } else if resp.hovered() { p.hover } else { p.raised.gamma_multiply(0.5) };
+                        ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+                        if row_selected {
+                            ui.painter().rect_filled(Rect::from_min_size(rect.min, egui::vec2(2.5, rect.height())), CornerRadius::ZERO, p.accent);
+                        }
                         ui.painter().vline(rect.right() - 0.5, rect.y_range(), divider);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new((vr + 1).to_string()).size(11.0).color(p.faint));
-                        });
+                        let (mark, color) = if row_inserted {
+                            ("+".to_string(), p.success)
+                        } else if row_deleted {
+                            ("−".to_string(), p.danger)
+                        } else {
+                            ((vr + 1).to_string(), if row_selected { p.text } else { p.faint })
+                        };
+                        ui.painter().text(egui::pos2(rect.right() - 8.0, rect.center().y), egui::Align2::RIGHT_CENTER, mark, FontId::proportional(11.0), color);
+                        if resp.clicked() {
+                            gutter_click = Some((vr, ui.input(|i| i.modifiers)));
+                        }
+                        if editable {
+                            resp.context_menu(|ui| {
+                                for label in ["Add row", "Duplicate row", if row_deleted { "Restore row" } else { "Delete row" }] {
+                                    if ui.button(label).clicked() {
+                                        ctx_action = Some((vr, 0, label));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
                     });
                     for ci in 0..self.columns.len() {
                         row.col(|ui| {
@@ -396,8 +582,16 @@ impl ResultView {
                             ui.painter().vline(rect.right() - 0.5, rect.y_range(), divider);
                             let is_sel = sel == Some((vr, ci));
                             let edited = self.edits.contains_key(&(dr, ci as u16));
-                            if edited {
+                            if row_deleted {
+                                ui.painter().rect_filled(rect, CornerRadius::ZERO, p.danger.gamma_multiply(0.16));
+                            } else if row_inserted {
+                                ui.painter().rect_filled(rect, CornerRadius::ZERO, p.success.gamma_multiply(0.12));
+                            }
+                            if edited && !row_deleted {
                                 ui.painter().rect_filled(rect, CornerRadius::ZERO, p.edited);
+                            }
+                            if row_selected && !is_sel {
+                                ui.painter().rect_filled(rect, CornerRadius::ZERO, p.selection.gamma_multiply(0.35));
                             }
                             if is_sel {
                                 ui.painter().rect_filled(rect, CornerRadius::ZERO, p.selection.gamma_multiply(0.55));
@@ -413,7 +607,8 @@ impl ResultView {
                                     if esc {
                                         cancel_edit = true;
                                     } else if te.lost_focus() || enter {
-                                        commit = Some((dr, ci as u16, Some(buf.clone())));
+                                        let was_null = self.data.cell(dr as usize, ci).is_none() && !self.edits.contains_key(&(dr, ci as u16));
+                                        commit = Some((dr, ci as u16, if buf.is_empty() && was_null { None } else { Some(buf.clone()) }));
                                     }
                                     return;
                                 }
@@ -439,10 +634,13 @@ impl ResultView {
                                     }
                                 }
                             }
+                            if row_deleted {
+                                ui.painter().hline(rect.x_range().shrink(4.0), rect.center().y, Stroke::new(1.0_f32, p.danger.gamma_multiply(0.7)));
+                            }
                             if resp.clicked() {
                                 clicked = Some((vr, ci));
                             }
-                            if resp.double_clicked() && editable {
+                            if resp.double_clicked() && editable && !row_deleted {
                                 start_edit = Some((vr, ci));
                             }
                             if let Some(v) = value {
@@ -462,6 +660,13 @@ impl ResultView {
                                     }
                                 }
                                 if editable {
+                                    ui.separator();
+                                    for label in ["Add row", "Duplicate row", if row_deleted { "Restore row" } else { "Delete row" }] {
+                                        if ui.button(label).clicked() {
+                                            ctx_action = Some((vr, ci, label));
+                                            ui.close_menu();
+                                        }
+                                    }
                                     ui.separator();
                                     if ui.button("Edit value").clicked() {
                                         ctx_action = Some((vr, ci, "Edit value"));
@@ -487,7 +692,38 @@ impl ResultView {
             };
             self.order_dirty = true;
         }
+        if let Some((vr, m)) = gutter_click {
+            let Some(&dr) = self.order.get(vr) else { return action };
+            if m.shift {
+                let a = self.anchor.unwrap_or(vr);
+                let (lo, hi) = (a.min(vr), a.max(vr));
+                if !m.command {
+                    self.selected_rows.clear();
+                }
+                for i in lo..=hi {
+                    if let Some(&r) = self.order.get(i) {
+                        self.selected_rows.insert(r);
+                    }
+                }
+            } else if m.command {
+                if !self.selected_rows.remove(&dr) {
+                    self.selected_rows.insert(dr);
+                }
+                self.anchor = Some(vr);
+            } else {
+                self.selected_rows = [dr].into();
+                self.anchor = Some(vr);
+            }
+            self.selected = Some((vr, self.selected.map(|s| s.1).unwrap_or(0)));
+            ui.ctx().memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
         if let Some(sel) = clicked {
+            self.selected_rows.clear();
+            self.anchor = Some(sel.0);
             self.selected = Some(sel);
             ui.ctx().memory_mut(|m| {
                 if let Some(id) = m.focused() {
@@ -520,6 +756,12 @@ impl ResultView {
                     self.order_dirty = true;
                 }
                 "Edit value" => self.editing = Some((dr, ci as u16, self.cell(dr, ci).unwrap_or("").to_string())),
+                "Add row" => self.add_row(None),
+                "Duplicate row" => self.add_row(Some(dr)),
+                "Delete row" | "Restore row" => {
+                    let rows = if self.selected_rows.contains(&dr) { self.selected_rows.clone() } else { [dr].into() };
+                    self.toggle_delete(&rows);
+                }
                 "Set NULL" => self.set_cell(dr, ci as u16, None),
                 _ => {}
             }
@@ -539,9 +781,16 @@ impl ResultView {
     pub fn edits_applied(&mut self) {
         // fold edits into display; the next refresh re-reads from the server
         let edits = std::mem::take(&mut self.edits);
+        let deleted = std::mem::take(&mut self.deleted);
+        self.inserted_from = None;
+        self.selected_rows.clear();
+        self.selected = None;
         let width = self.columns.len();
         let mut rs = ResultSet::with_capacity(width, self.data.rows());
         for r in 0..self.data.rows() as u32 {
+            if deleted.contains(&r) {
+                continue;
+            }
             for c in 0..width {
                 match edits.get(&(r, c as u16)) {
                     Some(v) => rs.push(v.as_deref()),
@@ -561,21 +810,16 @@ impl ResultView {
         }
     }
 
+    /// The statements that save the pending changes: DELETEs, then UPDATEs,
+    /// then INSERTs. Rows are matched on their original primary key values.
     pub(crate) fn update_statements(&self) -> Result<Vec<String>, String> {
         let t = self.edit_target.as_ref().ok_or("This result isn't editable")?;
-        if t.pk_cols.is_empty() {
-            return Err("Can't save: the table has no primary key in this result".into());
-        }
-        let mut by_row: BTreeMap<u32, Vec<(u16, Option<&String>)>> = BTreeMap::new();
-        for ((r, c), v) in &self.edits {
-            by_row.entry(*r).or_default().push((*c, v.as_ref()));
-        }
         let q = |n: &str| self.dialect.quote_ident(n);
-        let mut out = Vec::new();
-        for (r, cols) in by_row {
-            let set: Vec<String> = cols.iter().map(|(c, v)| format!("{} = {}", q(&self.columns[*c as usize].name), self.literal(v.map(|s| s.as_str()), t.numeric[*c as usize]))).collect();
-            let wh: Vec<String> = t
-                .pk_cols
+        let key = |r: u32| -> Result<String, String> {
+            if t.pk_cols.is_empty() {
+                return Err("Can't save: the table has no primary key in this result".into());
+            }
+            Ok(t.pk_cols
                 .iter()
                 .map(|&pk| {
                     let orig = self.data.cell(r as usize, pk);
@@ -584,9 +828,45 @@ impl ResultView {
                         Some(_) => format!("{} = {}", q(&self.columns[pk].name), self.literal(orig, t.numeric[pk])),
                     }
                 })
-                .collect();
-            out.push(format!("UPDATE {} SET {} WHERE {}", t.qualified, set.join(", "), wh.join(" AND ")));
+                .collect::<Vec<_>>()
+                .join(" AND "))
+        };
+        let mut out = Vec::new();
+        for &r in self.deleted.iter().filter(|r| !self.is_inserted(**r)) {
+            out.push(format!("DELETE FROM {} WHERE {}", t.qualified, key(r)?));
         }
+        let mut by_row: BTreeMap<u32, Vec<(u16, Option<&String>)>> = BTreeMap::new();
+        for ((r, c), v) in &self.edits {
+            if self.deleted.contains(r) {
+                continue;
+            }
+            by_row.entry(*r).or_default().push((*c, v.as_ref()));
+        }
+        let mut inserts = Vec::new();
+        for (r, cols) in &by_row {
+            if self.is_inserted(*r) {
+                continue;
+            }
+            let set: Vec<String> = cols.iter().map(|(c, v)| format!("{} = {}", q(&self.columns[*c as usize].name), self.literal(v.map(|s| s.as_str()), t.numeric[*c as usize]))).collect();
+            out.push(format!("UPDATE {} SET {} WHERE {}", t.qualified, set.join(", "), key(*r)?));
+        }
+        if let Some(f) = self.inserted_from {
+            for r in (f..self.data.rows() as u32).filter(|r| !self.deleted.contains(r)) {
+                // only the columns you filled in, so the table's defaults apply to the rest
+                let cols = by_row.get(&r).cloned().unwrap_or_default();
+                if cols.is_empty() {
+                    inserts.push(match self.dialect {
+                        Dialect::MySql => format!("INSERT INTO {} () VALUES ()", t.qualified),
+                        _ => format!("INSERT INTO {} DEFAULT VALUES", t.qualified),
+                    });
+                    continue;
+                }
+                let names: Vec<String> = cols.iter().map(|(c, _)| q(&self.columns[*c as usize].name)).collect();
+                let vals: Vec<String> = cols.iter().map(|(c, v)| self.literal(v.map(|s| s.as_str()), t.numeric[*c as usize])).collect();
+                inserts.push(format!("INSERT INTO {} ({}) VALUES ({})", t.qualified, names.join(", "), vals.join(", ")));
+            }
+        }
+        out.extend(inserts);
         Ok(out)
     }
 
@@ -779,6 +1059,71 @@ mod tests {
         g.edit_target = Some(EditTarget { qualified: "public.t".into(), pk_cols: vec![0], numeric: vec![true, false] });
         g.set_cell(0, 1, Some("it's".into()));
         assert_eq!(g.update_statements().unwrap(), vec!["UPDATE public.t SET name = 'it''s' WHERE id = 7"]);
+    }
+
+    fn three_rows() -> ResultView {
+        let cols = vec![ColumnMeta::new("id", "int4"), ColumnMeta::new("name", "text"), ColumnMeta::new("qty", "int4")];
+        let mut g = ResultView::new("r".into(), cols, Dialect::Postgres, 1);
+        let mut rs = ResultSet::new(3);
+        for (id, name) in [("1", "a"), ("2", "b"), ("3", "c")] {
+            rs.push(Some(id));
+            rs.push(Some(name));
+            rs.push(Some("5"));
+        }
+        g.append(rs);
+        g.elapsed = Some(Duration::from_millis(1));
+        g.edit_target = Some(EditTarget { qualified: "public.t".into(), pk_cols: vec![0], numeric: vec![true, false, true] });
+        g
+    }
+
+    #[test]
+    fn row_changes_in_order() {
+        let mut g = three_rows();
+        g.toggle_delete(&[1u32].into());
+        g.set_cell(2, 1, Some("z".into()));
+        g.add_row(None);
+        g.editing = None;
+        g.set_cell(3, 1, Some("new".into()));
+        g.set_cell(3, 2, Some("9".into()));
+        g.add_row(Some(0));
+        assert_eq!(
+            g.update_statements().unwrap(),
+            vec![
+                "DELETE FROM public.t WHERE id = 2",
+                "UPDATE public.t SET name = 'z' WHERE id = 3",
+                "INSERT INTO public.t (name, qty) VALUES ('new', 9)",
+                "INSERT INTO public.t (name, qty) VALUES ('a', 5)",
+            ]
+        );
+        assert_eq!(g.pending(), (2, 1, 1));
+    }
+
+    #[test]
+    fn deleting_a_new_row_discards_it() {
+        let mut g = three_rows();
+        g.add_row(None);
+        g.editing = None;
+        g.toggle_delete(&[3u32].into());
+        assert!(g.update_statements().unwrap().is_empty());
+        assert!(!g.has_changes());
+        // an untouched new row uses the table's defaults
+        g.add_row(None);
+        assert_eq!(g.update_statements().unwrap(), vec!["INSERT INTO public.t DEFAULT VALUES"]);
+    }
+
+    #[test]
+    fn revert_and_apply() {
+        let mut g = three_rows();
+        g.add_row(None);
+        g.toggle_delete(&[0u32].into());
+        g.revert();
+        assert_eq!(g.row_count(), 3);
+        assert!(!g.has_changes());
+        g.toggle_delete(&[0u32].into());
+        g.set_cell(1, 1, Some("bb".into()));
+        g.edits_applied();
+        assert_eq!(g.row_count(), 2);
+        assert_eq!(g.data.cell(0, 1), Some("bb"));
     }
 
     #[test]

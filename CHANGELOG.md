@@ -10,8 +10,13 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 - Contributing guide, code of conduct, security policy, issue and pull request templates
 
+- Row editing in the results grid: select whole rows, delete them, add new rows or duplicate one, and save everything with Submit
+
 ### Changed
 
+- Double-clicking a table in the explorer opens its rows without expanding it
+- A failed sign-in is no longer retried automatically (no background reconnects, no extra attempts for queued work), so wrong credentials can't lock an account
+- Redesigned explorer header: icon buttons for Find and New connection, and a project switcher
 - README screenshots updated, with new ones for multiple databases, find and replace, and themes
 - SQL Server marked as tested against a live server
 

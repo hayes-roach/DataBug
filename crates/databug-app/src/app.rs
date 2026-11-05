@@ -205,6 +205,12 @@ pub struct DataBugApp {
     databases: HashMap<String, DbList>,
     /// Connections the user disconnected (kept in the list).
     disconnected: HashSet<String>,
+    /// Connections whose last sign-in failed, with the error. Nothing
+    /// connects to them automatically until the user retries, so a wrong
+    /// password can't lock the account with repeated attempts.
+    failed: HashMap<String, String>,
+    /// Extra databases to reload once their connection signs in again.
+    pending_virtual_refresh: HashSet<String>,
     projects: Vec<Project>,
     theme_editor: bool,
     theme_dirty: bool,
@@ -317,6 +323,8 @@ impl DataBugApp {
             virtuals: Vec::new(),
             databases: HashMap::new(),
             disconnected: HashSet::new(),
+            failed: HashMap::new(),
+            pending_virtual_refresh: HashSet::new(),
             projects,
             theme_editor: false,
             theme_dirty: false,
@@ -437,8 +445,17 @@ impl DataBugApp {
         e.error = None;
     }
 
+    fn is_failed(&self, conn_id: &str) -> bool {
+        self.failed.contains_key(ConnectionConfig::base_id(conn_id))
+    }
+
+    /// The user asked to connect again: allow sign-in attempts.
+    fn clear_failure(&mut self, conn_id: &str) {
+        self.failed.remove(ConnectionConfig::base_id(conn_id));
+    }
+
     fn ensure_catalog(&mut self, conn_id: &str, ctx: &egui::Context) {
-        if !self.refreshed.contains(conn_id) {
+        if !self.refreshed.contains(conn_id) && !self.is_failed(conn_id) {
             self.refresh_catalog(conn_id, ctx);
         }
     }
@@ -560,6 +577,7 @@ impl DataBugApp {
         let job = self.id();
         let Some(cfg) = self.conn(&self.tabs[ti].conn_id).cloned() else { return };
         self.disconnected.remove(ConnectionConfig::base_id(&cfg.id));
+        self.failed.remove(ConnectionConfig::base_id(&cfg.id));
         if self.tabs[ti].session.is_none() {
             let sid = self.tabs[ti].id;
             let s = self.spawn_session(sid, &cfg, ctx);
@@ -616,17 +634,26 @@ impl DataBugApp {
 
     fn pump_events(&mut self, ctx: &egui::Context) {
         let mut sources_done = Vec::new();
-        self.pump_inner(&mut sources_done);
+        let mut reload_virtuals = Vec::new();
+        self.pump_inner(&mut sources_done, &mut reload_virtuals);
+        // the connection signed in: now reload its extra databases, one sign-in each
+        for base in reload_virtuals {
+            let ids: Vec<String> = self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == base && self.catalogs.contains_key(&v.id)).map(|v| v.id.clone()).collect();
+            for id in ids {
+                self.refresh_catalog(&id, ctx);
+            }
+        }
         for (req, results) in sources_done {
             self.sources_arrived(req, results, ctx);
         }
         self.poll_compare(ctx);
     }
 
-    fn pump_inner(&mut self, sources_done: &mut Vec<(u64, Vec<(SourceRef, Result<String, String>)>)>) {
+    fn pump_inner(&mut self, sources_done: &mut Vec<(u64, Vec<(SourceRef, Result<String, String>)>)>, reload_virtuals: &mut Vec<String>) {
         while let Ok((sid, ev)) = self.rx.try_recv() {
             if sid & META_BIT != 0 {
                 let Some(conn_id) = self.meta.iter().find(|(_, s)| s.id == sid).map(|(k, _)| k.clone()) else { continue };
+                let is_connect_failure = matches!(ev, Ev::ConnectFailed(_));
                 match ev {
                     Ev::Catalog(Ok(cat)) => {
                         self.store.save_catalog(&conn_id, &cat);
@@ -651,7 +678,19 @@ impl DataBugApp {
                             Err(e) => d.error = Some(e),
                         }
                     }
+                    Ev::Connected(_) => {
+                        let base = ConnectionConfig::base_id(&conn_id).to_string();
+                        self.failed.remove(&base);
+                        if conn_id == base && self.pending_virtual_refresh.remove(&base) {
+                            reload_virtuals.push(base);
+                        }
+                    }
                     Ev::Catalog(Err(msg)) | Ev::ConnectFailed(msg) => {
+                        if is_connect_failure {
+                            let base = ConnectionConfig::base_id(&conn_id).to_string();
+                            self.failed.insert(base.clone(), msg.clone());
+                            self.pending_virtual_refresh.remove(&base);
+                        }
                         if let Some(d) = self.databases.get_mut(&conn_id).filter(|d| d.loading) {
                             d.loading = false;
                             d.error = Some(msg.clone());
@@ -681,11 +720,14 @@ impl DataBugApp {
                     Ev::Connected(caps) => {
                         tab.state = ConnState::Connected;
                         tab.caps = caps;
+                        self.failed.remove(ConnectionConfig::base_id(&conn_id));
                     }
                     Ev::ConnectFailed(msg) => {
                         tab.state = ConnState::Failed(msg.clone());
                         tab.output.push(LogLine { at: now_hms(), kind: LogKind::Error, text: format!("Couldn't connect: {msg}"), sql: None });
+                        tab.output.push(LogLine { at: now_hms(), kind: LogKind::Warn, text: "DataBug won't sign in again on its own; check the connection settings, then run again or choose Retry".into(), sql: None });
                         tab.session = None;
+                        self.failed.insert(ConnectionConfig::base_id(&conn_id).to_string(), msg);
                     }
                     Ev::Dropped => {
                         tab.state = ConnState::Idle;
@@ -877,7 +919,18 @@ impl DataBugApp {
                     self.tabs[ti].title = format!("{table} DDL");
                 }
             }
-            Action::Refresh(id) => self.refresh_catalog(&id, ctx),
+            Action::Refresh(id) => {
+                // automatic loads of a connection whose sign-in failed are dropped;
+                // the user retries with Retry / Connect / Refresh schema (Action::Retry)
+                if !self.is_failed(&id) {
+                    self.refresh_catalog(&id, ctx);
+                }
+            }
+            Action::Retry(id) => {
+                self.clear_failure(&id);
+                self.disconnected.remove(ConnectionConfig::base_id(&id));
+                self.refresh_catalog(&id, ctx);
+            }
             Action::SetSchemas(id, list) => {
                 if let Some((base, db)) = id.split_once('@') {
                     if let Some(c) = self.connections.iter_mut().find(|c| c.id == base) {
@@ -909,7 +962,9 @@ impl DataBugApp {
                 self.explorer.open_key(format!("c:{id}"));
             }
             Action::LoadDatabases(id) => {
-                if self.ensure_meta(&id, ctx) {
+                if self.is_failed(&id) {
+                    self.toast("This connection failed to sign in. Fix its settings or choose Retry first");
+                } else if self.ensure_meta(&id, ctx) {
                     self.meta[&id].send(Cmd::ListDatabases);
                     let d = self.databases.entry(id.clone()).or_insert(DbList { names: Vec::new(), current: String::new(), loading: false, error: None });
                     d.loading = true;
@@ -925,15 +980,11 @@ impl DataBugApp {
             }
             Action::Connect(id) => {
                 self.disconnected.remove(&id);
+                self.clear_failure(&id);
                 self.explorer.open_key(format!("c:{id}"));
+                // sign in once; the extra databases reload only after that works
+                self.pending_virtual_refresh.insert(id.clone());
                 self.refresh_catalog(&id, ctx);
-                // reopen the extra databases whose schemas are on screen
-                let extra: Vec<String> = self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == id).map(|v| v.id.clone()).collect();
-                for v in extra {
-                    if self.catalogs.contains_key(&v) {
-                        self.refresh_catalog(&v, ctx);
-                    }
-                }
             }
             Action::MoveConn(id, to) => {
                 let mut order: Vec<String> = self.visible_connections().iter().map(|c| c.id.clone()).collect();
@@ -1062,6 +1113,7 @@ impl DataBugApp {
                 self.tabs.retain(|t| ConnectionConfig::base_id(&t.conn_id) != id);
                 self.databases.remove(&id);
                 self.disconnected.remove(&id);
+                self.failed.remove(&id);
                 for pr in self.projects.iter_mut() {
                     pr.connections.retain(|c| *c != id);
                 }
@@ -1368,7 +1420,7 @@ impl DataBugApp {
     fn run_db_search(&mut self, ctx: &egui::Context) {
         let scope = self.search_scope();
         for id in &scope {
-            if !self.catalogs.contains_key(id) && !self.disconnected.contains(ConnectionConfig::base_id(id)) {
+            if !self.catalogs.contains_key(id) && !self.disconnected.contains(ConnectionConfig::base_id(id)) && !self.is_failed(id) {
                 self.refresh_catalog(id, ctx);
             }
         }
@@ -2496,6 +2548,7 @@ impl DataBugApp {
                 self.meta.retain(|k, _| ConnectionConfig::base_id(k) != cfg.id);
                 self.refreshed.retain(|k| ConnectionConfig::base_id(k) != cfg.id);
                 self.databases.remove(&cfg.id);
+                self.failed.remove(&cfg.id);
                 if d.is_new {
                     self.open_console(&cfg.id, None, ctx);
                 } else {
@@ -2780,9 +2833,24 @@ impl DataBugApp {
                             }
                             self.request_run(false, Some(false), ctx);
                         }
-                        "confirm" | "tx" | "edit" => {
+                        "retry" => {
+                            // a server that accepts and drops every connection, counting sign-in attempts
+                            let port: u16 = std::env::var("DATABUG_SHOT_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(1);
+                            let mut cfg = ConnectionConfig::new(DbKind::Postgres);
+                            cfg.name = "Store (Postgres)".into();
+                            cfg.host = "127.0.0.1".into();
+                            cfg.port = port;
+                            cfg.user = "app".into();
+                            cfg.ssl = databug_core::SslMode::Disable;
+                            let id = cfg.id.clone();
+                            self.connections.push(cfg);
+                            self.rebuild_virtuals();
+                            self.open_console(&id, Some("SELECT 1;".into()), ctx);
+                        }
+                        "confirm" | "tx" | "edit" | "rows" | "rows-submit" => {
                             if let Some(t) = self.tabs.get_mut(self.active) {
                                 let sql = match scene.as_str() {
+                                    "rows" | "rows-submit" => "SELECT * FROM customers WHERE id <= 12;",
                                     "confirm" => "DELETE FROM order_items;",
                                     "tx" => "UPDATE products SET stock = stock - 1 WHERE id = 3;",
                                     _ => "SELECT * FROM products WHERE id <= 12;",
@@ -2899,7 +2967,45 @@ impl DataBugApp {
                     ctx.input_mut(|i| i.events.push(ev));
                 }
             }
-            2 if matches!(plan.scene.as_str(), "error" | "confirm" | "tx" | "edit") && plan.wait_frames == 5 => {
+            2 if plan.scene == "retry" && plan.wait_frames == 40 => {
+                // every automatic path that used to sign in again
+                let id = self.connections.last().map(|c| c.id.clone()).unwrap_or_default();
+                self.apply(Action::Refresh(id.clone()), ctx);
+                self.apply(Action::LoadDatabases(id.clone()), ctx);
+                self.apply(Action::NewConsole(id.clone()), ctx);
+                self.open_db_search(Some("orders".into()));
+                self.explorer.open_key(format!("c:{id}"));
+            }
+            2 if matches!(plan.scene.as_str(), "rows" | "rows-submit") && plan.wait_frames == 20 => {
+                if let Some(v) = self.tabs.get_mut(self.active).and_then(|t| t.results.get_mut(0)) {
+                    if plan.scene == "rows" {
+                        v.toggle_delete(&[2u32].into());
+                    }
+                    v.set_cell(4, 1, Some("Riley Vance-Hart".into()));
+                    v.add_row(None);
+                    let n = v.row_count() as u32 - 1;
+                    v.set_cell(n, 1, Some("Quinn Avery".into()));
+                    v.set_cell(n, 2, Some("quinn@example.com".into()));
+                    v.set_cell(n, 3, Some("Savannah".into()));
+                    v.select_rows(&[5, 6]);
+                    if plan.scene == "rows-submit" {
+                        if let Ok(stmts) = v.update_statements() {
+                            eprintln!("rows: {}", stmts.join(";\n      "));
+                            let tab_id = self.tabs[self.active].id;
+                            let stmts = stmts.into_iter().map(|s| (s, 0..0)).collect();
+                            self.check_and_dispatch(tab_id, stmts, None, Some(0), ctx);
+                        }
+                    }
+                }
+            }
+            2 if plan.scene == "rows-submit" && plan.wait_frames == 45 => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.editor.set_text("SELECT id, name, email, city FROM customers WHERE id <= 4 OR name = 'Quinn Avery' OR id = 5;".into());
+                    t.editor.select(0..0);
+                }
+                ctx.input_mut(|i| i.events.push(egui::Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND }));
+            }
+            2 if matches!(plan.scene.as_str(), "error" | "confirm" | "tx" | "edit" | "rows" | "rows-submit") && plan.wait_frames == 5 => {
                 ctx.input_mut(|i| i.events.push(egui::Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND }));
             }
             2 if plan.scene == "edit" && plan.wait_frames == 20 => {
@@ -2939,7 +3045,7 @@ impl DataBugApp {
                     i.events.push(egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL });
                 });
             }
-            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" => 60, "pg-compare" | "compare" => 30, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
+            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
                 plan.step = 3;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
@@ -3079,7 +3185,7 @@ impl eframe::App for DataBugApp {
             .show(ctx, |ui| {
                 island.show(ui, |ui| {
                     ui.set_min_height(ui.available_height());
-                    let cx = ExplorerCtx { connected: &connected, disconnected: &self.disconnected, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
+                    let cx = ExplorerCtx { connected: &connected, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
                     let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
                     // don't start another refresh while one is loading
                     acts.retain(|a| match a {

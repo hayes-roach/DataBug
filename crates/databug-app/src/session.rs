@@ -84,6 +84,21 @@ impl Session {
     }
 }
 
+/// Answer a command that can't run because the connection failed.
+fn fail(send: &impl Fn(Ev), cmd: Cmd, msg: &str) {
+    let msg = msg.to_string();
+    match cmd {
+        Cmd::Execute { job, .. } => {
+            send(Ev::StmtDone { job, idx: 0, elapsed: Duration::ZERO, error: Some(msg) });
+            send(Ev::JobDone { job });
+        }
+        Cmd::Explain { job, .. } => send(Ev::Plan { job, result: Err(msg), elapsed: Duration::ZERO }),
+        Cmd::Introspect => send(Ev::Catalog(Err(msg))),
+        Cmd::ListDatabases => send(Ev::Databases(Err(msg))),
+        Cmd::Sources { req, items, .. } => send(Ev::Sources { req, results: items.into_iter().map(|i| (i, Err(msg.clone()))).collect() }),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn worker(
     id: SessionId,
@@ -117,15 +132,12 @@ async fn worker(
                 Err(e) => {
                     let msg = format!("{e:#}");
                     send(Ev::ConnectFailed(msg.clone()));
-                    match cmd {
-                        Cmd::Execute { job, .. } => {
-                            send(Ev::StmtDone { job, idx: 0, elapsed: Duration::ZERO, error: Some(msg) });
-                            send(Ev::JobDone { job });
-                        }
-                        Cmd::Explain { job, .. } => send(Ev::Plan { job, result: Err(msg), elapsed: Duration::ZERO }),
-                        Cmd::Introspect => send(Ev::Catalog(Err(msg))),
-                        Cmd::ListDatabases => send(Ev::Databases(Err(msg))),
-                        Cmd::Sources { req, items, .. } => send(Ev::Sources { req, results: items.into_iter().map(|i| (i, Err(msg.clone()))).collect() }),
+                    // Fail this command and everything already queued with the
+                    // same error instead of signing in again for each one:
+                    // repeated failed logins can lock the account.
+                    fail(&send, cmd, &msg);
+                    while let Ok(queued) = rx.try_recv() {
+                        fail(&send, queued, &msg);
                     }
                     continue;
                 }

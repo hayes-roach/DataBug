@@ -98,6 +98,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 **Connections and projects**
 - *Disconnect* (right-click a connection) closes its sessions but keeps it in the explorer; *Connect*, a double-click, or running a query reconnects. Connected connections show a green dot.
 - Drag connections to reorder them.
+- **No automatic retries after a failed sign-in.** When a connection can't sign in, DataBug shows the error and stops: no reconnecting in the background, no second attempt for queued work, so a wrong password can't lock the account. *Retry*, *Connect*, *Refresh schema*, running a query or editing the connection tries again.
 - **Projects**: the switcher above the tree picks *All connections* or a project. Each project keeps its own ordered list of connections; new connections join the current project; right-click → *Add to project* / *Remove from project*. Saved in `projects.json`.
 
 **Running procedures**
@@ -119,7 +120,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 
 **Results**
 - Virtualized grid (only visible rows are laid out), with column types in the header, click-to-sort (numeric and natural ordering), row filter, keyboard navigation, and copy cell/row.
-- In-place editing for single-table queries with a primary key. Edited cells are highlighted, and *Submit* runs `UPDATE … WHERE pk = …` (or *Preview SQL* copies them).
+- Row editing like DataGrip for single-table queries that include the primary key: double-click a cell (or F2) to edit it, click row numbers to select whole rows (⌘/Ctrl-click and Shift-click for several), *− Delete* or the Delete key to remove them, *+ Row* (Alt + Insert) to add one, *Duplicate* to copy one. Added, changed and deleted rows are color-coded and nothing is saved until *Submit*, which runs `DELETE`, `UPDATE` and `INSERT` statements keyed on the primary key (*Preview SQL* copies them, *Revert* undoes everything). If the database refuses a change, the pending edits stay so you can fix them.
 - Streams rows in batches with a configurable row limit (default 10,000). Postgres cancels the rest of an over-limit result on the server instead of draining it.
 - Export to CSV, JSON, SQL `INSERT`s or Markdown, or copy as TSV/CSV.
 - Multiple result tabs per run, an Output log with timings, messages (Postgres `NOTICE`, MySQL warnings) and errors, and a searchable query history.

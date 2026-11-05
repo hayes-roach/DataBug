@@ -7,7 +7,7 @@ default-members = ["crates/databug-app"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-rust-version = "1.81"
+rust-version = "1.89"
 
 [workspace.dependencies]
 databug-core = { path = "crates/databug-core" }

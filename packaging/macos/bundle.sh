@@ -13,14 +13,14 @@ FEATURES=${DATABUG_FEATURES:-}
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 if [ "$MODE" = universal ]; then
-  cargo build --release --target aarch64-apple-darwin $FEATURES
-  cargo build --release --target x86_64-apple-darwin $FEATURES
+  cargo build --release --locked --target aarch64-apple-darwin $FEATURES
+  cargo build --release --locked --target x86_64-apple-darwin $FEATURES
   mkdir -p target/universal
   lipo -create -output target/universal/databug target/aarch64-apple-darwin/release/databug target/x86_64-apple-darwin/release/databug
   BIN=target/universal/databug
   ARCH=universal
 else
-  cargo build --release $FEATURES
+  cargo build --release --locked $FEATURES
   BIN=target/release/databug
   ARCH=$(uname -m)
 fi

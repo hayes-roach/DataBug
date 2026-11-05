@@ -1,0 +1,5 @@
+# `cargo update` picks versions that still build with the rust-version in
+# Cargo.toml when they exist (Cargo 1.84+), so local updates don't raise the
+# minimum Rust version by accident.
+[resolver]
+incompatible-rust-versions = "fallback"

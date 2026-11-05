@@ -9,6 +9,14 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 ### Added
 
 - Contributing guide, code of conduct, security policy, issue and pull request templates
+- New engines: CockroachDB, TimescaleDB, QuestDB and H2 (PostgreSQL protocol, each with its own introspection), DuckDB (embedded), Apache Cassandra (CQL), CouchDB (Mango queries in shell syntax) and InfluxDB (InfluxQL, Flux and line protocol), all in the default build
+- Opt-in drivers for Oracle (`oracle` feature, needs Oracle Instant Client), IBM Db2 (`db2`) and Spark SQL through its Thrift server (`spark`), both over ODBC; not yet tested against a live server
+- The new-connection dialog groups engines by type (relational, analytical, document, wide-column, time series, distributed) and has the fields each engine needs: Oracle service name or SID, DuckDB file, Cassandra keyspace, InfluxDB organization, bucket and token, ODBC driver and options, H2 database path
+- Monogram icons for the new engines, with the source and license of every logo in `assets/logos/SOURCES.md`
+
+### Fixed
+
+- Postgres: when a result stopped at the row limit, the cancel request for the rest of it could cancel the next statement instead
 
 ### Changed
 

@@ -22,6 +22,8 @@ mod sqlite;
 mod pgwire;
 #[cfg(feature = "duckdb")]
 mod duck;
+#[cfg(feature = "duckdb")]
+mod duck_lib;
 #[cfg(feature = "cassandra")]
 mod cassandra;
 #[cfg(feature = "couchdb")]
@@ -32,9 +34,9 @@ mod influx;
 mod oracle;
 #[cfg(any(feature = "db2", feature = "spark"))]
 mod odbc;
-#[cfg(any(feature = "couchdb", feature = "influxdb"))]
+#[cfg(any(feature = "couchdb", feature = "influxdb", feature = "duckdb"))]
 mod http;
-#[cfg(any(feature = "postgres", feature = "cassandra", feature = "couchdb", feature = "influxdb"))]
+#[cfg(any(feature = "postgres", feature = "cassandra-tls", feature = "couchdb", feature = "influxdb"))]
 mod tls;
 #[allow(dead_code)]
 mod infoschema;
@@ -138,6 +140,54 @@ pub fn windows_auth_available() -> bool {
 
 #[cfg(feature = "mssql")]
 pub use mssql::kerberos_principal;
+
+/// Progress of an on-demand engine download (DuckDB's library).
+#[derive(Debug, Clone, Default)]
+pub struct InstallState {
+    pub running: bool,
+    pub downloaded: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+/// What the connection dialog shows for an engine that's downloaded on demand.
+#[derive(Debug, Clone)]
+pub struct Download {
+    pub version: &'static str,
+    /// Size of the download in bytes.
+    pub size: u64,
+    pub url: String,
+    pub installed: bool,
+    pub state: InstallState,
+}
+
+/// Where downloaded engine libraries are kept; the app passes its data folder at startup.
+pub fn set_runtime_dir(dir: std::path::PathBuf) {
+    #[cfg(feature = "duckdb")]
+    duck_lib::set_runtime_dir(dir);
+    #[cfg(not(feature = "duckdb"))]
+    let _ = dir;
+}
+
+/// The DuckDB download for this platform, or `None` when this build has no
+/// DuckDB driver or DuckDB publishes no library for this platform.
+pub fn duckdb_download() -> Option<Download> {
+    #[cfg(feature = "duckdb")]
+    {
+        let a = duck_lib::asset()?;
+        Some(Download { version: duck_lib::DUCKDB_VERSION, size: a.size, url: duck_lib::download_url(&a), installed: duck_lib::installed(), state: duck_lib::install_state() })
+    }
+    #[cfg(not(feature = "duckdb"))]
+    None
+}
+
+/// Download DuckDB's library in the background; `notify` runs on progress.
+pub fn start_duckdb_download(rt: &tokio::runtime::Handle, notify: Arc<dyn Fn() + Send + Sync>) {
+    #[cfg(feature = "duckdb")]
+    duck_lib::start_install(rt, notify);
+    #[cfg(not(feature = "duckdb"))]
+    let _ = (rt, notify);
+}
 
 /// Drivers compiled into this build.
 pub fn available() -> Vec<DbKind> {

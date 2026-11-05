@@ -46,3 +46,6 @@ THIRD-PARTY COMPONENTS
 - Rust crates listed in Cargo.lock, each under its own license (mostly MIT
   and/or Apache-2.0).
 - Database logos in crates/databug-app/assets/logos: see NOTICE.md there.
+- DuckDB (libduckdb), (c) Stichting DuckDB Foundation, MIT License. Not
+  distributed with DataBug: downloaded from DuckDB's GitHub releases only
+  when you choose to, and loaded at run time.

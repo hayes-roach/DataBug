@@ -102,6 +102,8 @@ impl Store {
         };
         let _ = std::fs::create_dir_all(&config_dir);
         let _ = std::fs::create_dir_all(data_dir.join("catalogs"));
+        // engine libraries downloaded on demand (DuckDB)
+        databug_drivers::set_runtime_dir(data_dir.join("runtimes"));
         Store { config_dir, data_dir, memory_secrets: HashMap::new() }
     }
 

@@ -8,6 +8,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ### Changed
 
+- DuckDB is no longer built into DataBug. Choosing DuckDB in the new-connection dialog offers *Download DuckDB*, which fetches DuckDB's official library (1.5.6) from its GitHub releases, checks it against a pinned SHA-256 and loads it when you connect; `DATABUG_DUCKDB_LIB` uses a library you already have. The download is about 13–41 MB depending on the platform, and DataBug itself is much smaller (27 MB instead of 72 MB on macOS)
+- TLS for Cassandra moved to the opt-in `cassandra-tls` feature, so the default build needs no C crypto library; without it, choosing *Require* for Cassandra gives an error instead of connecting
 - The macOS/Linux one-line installer now updates an existing install in place and says so ("Updating 0.1.0 → 0.2.0"), or reports that you're already up to date without downloading anything; `--force` reinstalls
 - The welcome screen no longer offers "Open console on …" for the first saved connection
 

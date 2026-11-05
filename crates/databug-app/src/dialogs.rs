@@ -124,6 +124,11 @@ impl ConnDialog {
                                 }
                             });
                             ui.end_row();
+                            if duck {
+                                field(ui, "Engine");
+                                ui.vertical(|ui| duckdb_download_ui(ui, p, rt));
+                                ui.end_row();
+                            }
                         }
                         kind => {
                             if let Some(hint) = uri_hint(kind) {
@@ -480,5 +485,36 @@ fn engine_note(kind: DbKind) -> Option<&'static str> {
         DbKind::Cassandra => Some("Runs CQL. Keyspaces appear as schemas."),
         DbKind::QuestDb => Some("Connects to QuestDB's PostgreSQL port (8812 by default)."),
         _ => None,
+    }
+}
+
+/// DuckDB isn't built into DataBug: offer to download its library, and show
+/// progress while that runs (the download carries on if the dialog closes).
+fn duckdb_download_ui(ui: &mut egui::Ui, p: &Palette, rt: &tokio::runtime::Handle) {
+    let Some(d) = databug_drivers::duckdb_download() else {
+        ui.label(RichText::new("DuckDB doesn't publish a library for this platform.").color(p.warning));
+        return;
+    };
+    let mb = |b: u64| b as f64 / 1_000_000.0;
+    if d.state.running {
+        let total = d.state.total.max(1);
+        ui.add(egui::ProgressBar::new(d.state.downloaded as f32 / total as f32).desired_width(380.0).text(format!("Downloading DuckDB {}… {:.0} of {:.0} MB", d.version, mb(d.state.downloaded), mb(total))));
+        // progress arrives from the download task, which also requests repaints
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        return;
+    }
+    if d.installed {
+        ui.label(RichText::new(format!("DuckDB {} is installed", d.version)).color(p.success));
+        return;
+    }
+    ui.label(RichText::new(format!("DuckDB isn't included in DataBug. Download its library once ({:.0} MB) from DuckDB's GitHub releases; DataBug checks it against a pinned checksum.", mb(d.size))).size(11.5).color(p.muted));
+    ui.horizontal(|ui| {
+        if ui.button(format!("Download DuckDB {}", d.version)).on_hover_text(d.url.as_str()).clicked() {
+            let ctx = ui.ctx().clone();
+            databug_drivers::start_duckdb_download(rt, std::sync::Arc::new(move || ctx.request_repaint()));
+        }
+    });
+    if let Some(e) = &d.state.error {
+        ui.label(RichText::new(format!("✖ {e}")).size(11.5).color(p.danger));
     }
 }

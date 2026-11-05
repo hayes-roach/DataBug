@@ -1,4 +1,4 @@
-//! End-to-end driver tests. SQLite and DuckDB always run; Postgres runs when
+//! End-to-end driver tests. SQLite always runs; Postgres runs when
 //! `DATABUG_TEST_PG=host:port:database:user` is set, and the other servers
 //! when their `DATABUG_TEST_*` variable is (see each test).
 
@@ -510,8 +510,14 @@ async fn store_checks(conn: &mut Box<dyn DbConnection>) -> databug_core::Catalog
     cat
 }
 
+/// `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (or `.so` / `duckdb.dll`):
+/// DuckDB's library is downloaded by the app on demand, so tests need one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duckdb_end_to_end() {
+    if std::env::var_os("DATABUG_DUCKDB_LIB").is_none() {
+        eprintln!("DATABUG_DUCKDB_LIB not set; skipping");
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("databug-duck-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("store.duckdb");
@@ -524,7 +530,8 @@ async fn duckdb_end_to_end() {
     assert_eq!(cat.default_schema, "main");
 
     let c = run(&mut conn, "SELECT price, [1, 2] AS l, DATE '2026-01-02' AS d FROM products WHERE id = 1", 10).await.unwrap();
-    assert_eq!(c.types, vec!["decimal(10,2)", "list", "date"]);
+    assert_eq!(c.types, vec!["decimal(10,2)", "integer[]", "date"]);
+    assert_eq!(c.rows.cell(0, 0).map(|p| p.contains('.')), Some(true));
     assert_eq!(c.rows.cell(0, 1), Some("[1, 2]"));
     assert_eq!(c.rows.cell(0, 2), Some("2026-01-02"));
 
@@ -827,4 +834,44 @@ async fn spark_end_to_end() {
     assert!(c.truncated);
     let cat = conn.introspect().await.unwrap();
     assert!(!cat.schemas.is_empty());
+}
+
+/// `DATABUG_TEST_DUCKDB_DOWNLOAD=1` downloads DuckDB's library the way the
+/// connection dialog does (into a temporary folder), then opens a database.
+#[cfg(feature = "duckdb")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duckdb_download_and_load() {
+    if std::env::var_os("DATABUG_TEST_DUCKDB_DOWNLOAD").is_none() || std::env::var_os("DATABUG_DUCKDB_LIB").is_some() {
+        eprintln!("DATABUG_TEST_DUCKDB_DOWNLOAD not set (or DATABUG_DUCKDB_LIB is); skipping");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("databug-runtimes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    databug_drivers::set_runtime_dir(dir.clone());
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.path = ":memory:".into();
+    let err = connect(&cfg, None).await.err().unwrap();
+    assert!(err.to_string().contains("Download DuckDB"), "{err}");
+    assert!(!databug_drivers::duckdb_download().unwrap().installed);
+    databug_drivers::start_duckdb_download(&tokio::runtime::Handle::current(), Arc::new(|| {}));
+    let start = Instant::now();
+    loop {
+        let d = databug_drivers::duckdb_download().unwrap();
+        if !d.state.running {
+            assert!(d.state.error.is_none(), "{:?}", d.state.error);
+            assert!(d.installed);
+            assert_eq!(d.state.downloaded, d.size);
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(300), "download took too long");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // only the library is kept
+    let files: Vec<_> = std::fs::read_dir(dir.join("duckdb-1.5.6")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let mut conn = connect(&cfg, None).await.unwrap();
+    let c = run(&mut conn, "SELECT version() AS v", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("v1.5.6"));
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
 }

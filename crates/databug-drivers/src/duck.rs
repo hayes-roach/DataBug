@@ -1,41 +1,142 @@
+//! DuckDB through its C API, from a library loaded at run time (see
+//! `duck_lib`). DuckDB runs in-process and is synchronous, so every call
+//! runs on Tokio's blocking pool, like SQLite.
+
+use crate::duck_lib::{api, cstr, Api, Handle, RawResult};
 use crate::{infoschema, Batcher, Canceller, DbConnection, ExecOptions, Sink, SourceRef};
 use async_trait::async_trait;
 use databug_core::{Capabilities, Catalog, ColumnMeta, ConnectionConfig, DbObject, Dialect, ObjectKind, Plan, QueryEvent};
-use duckdb::arrow::util::display::{ArrayFormatter, FormatOptions};
-use duckdb::{AccessMode, Config, Connection};
+use std::ffi::CString;
 use std::sync::{Arc, Mutex};
 
-/// DuckDB runs in-process and is synchronous, so every call runs on Tokio's
-/// blocking pool, like SQLite.
+/// An open database and connection. Shared with the canceller, which calls
+/// `duckdb_interrupt` (thread-safe) while a query holds `lock`.
+struct Inner {
+    api: Arc<Api>,
+    db: Handle,
+    conn: Handle,
+    lock: Mutex<()>,
+}
+
+// SAFETY: DuckDB connections may be used from any thread when calls are
+// serialized (`lock`); `duckdb_interrupt` may be called concurrently.
+unsafe impl Send for Inner {}
+unsafe impl Sync for Inner {}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        unsafe {
+            (self.api.disconnect)(&mut self.conn);
+            (self.api.close)(&mut self.db);
+        }
+    }
+}
+
+/// A materialized result, destroyed on drop.
+struct QueryResult<'a> {
+    api: &'a Api,
+    raw: RawResult,
+}
+
+impl Drop for QueryResult<'_> {
+    fn drop(&mut self) {
+        unsafe { (self.api.destroy_result)(&mut self.raw) }
+    }
+}
+
+impl QueryResult<'_> {
+    fn columns(&mut self) -> usize {
+        unsafe { (self.api.column_count)(&mut self.raw) as usize }
+    }
+    fn name(&mut self, c: usize) -> String {
+        cstr(unsafe { (self.api.column_name)(&mut self.raw, c as u64) })
+    }
+    fn rows(&mut self) -> usize {
+        unsafe { (self.api.row_count)(&mut self.raw) as usize }
+    }
+    fn changed(&mut self) -> u64 {
+        unsafe { (self.api.rows_changed)(&mut self.raw) }
+    }
+    /// The value cast to text, or `None` for NULL.
+    fn value(&mut self, c: usize, r: usize) -> Option<String> {
+        unsafe {
+            if (self.api.value_is_null)(&mut self.raw, c as u64, r as u64) {
+                return None;
+            }
+            let p = (self.api.value_varchar)(&mut self.raw, c as u64, r as u64);
+            if p.is_null() {
+                return None;
+            }
+            let s = cstr(p);
+            (self.api.free)(p.cast());
+            Some(s)
+        }
+    }
+}
+
+impl Inner {
+    fn query(&self, sql: &str) -> anyhow::Result<QueryResult<'_>> {
+        let c = CString::new(sql).map_err(|_| anyhow::anyhow!("The statement contains a NUL character"))?;
+        let mut res = QueryResult { api: &self.api, raw: RawResult::zeroed() };
+        let state = unsafe { (self.api.query)(self.conn, c.as_ptr(), &mut res.raw) };
+        if state != 0 {
+            let msg = cstr(unsafe { (self.api.result_error)(&mut res.raw) });
+            anyhow::bail!("{}", if msg.is_empty() { "DuckDB reported an error".to_string() } else { msg });
+        }
+        Ok(res)
+    }
+}
+
 pub struct DuckConn {
-    conn: Arc<Mutex<Connection>>,
-    interrupt: Arc<duckdb::InterruptHandle>,
+    inner: Arc<Inner>,
 }
 
 impl DuckConn {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
         let path = cfg.path.trim().to_string();
         let read_only = cfg.read_only;
-        let conn = tokio::task::spawn_blocking(move || -> anyhow::Result<Connection> {
+        let inner = tokio::task::spawn_blocking(move || -> anyhow::Result<Inner> {
             if path.is_empty() {
                 anyhow::bail!("Choose a database file, or enter :memory: for a scratch database");
             }
-            let config = Config::default().access_mode(if read_only { AccessMode::ReadOnly } else { AccessMode::Automatic })?;
-            if path == ":memory:" {
-                return Ok(Connection::open_in_memory_with_flags(config)?);
+            let api = api()?;
+            unsafe {
+                let mut config: Handle = std::ptr::null_mut();
+                if (api.create_config)(&mut config) != 0 {
+                    anyhow::bail!("DuckDB couldn't create a configuration");
+                }
+                if read_only {
+                    (api.set_config)(config, c"access_mode".as_ptr(), c"READ_ONLY".as_ptr());
+                }
+                let cpath = CString::new(if path == ":memory:" { String::new() } else { path })?;
+                let mut db: Handle = std::ptr::null_mut();
+                let mut err: *mut std::ffi::c_char = std::ptr::null_mut();
+                let state = (api.open_ext)(cpath.as_ptr(), &mut db, config, &mut err);
+                (api.destroy_config)(&mut config);
+                if state != 0 {
+                    let msg = cstr(err);
+                    if !err.is_null() {
+                        (api.free)(err.cast());
+                    }
+                    anyhow::bail!("{}", if msg.is_empty() { "DuckDB couldn't open the database".into() } else { msg });
+                }
+                let mut conn: Handle = std::ptr::null_mut();
+                if (api.connect)(db, &mut conn) != 0 {
+                    (api.close)(&mut db);
+                    anyhow::bail!("DuckDB couldn't open a connection");
+                }
+                Ok(Inner { api, db, conn, lock: Mutex::new(()) })
             }
-            Ok(Connection::open_with_flags(&path, config)?)
         })
         .await??;
-        let interrupt = conn.interrupt_handle();
-        Ok(DuckConn { conn: Arc::new(Mutex::new(conn)), interrupt })
+        Ok(DuckConn { inner: Arc::new(inner) })
     }
 
-    async fn blocking<T: Send + 'static>(&self, f: impl FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static) -> anyhow::Result<T> {
-        let conn = self.conn.clone();
+    async fn blocking<T: Send + 'static>(&self, f: impl FnOnce(&Inner) -> anyhow::Result<T> + Send + 'static) -> anyhow::Result<T> {
+        let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().map_err(|_| anyhow::anyhow!("connection poisoned"))?;
-            f(&c)
+            let _g = inner.lock.lock().map_err(|_| anyhow::anyhow!("connection poisoned"))?;
+            f(&inner)
         })
         .await?
     }
@@ -46,87 +147,77 @@ fn is_count_result(fields: &[String], modifies: bool) -> bool {
     modifies && fields.len() == 1 && fields[0].eq_ignore_ascii_case("count")
 }
 
-fn run_statement(c: &Connection, stmt: &str, limit: usize, sink: &Sink) -> anyhow::Result<()> {
-    let modifies = databug_sql::classify(stmt, Dialect::Postgres).modifies();
-    let mut st = c.prepare(stmt)?;
-    let stream = st.stream_arrow([])?;
-    let schema = stream.get_schema();
-    let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
-    if names.is_empty() {
-        for b in stream {
-            b?;
-        }
-        sink(QueryEvent::Affected(0));
-        return Ok(());
+/// Queries that can be wrapped as a subquery, so DuckDB casts every value
+/// to text and stops at the row limit instead of materializing everything.
+pub(crate) fn wrappable(stmt: &str) -> bool {
+    if databug_sql::split_statements(stmt, Dialect::Postgres).len() > 1 {
+        return false;
     }
-    if is_count_result(&names, modifies) {
-        let mut n = 0u64;
-        for b in stream {
-            let b = b?;
-            if b.num_rows() > 0 {
-                let f = ArrayFormatter::try_new(b.column(0).as_ref(), &FormatOptions::default())?;
-                n += f.value(0).to_string().parse::<u64>().unwrap_or(0);
-            }
-        }
-        sink(QueryEvent::Affected(n));
-        return Ok(());
+    let first = databug_sql::tokenize(stmt, Dialect::Postgres).into_iter().find(|t| !t.is_trivia()).map(|t| t.text(stmt).to_ascii_uppercase());
+    match first.as_deref() {
+        // DuckDB's FROM-first shorthand (`FROM orders`) is always a query
+        Some("FROM") => true,
+        Some("SELECT" | "WITH" | "VALUES" | "TABLE" | "(") => databug_sql::classify(stmt, Dialect::Postgres) == databug_sql::StatementKind::Read,
+        _ => false,
     }
-    let cols: Vec<ColumnMeta> = schema.fields().iter().map(|f| ColumnMeta::new(f.name().clone(), type_name(f.data_type()))).collect();
-    let mut b = Batcher::new(sink, cols, limit);
-    let opts = FormatOptions::default();
-    'batches: for batch in stream {
-        let batch = batch?;
-        let fmts: Vec<ArrayFormatter> = batch.columns().iter().map(|a| ArrayFormatter::try_new(a.as_ref(), &opts)).collect::<Result<_, _>>()?;
-        // logical nulls: a `NULL`-typed column has no null bitmap but is all nulls
-        let nulls: Vec<_> = batch.columns().iter().map(|a| a.logical_nulls()).collect();
-        for row in 0..batch.num_rows() {
-            for (ci, f) in fmts.iter().enumerate() {
-                if nulls[ci].as_ref().map(|n| n.is_null(row)).unwrap_or(false) {
-                    b.cells().push(None);
-                } else {
-                    b.cells().push_with(|s| {
-                        use std::fmt::Write;
-                        let _ = write!(s, "{}", f.value(row));
-                    });
-                }
-            }
-            if !b.row_done() {
-                break 'batches;
-            }
-        }
-    }
-    Ok(())
 }
 
-/// A short SQL-ish name for an Arrow type, for the grid header.
-fn type_name(t: &duckdb::arrow::datatypes::DataType) -> String {
-    use duckdb::arrow::datatypes::DataType as T;
-    match t {
-        T::Boolean => "boolean".into(),
-        T::Int8 => "tinyint".into(),
-        T::Int16 => "smallint".into(),
-        T::Int32 => "integer".into(),
-        T::Int64 => "bigint".into(),
-        T::UInt8 => "utinyint".into(),
-        T::UInt16 => "usmallint".into(),
-        T::UInt32 => "uinteger".into(),
-        T::UInt64 => "ubigint".into(),
-        T::Float16 | T::Float32 => "float".into(),
-        T::Float64 => "double".into(),
-        T::Decimal128(p, s) | T::Decimal256(p, s) => format!("decimal({p},{s})"),
-        T::Utf8 | T::LargeUtf8 | T::Utf8View => "varchar".into(),
-        T::Binary | T::LargeBinary | T::BinaryView | T::FixedSizeBinary(_) => "blob".into(),
-        T::Date32 | T::Date64 => "date".into(),
-        T::Time32(_) | T::Time64(_) => "time".into(),
-        T::Timestamp(_, Some(_)) => "timestamptz".into(),
-        T::Timestamp(_, None) => "timestamp".into(),
-        T::Interval(_) | T::Duration(_) => "interval".into(),
-        T::List(_) | T::LargeList(_) | T::FixedSizeList(_, _) => "list".into(),
-        T::Struct(_) => "struct".into(),
-        T::Map(_, _) => "map".into(),
-        T::Dictionary(_, v) => type_name(v),
-        other => format!("{other}").to_lowercase(),
+pub(crate) fn wrap(stmt: &str, limit: usize) -> String {
+    let limit = if limit == usize::MAX { String::new() } else { format!(" LIMIT {}", limit + 1) };
+    // the newline keeps a trailing `-- comment` from swallowing the `)`
+    format!("SELECT CAST(COLUMNS(*) AS VARCHAR) FROM (\n{stmt}\n){limit}")
+}
+
+fn send_rows(res: &mut QueryResult, names: Vec<String>, types: Vec<String>, limit: usize, sink: &Sink) {
+    let width = names.len();
+    let cols = names.into_iter().enumerate().map(|(i, n)| ColumnMeta::new(n, types.get(i).cloned().unwrap_or_default())).collect();
+    let mut b = Batcher::new(sink, cols, limit);
+    for r in 0..res.rows() {
+        for c in 0..width {
+            let v = res.value(c, r);
+            b.cells().push(v.as_deref());
+        }
+        if !b.row_done() {
+            break;
+        }
     }
+}
+
+fn run_statement(c: &Inner, stmt: &str, limit: usize, sink: &Sink) -> anyhow::Result<()> {
+    let stmt = stmt.trim().trim_end_matches(';').trim_end();
+    if wrappable(stmt) {
+        // column names and types of the original query
+        let described: Vec<(String, String)> = match c.query(&format!("DESCRIBE {stmt}")) {
+            Ok(mut d) => (0..d.rows()).map(|r| (d.value(0, r).unwrap_or_default(), d.value(1, r).unwrap_or_default().to_ascii_lowercase())).collect(),
+            Err(_) => Vec::new(),
+        };
+        match c.query(&wrap(stmt, limit)) {
+            Ok(mut res) => {
+                let width = res.columns();
+                let names = if described.len() == width { described.iter().map(|d| d.0.clone()).collect() } else { (0..width).map(|i| res.name(i)).collect() };
+                let types = described.into_iter().map(|d| d.1).collect();
+                send_rows(&mut res, names, types, limit, sink);
+                return Ok(());
+            }
+            // cancelled: don't run it again
+            Err(e) if e.to_string().to_ascii_lowercase().contains("interrupt") => return Err(e),
+            // otherwise run it as written, for DuckDB's own error (or result)
+            Err(_) => {}
+        }
+    }
+    let mut res = c.query(stmt)?;
+    let width = res.columns();
+    let names: Vec<String> = (0..width).map(|i| res.name(i)).collect();
+    let modifies = databug_sql::classify(stmt, Dialect::Postgres).modifies();
+    if width == 0 {
+        sink(QueryEvent::Affected(res.changed()));
+    } else if is_count_result(&names, modifies) {
+        let n = res.value(0, 0).and_then(|v| v.parse().ok()).unwrap_or_else(|| res.changed());
+        sink(QueryEvent::Affected(n));
+    } else {
+        send_rows(&mut res, names, Vec::new(), limit, sink);
+    }
+    Ok(())
 }
 
 const SYSTEM: &[&str] = &["information_schema", "pg_catalog"];
@@ -146,8 +237,8 @@ impl DbConnection for DuckConn {
     }
 
     fn canceller(&self) -> Option<Canceller> {
-        let h = self.interrupt.clone();
-        Some(Arc::new(move || h.interrupt()))
+        let inner = self.inner.clone();
+        Some(Arc::new(move || unsafe { (inner.api.interrupt)(inner.conn) }))
     }
 
     async fn execute(&mut self, stmt: &str, opts: &ExecOptions, sink: &Sink) -> anyhow::Result<()> {
@@ -198,26 +289,20 @@ impl DbConnection for DuckConn {
 
     async fn explain(&mut self, stmt: &str, analyze: bool) -> anyhow::Result<Plan> {
         let modifies = databug_sql::classify(stmt, Dialect::Postgres).modifies();
-        let sql = format!("EXPLAIN {}{stmt}", if analyze { "ANALYZE " } else { "" });
+        let sql = format!("EXPLAIN {}{}", if analyze { "ANALYZE " } else { "" }, stmt.trim().trim_end_matches(';'));
         // EXPLAIN ANALYZE runs the statement; keep writes from sticking.
         let wrap = analyze && modifies;
         self.blocking(move |c| {
             if wrap {
-                c.execute_batch("BEGIN")?;
+                c.query("BEGIN")?;
             }
             let res = (|| -> anyhow::Result<String> {
-                let mut st = c.prepare(&sql)?;
-                let mut rows = st.query([])?;
-                let mut out = Vec::new();
-                while let Some(r) = rows.next()? {
-                    // (explain_key, explain_value): the value holds the drawn plan
-                    let v: String = r.get(1)?;
-                    out.push(v);
-                }
-                Ok(out.join("\n"))
+                let mut r = c.query(&sql)?;
+                // (explain_key, explain_value): the value holds the drawn plan
+                Ok((0..r.rows()).filter_map(|i| r.value(1, i)).collect::<Vec<_>>().join("\n"))
             })();
             if wrap {
-                let _ = c.execute_batch("ROLLBACK");
+                let _ = c.query("ROLLBACK");
             }
             Ok(Plan { root: None, raw: res?, format: "text" })
         })
@@ -237,11 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn arrow_type_names() {
-        use duckdb::arrow::datatypes::{DataType, TimeUnit};
-        assert_eq!(type_name(&DataType::Int64), "bigint");
-        assert_eq!(type_name(&DataType::Decimal128(12, 2)), "decimal(12,2)");
-        assert_eq!(type_name(&DataType::Timestamp(TimeUnit::Microsecond, None)), "timestamp");
-        assert_eq!(type_name(&DataType::Utf8), "varchar");
+    fn wraps_only_plain_queries() {
+        assert!(wrappable("SELECT * FROM orders"));
+        assert!(wrappable("with t as (select 1) select * from t"));
+        assert!(wrappable("FROM orders"));
+        assert!(!wrappable("DESCRIBE orders"));
+        assert!(!wrappable("SHOW TABLES"));
+        assert!(!wrappable("UPDATE orders SET total = 1"));
+        assert!(!wrappable("SELECT 1; SELECT 2"));
+        assert_eq!(wrap("SELECT 1 -- one", 100), "SELECT CAST(COLUMNS(*) AS VARCHAR) FROM (\nSELECT 1 -- one\n) LIMIT 101");
+        assert!(!wrap("SELECT 1", usize::MAX).contains("LIMIT"));
     }
 }

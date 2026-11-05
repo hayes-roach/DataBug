@@ -68,7 +68,7 @@ The in-app updater reads the latest GitHub release, so every release must includ
 | TimescaleDB | `tokio-postgres` (PostgreSQL protocol) | ✔ | ✔ (pg_catalog; chunks hidden, continuous aggregates as materialized views) | JSON tree, `ANALYZE` | ✔ | ✔ TimescaleDB on Postgres 16 (Docker) |
 | QuestDB | `tokio-postgres` (PostgreSQL protocol, port 8812) | ✔ | ✔ (`SHOW TABLES` / `SHOW COLUMNS`) | text | drops connection | ✔ QuestDB (Docker, latest) |
 | H2 | `tokio-postgres` (H2's `-pg` server mode) | ✔ | ✔ (information_schema) | text, `ANALYZE` | drops connection | ✔ H2 2.3.232 (`-pg`) |
-| DuckDB | `duckdb` (bundled) | ✔ | ✔ (information_schema, macros, sequences) | text, `ANALYZE` | ✔ (interrupt) | ✔ (embedded, runs in every test run) |
+| DuckDB | official `libduckdb` 1.5.6, downloaded on demand and loaded at run time | ✔ | ✔ (information_schema, macros, sequences) | text, `ANALYZE` | ✔ (interrupt) | ✔ DuckDB 1.5.6 |
 | Apache Cassandra | `scylla` | ✔ CQL | ✔ (system_schema; keyspaces as schemas) | — | drops connection | ✔ Cassandra 5 (Docker) |
 | CouchDB | `reqwest` (HTTP API) | ✔ Mango in shell syntax | ✔ (databases as collections, sampled fields, indexes) | `_explain` JSON | drops connection | ✔ CouchDB 3 (Docker) |
 | InfluxDB | `reqwest` (HTTP API) | ✔ InfluxQL, Flux (2.x), line-protocol `INSERT` | ✔ (measurements, tags, fields) | — | drops connection | ✔ InfluxDB 2.7 (Docker) |
@@ -95,7 +95,7 @@ The new-connection dialog groups engines by type: **Relational / SQL** (PostgreS
 
 Every object with a definition has an **edit** button (the pencil that appears on hover or selection, also on double-click). Tables open the table editor. Views, materialized views, procedures, functions, triggers, sequences, synonyms and events open their definition as runnable DDL in a console: `CREATE OR REPLACE` on Postgres and MySQL views, `CREATE OR ALTER` on SQL Server (2016 SP1+), `DROP` + `CREATE` where the engine has no replace (MySQL routines, SQLite, Postgres materialized views). CLR objects open their `EXTERNAL NAME` binding, and assemblies show their details and the objects bound to them.
 
-Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb`, `cockroachdb`, `timescaledb`, `questdb`, `h2`, `duckdb`, `cassandra`, `couchdb`, `influxdb`, `oracle`, `db2`, `spark`), so a build can leave out the ones it doesn't need. Everything except `oracle`, `db2` and `spark` is in the default build and needs no system libraries. Those three are opt-in because they need software DataBug can't bundle:
+Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb`, `cockroachdb`, `timescaledb`, `questdb`, `h2`, `duckdb`, `cassandra`, `couchdb`, `influxdb`, `oracle`, `db2`, `spark`), so a build can leave out the ones it doesn't need. Everything except `oracle`, `db2`, `spark` and `cassandra-tls` is in the default build and needs no system libraries. Those are opt-in because they need software DataBug can't bundle (`cassandra-tls` pulls in rustls' aws-lc backend, a C library):
 
 | Feature | To build | To connect |
 |---|---|---|
@@ -107,9 +107,11 @@ Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb
 cargo build --release --features databug-drivers/oracle
 ```
 
+**DuckDB is downloaded, not built in.** Choosing DuckDB in the new-connection dialog offers **Download DuckDB**: DataBug fetches DuckDB's official library for your platform (about 36 MB on macOS, 41 MB on Linux, 13 MB on Windows) from [DuckDB's GitHub releases](https://github.com/duckdb/duckdb/releases/tag/v1.5.6) over verified HTTPS, checks it against a SHA-256 pinned in the source, keeps only the library (in DataBug's data folder under `runtimes/duckdb-1.5.6`) and loads it when you connect. Nothing is downloaded unless you click the button. To use a DuckDB library you already have, set `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (`.so`, `duckdb.dll`).
+
 Engines without a dialect of their own borrow the closest one for highlighting, completion and generated SQL: the PostgreSQL-compatible engines, Oracle, Db2, DuckDB, Cassandra and InfluxDB use the Postgres one (double-quoted identifiers), Spark SQL the MySQL one (backticks), and CouchDB the MongoDB shell syntax. Oracle gets `LIMIT n` rewritten to `FETCH FIRST n ROWS ONLY`. PL/SQL and SQL PL blocks with semicolons inside them aren't split correctly yet; run them as one selection.
 
-CouchDB consoles take Mango queries in shell form: `db.orders.find({status: "open"}, {total: 1}).sort({total: -1}).limit(20)`, `findOne`, `countDocuments`, `insertOne/Many`, `createIndex`, `getIndexes`, `drop()`, `db.createCollection('name')`, `show dbs`, and `GET /path` for any read-only API call. Updates and deletes (which need the document's `_rev`) aren't supported yet. InfluxDB consoles take InfluxQL (`SHOW MEASUREMENTS`, `SELECT mean("total") FROM "orders" GROUP BY time(1h)`), Flux on 2.x (anything starting with `from(` or using `|>`; needs the organization) and `INSERT <line protocol>`; the API token goes in the password field. Cassandra, CouchDB, InfluxDB, Oracle, Db2 and Spark offer TLS *Off* or *Require* only: DataBug signs in once and never retries over the other transport. Cassandra connections all go through the host you enter (nodes often advertise internal addresses that aren't reachable through Docker, NAT or port-forwards); any node can coordinate a request.
+CouchDB consoles take Mango queries in shell form: `db.orders.find({status: "open"}, {total: 1}).sort({total: -1}).limit(20)`, `findOne`, `countDocuments`, `insertOne/Many`, `createIndex`, `getIndexes`, `drop()`, `db.createCollection('name')`, `show dbs`, and `GET /path` for any read-only API call. Updates and deletes (which need the document's `_rev`) aren't supported yet. InfluxDB consoles take InfluxQL (`SHOW MEASUREMENTS`, `SELECT mean("total") FROM "orders" GROUP BY time(1h)`), Flux on 2.x (anything starting with `from(` or using `|>`; needs the organization) and `INSERT <line protocol>`; the API token goes in the password field. Cassandra (TLS needs the `cassandra-tls` feature), CouchDB, InfluxDB, Oracle, Db2 and Spark offer TLS *Off* or *Require* only: DataBug signs in once and never retries over the other transport. Cassandra connections all go through the host you enter (nodes often advertise internal addresses that aren't reachable through Docker, NAT or port-forwards); any node can coordinate a request.
 
 MongoDB consoles accept shell-style statements: `db.orders.find({status: "open"}).sort({total: -1}).limit(20)`, `aggregate([...])`, `countDocuments`, `distinct`, `insertOne/Many`, `updateOne/Many`, `deleteOne/Many`, `createIndex`, `getIndexes`, `db.runCommand({...})`, `show collections`, `show dbs`. `ObjectId("…")` and `ISODate("…")` work inside filters.
 
@@ -266,10 +268,12 @@ DATABUG_TEST_MYSQL=127.0.0.1:3306:store:root:pw \
 cargo test --workspace                       # adds live Postgres and MySQL tests
 ```
 
-DuckDB's end-to-end test always runs (it's embedded). The other engines have live tests that run when their variable is set; with Docker:
+The other engines have live tests that run when their variable is set; with Docker:
 
 | Variable | Server |
 |---|---|
+| `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` | DuckDB's library from its [releases](https://github.com/duckdb/duckdb/releases/tag/v1.5.6) (no server) |
+| `DATABUG_TEST_DUCKDB_DOWNLOAD=1` | downloads and verifies the library the way the dialog does, into a temporary folder |
 | `DATABUG_TEST_COCKROACH=localhost:26257:defaultdb:root` | `docker run -d -p 26257:26257 cockroachdb/cockroach:latest-v24.3 start-single-node --insecure` |
 | `DATABUG_TEST_TIMESCALE=localhost:5432:postgres:postgres` | `docker run -d -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust timescale/timescaledb:latest-pg16` |
 | `DATABUG_TEST_QUESTDB=localhost:8812:qdb:admin:quest` | `docker run -d -p 8812:8812 questdb/questdb` |

@@ -51,7 +51,12 @@ impl CassConn {
         // other would sign in twice, so only `Require` turns TLS on. Like the
         // Postgres driver it encrypts but accepts self-signed certificates.
         if cfg.ssl == SslMode::Require {
-            b = b.tls_context(Some(Arc::new(crate::tls::no_verify_config())));
+            #[cfg(feature = "cassandra-tls")]
+            {
+                b = b.tls_context(Some(Arc::new(crate::tls::no_verify_config())));
+            }
+            #[cfg(not(feature = "cassandra-tls"))]
+            anyhow::bail!("This build has no TLS for Cassandra; build with the `cassandra-tls` feature, or turn SSL / TLS off");
         }
         let keyspace = cfg.database.trim().to_string();
         if !keyspace.is_empty() {

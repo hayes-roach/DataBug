@@ -6,20 +6,25 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
 ### Added
 
-- Contributing guide, code of conduct, security policy, issue and pull request templates
-
-- In-app updates: DataBug checks GitHub for new releases and offers *Update and restart*, which downloads, verifies the checksum, installs and reopens; can be turned off in settings
+- In-app updates: DataBug checks GitHub for new releases and offers *Update and restart*, which downloads the new version, verifies its checksum, installs it and reopens; automatic checks can be turned off in settings. Coming from 0.1.0, install this release manually once; later updates install from inside the app
 - Row editing in the results grid: select whole rows, delete them, add new rows or duplicate one, and save everything with Submit
+- Contributing guide, code of conduct, security policy, issue and pull request templates
 
 ### Changed
 
 - Double-clicking a table in the explorer opens its rows without expanding it
-- A failed sign-in is no longer retried automatically (no background reconnects, no extra attempts for queued work), so wrong credentials can't lock an account
 - Redesigned explorer header: icon buttons for Find and New connection, and a project switcher
+- Building from source needs Rust 1.89 or newer (the dependencies already required it; 1.81 was listed before)
 - README screenshots updated, with new ones for multiple databases, find and replace, and themes
 - SQL Server marked as tested against a live server
+
+### Fixed
+
+- A failed sign-in was retried automatically, which could lock an account. DataBug now signs in once, shows the error, and only tries again when you ask (Retry, Connect, Refresh schema, running a query or editing the connection)
 
 ## [0.1.0] - 2026-11-04
 
@@ -52,5 +57,6 @@ First public release.
 
 - Editor text appeared grey in the light theme
 
-[Unreleased]: https://github.com/hayes-roach/DataBug/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hayes-roach/DataBug/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hayes-roach/DataBug/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hayes-roach/DataBug/releases/tag/v0.1.0

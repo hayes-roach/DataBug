@@ -68,7 +68,7 @@ jobs:
           cp -r crates/databug-app/assets/logos DataBug/logos
           tar czf dist/DataBug-linux-x86_64.tar.gz DataBug
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DataBug-${{ matrix.name }}
           path: |

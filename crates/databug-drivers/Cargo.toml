@@ -34,7 +34,7 @@ mysql_async = { version = "0.36", optional = true, default-features = false, fea
 tiberius = { version = "0.12", optional = true, default-features = false, features = ["tds73", "rustls", "chrono", "winauth"] }
 tokio-util = { version = "0.7", optional = true, features = ["compat"] }
 chrono = { version = "0.4", optional = true, default-features = false, features = ["std"] }
-rusqlite = { version = "0.37", optional = true, features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.41", optional = true, features = ["bundled", "column_decltype"] }
 mongodb = { version = "3", optional = true }
 json5 = { version = "0.4", optional = true }
 

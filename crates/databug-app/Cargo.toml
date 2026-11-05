@@ -44,7 +44,7 @@ csv = "1"
 directories = "6"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "vendored", "crypto-rust"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
-png = "0.17"
+png = "0.18"
 regex = "1"
 
 # Rendering: Metal (macOS) and DirectX 12 (Windows) through wgpu, which keeps

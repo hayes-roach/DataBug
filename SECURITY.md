@@ -41,7 +41,7 @@ In scope, for example:
 - Bypassing the **Read-only** or **Production** protections, or the confirmation for dangerous statements
 - SQL or command injection through generated SQL (DDL, renames, CSV import, data search, procedure templates) or through Kerberos `kinit`
 - TLS settings not being honoured (for example, a connection set to *Require* falling back to plain text)
-- The install scripts (`install.sh`, `install.ps1`) or installers doing anything beyond installing DataBug, or being open to tampering
+- The install scripts (`install.sh`, `install.ps1`), installers or the in-app updater doing anything beyond installing DataBug, or accepting a download that doesn't match the release's checksums
 
 Out of scope:
 

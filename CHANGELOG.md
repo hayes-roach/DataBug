@@ -10,6 +10,7 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 - Contributing guide, code of conduct, security policy, issue and pull request templates
 
+- In-app updates: DataBug checks GitHub for new releases and offers *Update and restart*, which downloads, verifies the checksum, installs and reopens; can be turned off in settings
 - Row editing in the results grid: select whole rows, delete them, add new rows or duplicate one, and save everything with Submit
 
 ### Changed

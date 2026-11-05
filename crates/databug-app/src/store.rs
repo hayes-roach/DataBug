@@ -24,6 +24,13 @@ pub struct Settings {
     pub custom_colors: BTreeMap<String, BTreeMap<String, [u8; 3]>>,
     /// Project shown in the explorer; `None` shows every connection.
     pub current_project: Option<String>,
+    /// Look for a newer release on GitHub at startup and once a day.
+    #[serde(default = "yes")]
+    pub check_updates: bool,
+    /// Unix seconds of the last update check.
+    pub last_update_check: u64,
+    /// A release the user chose to skip (its tag).
+    pub skipped_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -37,6 +44,9 @@ impl Default for Settings {
             auto_complete: true,
             custom_colors: BTreeMap::new(),
             current_project: None,
+            check_updates: true,
+            last_update_check: 0,
+            skipped_version: None,
         }
     }
 }
@@ -201,6 +211,10 @@ impl Store {
             }
         }
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn one() -> f32 {

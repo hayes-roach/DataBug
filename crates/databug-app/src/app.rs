@@ -113,6 +113,25 @@ enum SourcePurpose {
     Search { conn_id: String, schema: String, generation: u64 },
 }
 
+/// Messages from the update checker / installer threads.
+enum UpdateMsg {
+    Checked { result: Result<Option<crate::update::Release>, String>, manual: bool },
+    Progress(String),
+    Finished(Result<(), String>),
+}
+
+/// "A new version is available" state.
+struct Updates {
+    tx: mpsc::Sender<UpdateMsg>,
+    rx: mpsc::Receiver<UpdateMsg>,
+    checking: bool,
+    available: Option<crate::update::Release>,
+    window: bool,
+    /// What the installer is doing right now.
+    busy: Option<String>,
+    error: Option<String>,
+}
+
 /// One result of "Find in database".
 struct Hit {
     conn_id: String,
@@ -216,6 +235,7 @@ pub struct DataBugApp {
     theme_dirty: bool,
     pending_search: Option<String>,
     db_search: Option<DbSearch>,
+    updates: Updates,
 }
 
 fn now_hms() -> String {
@@ -329,12 +349,35 @@ impl DataBugApp {
             theme_editor: false,
             theme_dirty: false,
             pending_search: None,
+            updates: {
+                let (tx, rx) = mpsc::channel();
+                Updates { tx, rx, checking: false, available: None, window: false, busy: None, error: None }
+            },
             db_search: None,
         };
         if app.settings.current_project.as_ref().map(|id| !app.projects.iter().any(|p| &p.id == id)).unwrap_or(false) {
             app.settings.current_project = None;
         }
         app.rebuild_virtuals();
+        // look for a newer release: at startup (at most every 6 hours) and then once a day
+        let testing = app.screenshot.is_some() && std::env::var_os("DATABUG_UPDATE_URL").is_none();
+        if app.settings.check_updates && !testing {
+            if now_secs().saturating_sub(app.settings.last_update_check) > 6 * 3600 {
+                app.check_updates(false);
+            }
+            let tx = app.updates.tx.clone();
+            let ctx = cc.egui_ctx.clone();
+            app.rt.spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+                    let result = tokio::task::spawn_blocking(crate::update::check).await.unwrap_or_else(|e| Err(e.to_string()));
+                    if tx.send(UpdateMsg::Checked { result, manual: false }).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
         egui_extras::install_image_loaders(&cc.egui_ctx);
         app.logos = Logos::discover(&cc.egui_ctx);
         for c in app.connections.iter().chain(app.virtuals.iter()).cloned().collect::<Vec<_>>() {
@@ -1366,6 +1409,168 @@ impl DataBugApp {
         }
     }
 
+    // ---------- updates ----------
+
+    fn check_updates(&mut self, manual: bool) {
+        if self.updates.checking {
+            return;
+        }
+        self.updates.checking = true;
+        let tx = self.updates.tx.clone();
+        let ctx = self.ctx.clone();
+        self.rt.spawn_blocking(move || {
+            let result = crate::update::check();
+            let _ = tx.send(UpdateMsg::Checked { result, manual });
+            ctx.request_repaint();
+        });
+    }
+
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        while let Ok(m) = self.updates.rx.try_recv() {
+            match m {
+                UpdateMsg::Checked { result, manual } => {
+                    self.updates.checking = false;
+                    self.settings.last_update_check = now_secs();
+                    self.store.save_settings(&self.settings);
+                    match result {
+                        Ok(Some(r)) => {
+                            let skipped = self.settings.skipped_version.as_deref() == Some(r.tag.as_str());
+                            if manual || !skipped {
+                                if manual {
+                                    self.updates.window = true;
+                                } else if self.updates.available.as_ref().map(|a| a.tag != r.tag).unwrap_or(true) {
+                                    self.toast(format!("DataBug {} is available. Click “Update” in the toolbar when you're ready.", r.version_string()));
+                                }
+                                self.updates.available = Some(r);
+                            }
+                        }
+                        Ok(None) => {
+                            self.updates.available = None;
+                            if manual {
+                                self.toast(format!("You're up to date (DataBug {})", crate::update::current_version()));
+                            }
+                        }
+                        Err(e) => {
+                            if manual {
+                                self.toast(format!("Couldn't check for updates: {e}"));
+                            }
+                        }
+                    }
+                }
+                UpdateMsg::Progress(t) => self.updates.busy = Some(t),
+                UpdateMsg::Finished(Ok(())) => {
+                    self.updates.busy = Some("Restarting…".into());
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                UpdateMsg::Finished(Err(e)) => {
+                    self.updates.busy = None;
+                    self.updates.error = Some(e);
+                }
+            }
+        }
+    }
+
+    fn start_update(&mut self) {
+        let Some(r) = self.updates.available.clone() else { return };
+        self.updates.error = None;
+        self.updates.busy = Some("Starting…".into());
+        let tx = self.updates.tx.clone();
+        let ctx = self.ctx.clone();
+        self.rt.spawn_blocking(move || {
+            let p = {
+                let tx = tx.clone();
+                let ctx = ctx.clone();
+                move |s: &str| {
+                    let _ = tx.send(UpdateMsg::Progress(s.to_string()));
+                    ctx.request_repaint();
+                }
+            };
+            let res = crate::update::install(&r, &p).map(|_| ());
+            let _ = tx.send(UpdateMsg::Finished(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn update_window(&mut self, ctx: &egui::Context, p: &Palette) {
+        if !self.updates.window {
+            return;
+        }
+        let Some(r) = self.updates.available.clone() else {
+            self.updates.window = false;
+            return;
+        };
+        let kind = crate::update::install_kind();
+        let busy_work = self.tabs.iter().any(|t| t.running.is_some() || t.in_tx);
+        let mut open = true;
+        let mut action = 0;
+        egui::Window::new(RichText::new("Update available").font(bold(15.0)))
+            .id(egui::Id::new("update"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([520.0, 380.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, -30.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new(format!("DataBug {} is available", r.version_string())).font(bold(14.0)));
+                ui.label(RichText::new(format!("You have {}. Your connections, settings and history are kept.", crate::update::current_version())).color(p.muted));
+                ui.add_space(6.0);
+                if !r.notes.trim().is_empty() {
+                    ui.label(RichText::new("What's new").color(p.muted));
+                    egui::Frame::new().fill(p.raised).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+                            ui.label(RichText::new(r.notes.chars().take(6000).collect::<String>()).size(12.0));
+                        });
+                    });
+                    ui.add_space(6.0);
+                }
+                if let crate::update::InstallKind::Manual(why) = &kind {
+                    ui.label(RichText::new(why).color(p.warning));
+                }
+                if busy_work && !matches!(kind, crate::update::InstallKind::Manual(_)) {
+                    ui.label(RichText::new("A query is running or a transaction is open. Updating restarts DataBug, which cancels it (open transactions are rolled back).").color(p.warning));
+                }
+                if let Some(e) = &self.updates.error {
+                    ui.label(RichText::new(e).color(p.danger));
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if let Some(b) = &self.updates.busy {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(RichText::new(b).color(p.accent));
+                        return;
+                    }
+                    let can = !matches!(kind, crate::update::InstallKind::Manual(_));
+                    if ui.add_enabled(can, egui::Button::new(RichText::new("Update and restart").color(Color32::WHITE)).fill(p.accent)).on_hover_text("Download, verify against the release's checksums, install, and reopen DataBug").clicked() {
+                        action = 1;
+                    }
+                    if ui.button("View release").clicked() {
+                        action = 2;
+                    }
+                    if ui.button("Skip this version").on_hover_text("Don't remind me about this version").clicked() {
+                        action = 3;
+                    }
+                    if ui.button("Later").clicked() {
+                        action = 4;
+                    }
+                });
+            });
+        match action {
+            1 => self.start_update(),
+            2 => crate::update::open_page(&r.page),
+            3 => {
+                self.settings.skipped_version = Some(r.tag.clone());
+                self.store.save_settings(&self.settings);
+                self.updates.available = None;
+                self.updates.window = false;
+            }
+            4 => self.updates.window = false,
+            _ => {}
+        }
+        if !open && self.updates.busy.is_none() {
+            self.updates.window = false;
+        }
+    }
+
     // ---------- find in database ----------
 
     fn open_db_search(&mut self, query: Option<String>) {
@@ -2092,6 +2297,13 @@ impl DataBugApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(r) = self.updates.available.as_ref() {
+                    let text = RichText::new(format!("Update to {}", r.version_string())).size(12.5).color(Color32::WHITE);
+                    let b = egui::Button::new(text).fill(p.accent).corner_radius(CornerRadius::same(13)).min_size(egui::vec2(0.0, 26.0));
+                    if ui.add(b).on_hover_text("A new version of DataBug is available").clicked() {
+                        self.updates.window = true;
+                    }
+                }
                 let icon = if self.settings.theme.is_dark() { "🌙" } else { "☀" };
                 ui.menu_button(icon, |ui| {
                     ui.set_min_width(180.0);
@@ -2111,6 +2323,7 @@ impl DataBugApp {
                 })
                 .response
                 .on_hover_text("Theme and colors");
+                let mut check_now = false;
                 ui.menu_button("⚙", |ui| {
                     ui.set_min_width(240.0);
                     ui.label(RichText::new("Settings").font(bold(13.0)));
@@ -2145,10 +2358,23 @@ impl DataBugApp {
                         changed |= ui.add(egui::DragValue::new(&mut self.settings.code_font_size).range(10.0..=22.0).speed(0.25)).changed();
                     });
                     changed |= ui.checkbox(&mut self.settings.auto_complete, "Show completion while typing").changed();
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("DataBug {}", crate::update::current_version())).color(p.muted));
+                        let label = if self.updates.checking { "Checking…" } else { "Check for updates" };
+                        if ui.add_enabled(!self.updates.checking, egui::Button::new(label)).clicked() {
+                            check_now = true;
+                        }
+                    });
+                    changed |= ui.checkbox(&mut self.settings.check_updates, "Check for updates automatically").on_hover_text("Asks GitHub for the latest release at startup and once a day. Nothing installs without your click.").changed();
                     if changed {
                         self.store.save_settings(&self.settings);
                     }
                 });
+                if check_now {
+                    self.settings.skipped_version = None;
+                    self.check_updates(true);
+                }
                 if !self.tabs.is_empty() && ui.button("Format").on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
                     actions.push(10);
                 }
@@ -2684,6 +2910,24 @@ impl DataBugApp {
         let Some(plan) = self.screenshot.as_mut() else { return };
         ctx.request_repaint();
         plan.wait_frames += 1;
+        if plan.scene == "update" && plan.step == 0 {
+            plan.step = 99;
+            // test harness: check for an update, optionally install it, and quit
+            match crate::update::check() {
+                Ok(Some(r)) => {
+                    eprintln!("update: {} available ({} assets)", r.version_string(), r.assets.len());
+                    if std::env::var_os("DATABUG_UPDATE_INSTALL").is_some() {
+                        let res = crate::update::install(&r, &|s| eprintln!("update: {s}"));
+                        eprintln!("update: install {}", match res { Ok(_) => "ok".to_string(), Err(e) => format!("failed: {e}") });
+                    }
+                }
+                Ok(None) => eprintln!("update: up to date ({})", crate::update::current_version()),
+                Err(e) => eprintln!("update: check failed: {e}"),
+            }
+            eprintln!("update: install kind {:?}", crate::update::install_kind());
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         match plan.step {
             0 if plan.wait_frames > 3 => {
                 if plan.scene == "light" {
@@ -2832,6 +3076,12 @@ impl DataBugApp {
                                 t.editor.cursor = 40;
                             }
                             self.request_run(false, Some(false), ctx);
+                        }
+                        "update-ui" => {
+                            if let Ok(r) = crate::update::parse_release(r##"{"tag_name":"v0.2.0","html_url":"https://example.com","body":"Highlights:\n- Row editing: add, duplicate and delete rows in results\n- No automatic retries after a failed sign-in\n- Redesigned explorer header","assets":[]}"##) {
+                                self.updates.available = Some(r);
+                                self.updates.window = true;
+                            }
                         }
                         "retry" => {
                             // a server that accepts and drops every connection, counting sign-in attempts
@@ -3157,6 +3407,7 @@ impl eframe::App for DataBugApp {
         }
         self.sync_zoom(ctx);
         self.pump_events(ctx);
+        self.poll_updates(ctx);
         self.drive_screenshot(ctx);
         self.shortcuts(ctx);
         if self.tabs.iter().any(|t| t.running.is_some()) {
@@ -3278,6 +3529,7 @@ impl eframe::App for DataBugApp {
             self.apply(a, ctx);
         }
         self.db_search_window(ctx, &p);
+        self.update_window(ctx, &p);
         self.theme_window(ctx, &p);
         self.confirm_window(ctx, &p);
         self.dialog_window(ctx, &p);

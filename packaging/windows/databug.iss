@@ -55,3 +55,11 @@ Name: "{autodesktop}\DataBug"; Filename: "{app}\DataBug.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\DataBug.exe"; Description: "{cm:LaunchProgram,DataBug}"; Flags: nowait postinstall skipifsilent
+; DataBug's in-app updater runs this setup silently with /relaunch=1
+Filename: "{app}\DataBug.exe"; Flags: nowait; Check: ShouldRelaunch
+
+[Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;

@@ -32,6 +32,18 @@ Download the installers from the [latest release](https://github.com/hayes-roach
 
 The apps aren't signed with a paid Apple or Microsoft certificate yet. On macOS, if Gatekeeper blocks the first launch of the DMG install, right-click DataBug in Applications → *Open* (the one-line installer avoids this). On Windows, SmartScreen may show "Windows protected your PC": click *More info* → *Run anyway*.
 
+### Updates
+
+DataBug checks GitHub for a newer release when it starts (at most every 6 hours) and once a day while it's open. When one is out, an **Update to X.Y.Z** button appears in the toolbar. Nothing changes until you click it:
+
+- **Update and restart** downloads the new version for your platform, checks it against the release's `SHA256SUMS.txt` (a damaged or altered download is refused and nothing is installed), installs it and reopens DataBug. Connections, settings, passwords and history are kept.
+  - macOS: replaces `DataBug.app` where it is (it needs to be in a folder you can write to, like Applications)
+  - Windows: runs the new setup silently over the existing install (per-user or all-users, whichever you have)
+  - Linux: reruns the new release's `install.sh` into `~/.local`
+- **Skip this version** stops reminders for that release; **Later** hides the window until next time.
+- Copies DataBug can't replace itself (a build from source, the portable Windows zip, or a Linux binary not installed with `install.sh`) still get the notice, with a link to the release or, for source builds, `git pull && cargo build --release`.
+- *Settings (⚙) → Check for updates automatically* turns the checks off; *Check for updates* checks right away. The check is a single request to GitHub's public releases API and sends nothing about you or your databases. Downloads use the system `curl`.
+
 ### Making a release
 
 Push a tag like `v0.2.0`; `.github/workflows/release.yml` builds the DMG, setup .exe, portable Windows zip and Linux tarball, adds `SHA256SUMS.txt`, and publishes a GitHub release with install instructions. Every push to `main` also uploads the macOS and Windows installers as CI artifacts.
@@ -40,6 +52,8 @@ To build installers yourself:
 - macOS: `packaging/macos/bundle.sh` (this Mac's architecture) or `packaging/macos/bundle.sh universal` → `dist/DataBug-macos-*.dmg` and `.zip`
 - Windows: `cargo build --release`, then `iscc packaging\windows\databug.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) → `dist\DataBug-windows-x86_64-setup.exe`
 - Linux: `cargo build --release`, then copy `target/release/databug` next to `packaging/linux/install.sh` and run it
+
+The in-app updater reads the latest GitHub release, so every release must include the platform assets under their usual names and `SHA256SUMS.txt` (the release workflow does this).
 
 ## Databases
 

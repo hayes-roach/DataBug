@@ -18,6 +18,7 @@ mod plan_view;
 mod session;
 mod store;
 mod theme;
+mod update;
 
 fn main() -> eframe::Result<()> {
     let mut screenshot = None;

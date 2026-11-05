@@ -46,6 +46,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 png = "0.17"
 regex = "1"
+sha2 = "0.10"
 
 # Rendering: Metal (macOS) and DirectX 12 (Windows) through wgpu, which keeps
 # working where OpenGL is deprecated or missing (macOS, Windows VMs and remote

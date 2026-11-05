@@ -7,15 +7,68 @@ pub enum DbKind {
     MsSql,
     Sqlite,
     MongoDb,
+    Oracle,
+    Db2,
+    DuckDb,
+    Cassandra,
+    CouchDb,
+    CockroachDb,
+    TimescaleDb,
+    QuestDb,
+    InfluxDb,
+    Spark,
+    H2,
+}
+
+/// What kind of database an engine is, for grouping engines in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DbCategory {
+    Relational,
+    Analytical,
+    Document,
+    WideColumn,
+    TimeSeries,
+    Distributed,
+}
+
+impl DbCategory {
+    pub const ALL: [DbCategory; 6] = [DbCategory::Relational, DbCategory::Analytical, DbCategory::Document, DbCategory::WideColumn, DbCategory::TimeSeries, DbCategory::Distributed];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DbCategory::Relational => "Relational / SQL",
+            DbCategory::Analytical => "Analytical",
+            DbCategory::Document => "NoSQL · Document",
+            DbCategory::WideColumn => "NoSQL · Wide-column",
+            DbCategory::TimeSeries => "Time series",
+            DbCategory::Distributed => "Big data / distributed",
+        }
+    }
+
+    /// The engines in this category, in `DbKind::ALL` order.
+    pub fn kinds(self) -> impl Iterator<Item = DbKind> {
+        DbKind::ALL.into_iter().filter(move |k| k.category() == self)
+    }
 }
 
 impl DbKind {
-    pub const ALL: [DbKind; 5] = [
+    pub const ALL: [DbKind; 16] = [
         DbKind::Postgres,
         DbKind::MySql,
         DbKind::MsSql,
         DbKind::Sqlite,
         DbKind::MongoDb,
+        DbKind::Oracle,
+        DbKind::Db2,
+        DbKind::H2,
+        DbKind::DuckDb,
+        DbKind::CouchDb,
+        DbKind::Cassandra,
+        DbKind::TimescaleDb,
+        DbKind::QuestDb,
+        DbKind::InfluxDb,
+        DbKind::CockroachDb,
+        DbKind::Spark,
     ];
 
     pub fn label(self) -> &'static str {
@@ -25,6 +78,17 @@ impl DbKind {
             DbKind::MsSql => "SQL Server",
             DbKind::Sqlite => "SQLite",
             DbKind::MongoDb => "MongoDB",
+            DbKind::Oracle => "Oracle",
+            DbKind::Db2 => "IBM Db2",
+            DbKind::DuckDb => "DuckDB",
+            DbKind::Cassandra => "Cassandra",
+            DbKind::CouchDb => "CouchDB",
+            DbKind::CockroachDb => "CockroachDB",
+            DbKind::TimescaleDb => "TimescaleDB",
+            DbKind::QuestDb => "QuestDB",
+            DbKind::InfluxDb => "InfluxDB",
+            DbKind::Spark => "Spark SQL",
+            DbKind::H2 => "H2",
         }
     }
 
@@ -35,6 +99,17 @@ impl DbKind {
             DbKind::MsSql => "MS",
             DbKind::Sqlite => "LT",
             DbKind::MongoDb => "MG",
+            DbKind::Oracle => "OR",
+            DbKind::Db2 => "D2",
+            DbKind::DuckDb => "DK",
+            DbKind::Cassandra => "CA",
+            DbKind::CouchDb => "CO",
+            DbKind::CockroachDb => "CR",
+            DbKind::TimescaleDb => "TS",
+            DbKind::QuestDb => "QD",
+            DbKind::InfluxDb => "IX",
+            DbKind::Spark => "SP",
+            DbKind::H2 => "H2",
         }
     }
 
@@ -45,9 +120,29 @@ impl DbKind {
             DbKind::MsSql => 1433,
             DbKind::Sqlite => 0,
             DbKind::MongoDb => 27017,
+            DbKind::Oracle => 1521,
+            DbKind::Db2 => 50000,
+            DbKind::DuckDb => 0,
+            DbKind::Cassandra => 9042,
+            DbKind::CouchDb => 5984,
+            DbKind::CockroachDb => 26257,
+            DbKind::TimescaleDb => 5432,
+            // QuestDB's PostgreSQL wire protocol port
+            DbKind::QuestDb => 8812,
+            DbKind::InfluxDb => 8086,
+            // Spark Thrift server (HiveServer2 protocol)
+            DbKind::Spark => 10000,
+            // H2's PostgreSQL server mode (`-pg`)
+            DbKind::H2 => 5435,
         }
     }
 
+    /// The console language. Engines without a dialect of their own use the
+    /// closest one for highlighting, completion and generated SQL: the
+    /// PostgreSQL-compatible engines, Oracle, Db2, DuckDB, Cassandra (CQL)
+    /// and InfluxDB (InfluxQL) quote identifiers with `"` like Postgres;
+    /// Spark SQL quotes with backticks like MySQL; CouchDB's Mango queries
+    /// are written in the mongo-shell form.
     pub fn dialect(self) -> Dialect {
         match self {
             DbKind::Postgres => Dialect::Postgres,
@@ -55,20 +150,43 @@ impl DbKind {
             DbKind::MsSql => Dialect::MsSql,
             DbKind::Sqlite => Dialect::Sqlite,
             DbKind::MongoDb => Dialect::Mongo,
+            DbKind::Oracle | DbKind::Db2 | DbKind::DuckDb | DbKind::Cassandra | DbKind::CockroachDb | DbKind::TimescaleDb | DbKind::QuestDb | DbKind::InfluxDb | DbKind::H2 => Dialect::Postgres,
+            DbKind::Spark => Dialect::MySql,
+            DbKind::CouchDb => Dialect::Mongo,
+        }
+    }
+
+    pub fn category(self) -> DbCategory {
+        match self {
+            DbKind::Postgres | DbKind::MySql | DbKind::MsSql | DbKind::Sqlite | DbKind::Oracle | DbKind::Db2 | DbKind::H2 => DbCategory::Relational,
+            DbKind::DuckDb => DbCategory::Analytical,
+            DbKind::MongoDb | DbKind::CouchDb => DbCategory::Document,
+            DbKind::Cassandra => DbCategory::WideColumn,
+            DbKind::TimescaleDb | DbKind::QuestDb | DbKind::InfluxDb => DbCategory::TimeSeries,
+            DbKind::CockroachDb | DbKind::Spark => DbCategory::Distributed,
         }
     }
 
     /// Database used when the connection doesn't name one.
     pub fn default_database(self) -> &'static str {
         match self {
-            DbKind::Postgres => "postgres",
+            DbKind::Postgres | DbKind::TimescaleDb => "postgres",
             DbKind::MongoDb => "test",
+            DbKind::CockroachDb => "defaultdb",
+            DbKind::QuestDb => "qdb",
+            DbKind::Spark => "default",
             _ => "",
         }
     }
 
     pub fn is_file_based(self) -> bool {
-        matches!(self, DbKind::Sqlite)
+        matches!(self, DbKind::Sqlite | DbKind::DuckDb)
+    }
+
+    /// Whether the engine speaks the PostgreSQL wire protocol (and is
+    /// reached through the Postgres driver).
+    pub fn is_pg_wire(self) -> bool {
+        matches!(self, DbKind::Postgres | DbKind::CockroachDb | DbKind::TimescaleDb | DbKind::QuestDb | DbKind::H2)
     }
 }
 
@@ -192,6 +310,20 @@ pub struct ConnectionConfig {
     /// SQL Server authentication method.
     #[serde(default)]
     pub ms_auth: MsAuth,
+    /// Oracle: `database` is a SID rather than a service name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub oracle_sid: bool,
+    /// InfluxDB 2.x organization (for Flux queries and the bucket list).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub org: String,
+    /// Db2 / Spark: the ODBC driver name as registered with the driver
+    /// manager, e.g. `IBM DB2 ODBC DRIVER` or `Simba Spark ODBC Driver`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub odbc_driver: String,
+    /// Db2 / Spark: extra `key=value;` pairs for the ODBC connection string
+    /// (never a password).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub odbc_options: String,
     /// Schemas shown in the explorer. `None` shows every schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_schemas: Option<Vec<String>>,
@@ -233,6 +365,10 @@ impl ConnectionConfig {
             read_only: false,
             color: default_color(),
             ms_auth: MsAuth::SqlServer,
+            oracle_sid: false,
+            org: String::new(),
+            odbc_driver: String::new(),
+            odbc_options: String::new(),
             visible_schemas: None,
             visible_databases: None,
             database_schemas: Default::default(),
@@ -252,7 +388,7 @@ impl ConnectionConfig {
     /// Whether this engine has several databases per server that can be
     /// browsed separately (MySQL's databases are its schemas).
     pub fn supports_databases(&self) -> bool {
-        matches!(self.kind, DbKind::Postgres | DbKind::MsSql | DbKind::MongoDb)
+        matches!(self.kind, DbKind::Postgres | DbKind::MsSql | DbKind::MongoDb | DbKind::CockroachDb | DbKind::TimescaleDb)
     }
 
     /// The config for another database on the same server. Its id is
@@ -288,7 +424,7 @@ impl ConnectionConfig {
 
     pub fn display_target(&self) -> String {
         match self.kind {
-            DbKind::Sqlite => self.path.clone(),
+            DbKind::Sqlite | DbKind::DuckDb => self.path.clone(),
             DbKind::MongoDb if !self.uri.is_empty() => self.uri.clone(),
             _ => {
                 let db = self.effective_database();
@@ -311,4 +447,59 @@ pub struct Capabilities {
     pub explain_analyze: bool,
     pub server_cancel: bool,
     pub sql: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_engine_has_one_category() {
+        let grouped: Vec<DbKind> = DbCategory::ALL.iter().flat_map(|c| c.kinds()).collect();
+        assert_eq!(grouped.len(), DbKind::ALL.len());
+        for k in DbKind::ALL {
+            assert_eq!(grouped.iter().filter(|g| **g == k).count(), 1, "{k:?}");
+        }
+        assert_eq!(DbKind::DuckDb.category(), DbCategory::Analytical);
+        assert_eq!(DbKind::Cassandra.category(), DbCategory::WideColumn);
+        assert_eq!(DbKind::InfluxDb.category(), DbCategory::TimeSeries);
+    }
+
+    #[test]
+    fn engine_codes_and_labels_are_unique() {
+        for (i, a) in DbKind::ALL.iter().enumerate() {
+            for b in &DbKind::ALL[i + 1..] {
+                assert_ne!(a.short(), b.short());
+                assert_ne!(a.label(), b.label());
+            }
+        }
+    }
+
+    #[test]
+    fn new_engine_defaults() {
+        assert_eq!(DbKind::CockroachDb.default_port(), 26257);
+        assert_eq!(DbKind::QuestDb.default_port(), 8812);
+        assert_eq!(DbKind::Oracle.default_port(), 1521);
+        assert_eq!(DbKind::Spark.dialect(), Dialect::MySql);
+        assert_eq!(DbKind::CouchDb.dialect(), Dialect::Mongo);
+        assert!(DbKind::DuckDb.is_file_based());
+        assert!(DbKind::H2.is_pg_wire() && !DbKind::DuckDb.is_pg_wire());
+        let c = ConnectionConfig::new(DbKind::CockroachDb);
+        assert_eq!(c.effective_database(), "defaultdb");
+        assert!(c.supports_databases());
+        let mut d = ConnectionConfig::new(DbKind::DuckDb);
+        d.path = "/data/analytics.duckdb".into();
+        assert!(!d.needs_password());
+        assert_eq!(d.display_target(), "/data/analytics.duckdb");
+    }
+
+    #[test]
+    fn old_configs_still_load() {
+        let json = r#"{"id":"1","name":"store","kind":"Postgres","host":"db.example.com","port":5432}"#;
+        let c: ConnectionConfig = serde_json::from_str(json).unwrap();
+        assert!(c.org.is_empty() && !c.oracle_sid && c.odbc_driver.is_empty());
+        // empty new fields stay out of the saved file
+        let out = serde_json::to_string(&c).unwrap();
+        assert!(!out.contains("oracle_sid") && !out.contains("odbc_driver"));
+    }
 }

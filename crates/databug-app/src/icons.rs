@@ -15,6 +15,17 @@ pub fn engine_color(kind: DbKind) -> Color32 {
         DbKind::MsSql => Color32::from_rgb(0xC9, 0x4A, 0x4A),
         DbKind::Sqlite => Color32::from_rgb(0x3E, 0x9D, 0xB3),
         DbKind::MongoDb => Color32::from_rgb(0x4E, 0xA9, 0x5C),
+        DbKind::Oracle => Color32::from_rgb(0xC7, 0x46, 0x34),
+        DbKind::Db2 => Color32::from_rgb(0x1F, 0x70, 0xC1),
+        DbKind::DuckDb => Color32::from_rgb(0xC9, 0x9A, 0x06),
+        DbKind::Cassandra => Color32::from_rgb(0x2B, 0x6C, 0x8F),
+        DbKind::CouchDb => Color32::from_rgb(0xE4, 0x25, 0x28),
+        DbKind::CockroachDb => Color32::from_rgb(0x69, 0x33, 0xFF),
+        DbKind::TimescaleDb => Color32::from_rgb(0x1F, 0x9E, 0x89),
+        DbKind::QuestDb => Color32::from_rgb(0xD1, 0x2E, 0x6E),
+        DbKind::InfluxDb => Color32::from_rgb(0x4F, 0x46, 0xE5),
+        DbKind::Spark => Color32::from_rgb(0xE2, 0x5A, 0x1C),
+        DbKind::H2 => Color32::from_rgb(0x5C, 0x6B, 0x7A),
     }
 }
 
@@ -25,6 +36,17 @@ fn monogram(kind: DbKind) -> &'static str {
         DbKind::MsSql => "SS",
         DbKind::Sqlite => "Li",
         DbKind::MongoDb => "Mo",
+        DbKind::Oracle => "Or",
+        DbKind::Db2 => "D2",
+        DbKind::DuckDb => "Dk",
+        DbKind::Cassandra => "Ca",
+        DbKind::CouchDb => "Co",
+        DbKind::CockroachDb => "Cr",
+        DbKind::TimescaleDb => "Ts",
+        DbKind::QuestDb => "Qd",
+        DbKind::InfluxDb => "Ix",
+        DbKind::Spark => "Sp",
+        DbKind::H2 => "H2",
     }
 }
 
@@ -35,17 +57,40 @@ pub fn file_stem(kind: DbKind) -> &'static str {
         DbKind::MsSql => "sqlserver",
         DbKind::Sqlite => "sqlite",
         DbKind::MongoDb => "mongodb",
+        DbKind::Oracle => "oracle",
+        DbKind::Db2 => "db2",
+        DbKind::DuckDb => "duckdb",
+        DbKind::Cassandra => "cassandra",
+        DbKind::CouchDb => "couchdb",
+        DbKind::CockroachDb => "cockroachdb",
+        DbKind::TimescaleDb => "timescaledb",
+        DbKind::QuestDb => "questdb",
+        DbKind::InfluxDb => "influxdb",
+        DbKind::Spark => "spark",
+        DbKind::H2 => "h2",
     }
 }
 
 /// Logos compiled into the binary; a file of the same name in the `logos`
-/// folder next to the app replaces them.
-const BUILT_IN: [(DbKind, &str, &[u8]); 5] = [
+/// folder next to the app replaces them. Where each one comes from, and its
+/// license, is in `assets/logos/SOURCES.md`.
+const BUILT_IN: [(DbKind, &str, &[u8]); 16] = [
     (DbKind::Postgres, "postgresql.svg", include_bytes!("../assets/logos/postgresql.svg")),
     (DbKind::MySql, "mysql.svg", include_bytes!("../assets/logos/mysql.svg")),
     (DbKind::MsSql, "sqlserver.png", include_bytes!("../assets/logos/sqlserver.png")),
     (DbKind::Sqlite, "sqlite.svg", include_bytes!("../assets/logos/sqlite.svg")),
     (DbKind::MongoDb, "mongodb.svg", include_bytes!("../assets/logos/mongodb.svg")),
+    (DbKind::Oracle, "oracle.svg", include_bytes!("../assets/logos/oracle.svg")),
+    (DbKind::Db2, "db2.svg", include_bytes!("../assets/logos/db2.svg")),
+    (DbKind::DuckDb, "duckdb.svg", include_bytes!("../assets/logos/duckdb.svg")),
+    (DbKind::Cassandra, "cassandra.svg", include_bytes!("../assets/logos/cassandra.svg")),
+    (DbKind::CouchDb, "couchdb.svg", include_bytes!("../assets/logos/couchdb.svg")),
+    (DbKind::CockroachDb, "cockroachdb.svg", include_bytes!("../assets/logos/cockroachdb.svg")),
+    (DbKind::TimescaleDb, "timescaledb.svg", include_bytes!("../assets/logos/timescaledb.svg")),
+    (DbKind::QuestDb, "questdb.svg", include_bytes!("../assets/logos/questdb.svg")),
+    (DbKind::InfluxDb, "influxdb.svg", include_bytes!("../assets/logos/influxdb.svg")),
+    (DbKind::Spark, "spark.svg", include_bytes!("../assets/logos/spark.svg")),
+    (DbKind::H2, "h2.svg", include_bytes!("../assets/logos/h2.svg")),
 ];
 
 /// Logo images found on disk, by engine.
@@ -297,5 +342,14 @@ mod tests {
         assert_eq!(app_dir_from(std::path::Path::new("/Applications/DataBug.app/Contents/MacOS")), PathBuf::from("/Applications"));
         assert_eq!(app_dir_from(std::path::Path::new("/opt/databug")), PathBuf::from("/opt/databug"));
         assert_eq!(strip_verbatim(std::path::Path::new(r"\\?\C:\Tools\DataBug")), PathBuf::from(r"C:\Tools\DataBug"));
+    }
+
+    #[test]
+    fn every_engine_has_a_built_in_logo() {
+        for kind in DbKind::ALL {
+            let (_, name, bytes) = BUILT_IN.iter().find(|(k, _, _)| *k == kind).unwrap_or_else(|| panic!("no logo for {kind:?}"));
+            assert!(name.starts_with(file_stem(kind)), "{name}");
+            assert!(!bytes.is_empty());
+        }
     }
 }

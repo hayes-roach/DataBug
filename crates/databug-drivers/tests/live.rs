@@ -1,5 +1,6 @@
-//! End-to-end driver tests. SQLite always runs; Postgres runs when
-//! `DATABUG_TEST_PG=host:port:database:user` is set.
+//! End-to-end driver tests. SQLite and DuckDB always run; Postgres runs when
+//! `DATABUG_TEST_PG=host:port:database:user` is set, and the other servers
+//! when their `DATABUG_TEST_*` variable is (see each test).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -440,4 +441,390 @@ async fn mysql_alter() {
     let mut conn = connect(&cfg, Some(p[4])).await.unwrap();
     let schema = conn.introspect().await.unwrap().default_schema;
     alter_round_trip(&mut conn, Dialect::MySql, &schema).await;
+}
+
+// ---------------------------------------------------------------------------
+// Engines added after the first five. DuckDB is embedded and always runs;
+// the others run when their variable is set (see CONTRIBUTING.md for Docker
+// commands). All of them use the Store sample data or small made-up rows.
+
+fn env_parts(name: &str) -> Option<Vec<String>> {
+    match std::env::var(name) {
+        Ok(v) => Some(v.split(':').map(str::to_string).collect()),
+        Err(_) => {
+            eprintln!("{name} not set; skipping");
+            None
+        }
+    }
+}
+
+/// Drop the sample tables (children first) and load `sample.sql`.
+async fn seed_store(conn: &mut Box<dyn DbConnection>, d: Dialect) {
+    seed_store_sql(conn, d, SAMPLE).await
+}
+
+async fn seed_store_sql(conn: &mut Box<dyn DbConnection>, d: Dialect, sql: &str) {
+    for v in ["customer_totals", "shipped"] {
+        let _ = run(conn, &format!("DROP VIEW IF EXISTS {v}"), 10).await;
+    }
+    for t in ["order_items", "orders", "products", "customers"] {
+        if run(conn, &format!("DROP TABLE IF EXISTS {t} CASCADE"), 10).await.is_err() {
+            let _ = run(conn, &format!("DROP TABLE IF EXISTS {t}"), 10).await;
+        }
+    }
+    for r in databug_sql::split_statements(sql, d) {
+        if let Err(e) = run(conn, &sql[r.clone()], 10).await {
+            panic!("seeding failed on {}: {e:#}", &sql[r]);
+        }
+    }
+}
+
+/// `sample.sql` for engines whose `/` turns integers into a fraction (DuckDB,
+/// CockroachDB) and that spell integer division `//`.
+fn int_division_sample() -> String {
+    SAMPLE.replace("(i - 1) / 3", "(i - 1) // 3").replace("(i / 8)", "(i // 8)")
+}
+
+/// Checks every SQL engine with the Store sample should pass.
+async fn store_checks(conn: &mut Box<dyn DbConnection>) -> databug_core::Catalog {
+    let c = run(conn, "SELECT id, name, email FROM customers ORDER BY id LIMIT 3", 100).await.unwrap();
+    assert_eq!(c.columns.iter().map(|s| s.to_lowercase()).collect::<Vec<_>>(), vec!["id", "name", "email"]);
+    assert_eq!(c.rows.rows(), 3);
+    assert_eq!(c.rows.cell(0, 0), Some("1"));
+    let c = run(conn, "SELECT NULL AS a, 'x' AS b", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), None);
+    assert_eq!(c.rows.cell(0, 1), Some("x"));
+    let c = run(conn, "SELECT * FROM orders", 1000).await.unwrap();
+    assert_eq!(c.rows.rows(), 1000);
+    assert!(c.truncated);
+    let c = run(conn, "UPDATE products SET stock = stock + 1 WHERE id <= 4", 10).await.unwrap();
+    assert_eq!(c.affected, Some(4));
+    let cat = conn.introspect().await.unwrap();
+    let orders = cat.find_table(None, "orders").expect("orders in catalog");
+    assert!(orders.column("id").unwrap().primary_key, "{orders:?}");
+    assert!(orders.primary_index().is_some());
+    let ix = orders.indexes.iter().find(|i| i.name.eq_ignore_ascii_case("idx_orders_customer")).unwrap_or_else(|| panic!("{:?}", orders.indexes));
+    assert!(ix.columns.iter().any(|c| c.eq_ignore_ascii_case("customer_id")) && !ix.unique, "{ix:?}");
+    let items = cat.find_table(None, "order_items").unwrap();
+    assert!(items.foreign_keys.iter().any(|f| f.ref_table.eq_ignore_ascii_case("orders")), "{:?}", items.foreign_keys);
+    cat
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duckdb_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("databug-duck-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.duckdb");
+    let _ = std::fs::remove_file(&path);
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.path = path.to_string_lossy().into_owned();
+    let mut conn = connect(&cfg, None).await.unwrap();
+    seed_store_sql(&mut conn, Dialect::Postgres, &int_division_sample()).await;
+    let cat = store_checks(&mut conn).await;
+    assert_eq!(cat.default_schema, "main");
+
+    let c = run(&mut conn, "SELECT price, [1, 2] AS l, DATE '2026-01-02' AS d FROM products WHERE id = 1", 10).await.unwrap();
+    assert_eq!(c.types, vec!["decimal(10,2)", "list", "date"]);
+    assert_eq!(c.rows.cell(0, 1), Some("[1, 2]"));
+    assert_eq!(c.rows.cell(0, 2), Some("2026-01-02"));
+
+    run(&mut conn, "CREATE OR REPLACE VIEW shipped AS SELECT * FROM orders WHERE status = 'shipped'", 10).await.unwrap();
+    run(&mut conn, "CREATE OR REPLACE MACRO with_tax(x) AS x * 1.08", 10).await.unwrap();
+    let cat = conn.introspect().await.unwrap();
+    assert_eq!(cat.find_table(None, "shipped").unwrap().kind, ObjectKind::View);
+    let src = conn.object_source("main", &SourceRef::relation("shipped", ObjectKind::View)).await.unwrap();
+    assert!(src.contains("CREATE OR REPLACE VIEW"), "{src}");
+    let m = find_obj(&cat, "main", ObjectKind::Function, "with_tax");
+    let src = conn.object_source("main", &SourceRef::from_object(m)).await.unwrap();
+    assert!(src.starts_with("CREATE OR REPLACE MACRO") && src.contains("1.08"), "{src}");
+
+    let plan = conn.explain("SELECT c.name, sum(o.total) FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY c.name", false).await.unwrap();
+    assert!(!plan.raw.is_empty());
+    conn.explain("DELETE FROM order_items WHERE id <= 5", true).await.unwrap();
+    let c = run(&mut conn, "SELECT count(*) FROM order_items WHERE id <= 5", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("5"));
+
+    let cancel = conn.canceller().unwrap();
+    let start = Instant::now();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        cancel();
+    });
+    let err = run(&mut conn, "SELECT count(*) FROM range(100000000000) a", 10).await.err().unwrap();
+    assert!(err.to_string().to_lowercase().contains("interrupt"), "{err}");
+    assert!(start.elapsed() < Duration::from_secs(10));
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn pg_wire_cfg(kind: DbKind, p: &[String]) -> (ConnectionConfig, Option<String>) {
+    let mut cfg = ConnectionConfig::new(kind);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.database = p.get(2).cloned().unwrap_or_default();
+    cfg.user = p.get(3).cloned().unwrap_or_default();
+    cfg.ssl = databug_core::SslMode::Disable;
+    (cfg, p.get(4).cloned())
+}
+
+/// `DATABUG_TEST_COCKROACH=host:port:database:user`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cockroachdb_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_COCKROACH") else { return };
+    let (cfg, pw) = pg_wire_cfg(DbKind::CockroachDb, &p);
+    let mut conn = connect(&cfg, pw.as_deref()).await.unwrap();
+    seed_store_sql(&mut conn, Dialect::Postgres, &int_division_sample()).await;
+    let cat = store_checks(&mut conn).await;
+    assert_eq!(cat.default_schema, "public");
+    assert!(cat.schema("crdb_internal").is_none() && cat.schema("pg_catalog").is_none());
+    run(&mut conn, "CREATE OR REPLACE VIEW shipped AS SELECT id, total FROM orders WHERE status = 'shipped'", 10).await.unwrap();
+    let src = conn.object_source("public", &SourceRef::relation("shipped", ObjectKind::View)).await.unwrap();
+    assert!(src.contains("CREATE OR REPLACE VIEW"), "{src}");
+    let plan = conn.explain("SELECT * FROM orders WHERE customer_id = 3", false).await.unwrap();
+    assert!(!plan.raw.is_empty());
+    let (dbs, current) = conn.list_databases().await.unwrap();
+    assert!(dbs.contains(&current), "{dbs:?} {current}");
+}
+
+/// `DATABUG_TEST_TIMESCALE=host:port:database:user`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timescaledb_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_TIMESCALE") else { return };
+    let (cfg, pw) = pg_wire_cfg(DbKind::TimescaleDb, &p);
+    let mut conn = connect(&cfg, pw.as_deref()).await.unwrap();
+    run(&mut conn, "CREATE EXTENSION IF NOT EXISTS timescaledb", 10).await.unwrap();
+    seed_store(&mut conn, Dialect::Postgres).await;
+    store_checks(&mut conn).await;
+    let _ = run(&mut conn, "DROP MATERIALIZED VIEW IF EXISTS sales_hourly", 10).await;
+    let _ = run(&mut conn, "DROP TABLE IF EXISTS sales", 10).await;
+    run(&mut conn, "CREATE TABLE sales (at TIMESTAMPTZ NOT NULL, product_id INT, amount NUMERIC(10,2))", 10).await.unwrap();
+    run(&mut conn, "SELECT create_hypertable('sales', 'at')", 10).await.unwrap();
+    run(&mut conn, "INSERT INTO sales SELECT TIMESTAMPTZ '2026-01-01' + i * INTERVAL '10 minutes', 1 + i % 60, (i % 50) + 0.99 FROM generate_series(1, 500) i", 10).await.unwrap();
+    run(&mut conn, "CREATE MATERIALIZED VIEW sales_hourly WITH (timescaledb.continuous) AS SELECT time_bucket('1 hour', at) AS bucket, product_id, sum(amount) AS total FROM sales GROUP BY 1, 2 WITH NO DATA", 10).await.unwrap();
+    let cat = conn.introspect().await.unwrap();
+    assert!(cat.schemas.iter().all(|s| !s.name.starts_with("_timescaledb")), "{:?}", cat.schemas.iter().map(|s| &s.name).collect::<Vec<_>>());
+    assert_eq!(cat.find_table(None, "sales").unwrap().kind, ObjectKind::Table);
+    assert_eq!(cat.find_table(None, "sales_hourly").unwrap().kind, ObjectKind::MaterializedView);
+    let src = conn.object_source("public", &SourceRef::relation("sales_hourly", ObjectKind::MaterializedView)).await.unwrap();
+    assert!(src.contains("timescaledb.continuous") && src.contains("time_bucket"), "{src}");
+    let plan = conn.explain("SELECT * FROM sales WHERE at > '2026-01-02'", false).await.unwrap();
+    assert!(plan.root.is_some());
+}
+
+/// `DATABUG_TEST_QUESTDB=host:port:database:user:password` (8812, qdb, admin, quest)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn questdb_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_QUESTDB") else { return };
+    let (cfg, pw) = pg_wire_cfg(DbKind::QuestDb, &p);
+    let mut conn = connect(&cfg, pw.as_deref()).await.unwrap();
+    let _ = run(&mut conn, "DROP TABLE IF EXISTS store_sales", 10).await;
+    run(&mut conn, "CREATE TABLE store_sales (at TIMESTAMP, sku SYMBOL INDEX, qty INT, price DOUBLE) TIMESTAMP(at) PARTITION BY DAY", 10).await.unwrap();
+    run(&mut conn, "INSERT INTO store_sales SELECT timestamp_sequence('2026-01-01', 60000000L), rnd_symbol('SKU-1001', 'SKU-1002', 'SKU-1003'), rnd_int(1, 9, 0), rnd_double() * 100 FROM long_sequence(2000)", 10).await.unwrap();
+    // QuestDB applies writes asynchronously through its WAL
+    let mut n = String::new();
+    for _ in 0..50 {
+        let c = run(&mut conn, "SELECT count() FROM store_sales", 10).await.unwrap();
+        n = c.rows.cell(0, 0).unwrap_or("").to_string();
+        if n == "2000" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(n, "2000");
+    let c = run(&mut conn, "SELECT * FROM store_sales", 500).await.unwrap();
+    assert_eq!(c.rows.rows(), 500);
+    assert!(c.truncated);
+    let cat = conn.introspect().await.unwrap();
+    let t = cat.find_table(None, "store_sales").unwrap();
+    assert_eq!(t.column("sku").unwrap().data_type, "symbol");
+    assert!(!t.column("at").unwrap().nullable);
+    assert!(t.indexes.iter().any(|i| i.columns == vec!["sku".to_string()]));
+    let plan = conn.explain("SELECT sku, sum(qty) FROM store_sales SAMPLE BY 1h", false).await.unwrap();
+    assert!(!plan.raw.is_empty());
+}
+
+/// `DATABUG_TEST_H2=host:port:database:user:password` for an H2 server
+/// started with `-pg` (e.g. `java -cp h2.jar org.h2.tools.Server -pg -ifNotExists`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn h2_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_H2") else { return };
+    let (cfg, pw) = pg_wire_cfg(DbKind::H2, &p);
+    let mut conn = connect(&cfg, pw.as_deref()).await.unwrap();
+    seed_store(&mut conn, Dialect::Postgres).await;
+    let cat = store_checks(&mut conn).await;
+    // the PostgreSQL mode folds names to lower case
+    assert!(cat.default_schema.eq_ignore_ascii_case("public"), "{}", cat.default_schema);
+    assert!(cat.schema("information_schema").is_none() && cat.schema("pg_catalog").is_none());
+    run(&mut conn, "CREATE OR REPLACE VIEW shipped AS SELECT id, total FROM orders WHERE status = 'shipped'", 10).await.unwrap();
+    let cat = conn.introspect().await.unwrap();
+    let view = cat.find_table(None, "shipped").unwrap();
+    assert_eq!(view.kind, ObjectKind::View);
+    let src = conn.object_source(&cat.default_schema, &SourceRef::relation(&view.name, ObjectKind::View)).await.unwrap();
+    assert!(src.contains("CREATE OR REPLACE"), "{src}");
+    let plan = conn.explain("SELECT * FROM orders WHERE customer_id = 3", false).await.unwrap();
+    assert!(!plan.raw.is_empty());
+}
+
+/// `DATABUG_TEST_CASSANDRA=host:port[:user:password]`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cassandra_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_CASSANDRA") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::Cassandra);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.user = p.get(2).cloned().unwrap_or_default();
+    cfg.ssl = databug_core::SslMode::Disable;
+    let mut conn = connect(&cfg, p.get(3).map(String::as_str)).await.unwrap();
+    run(&mut conn, "CREATE KEYSPACE IF NOT EXISTS databug_store WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}", 10).await.unwrap();
+    run(&mut conn, "USE databug_store", 10).await.unwrap();
+    run(&mut conn, "DROP TABLE IF EXISTS orders", 10).await.unwrap();
+    run(&mut conn, "CREATE TABLE orders (customer_id int, id int, status text, total decimal, ordered_at timestamp, PRIMARY KEY (customer_id, id))", 10).await.unwrap();
+    run(&mut conn, "CREATE INDEX IF NOT EXISTS orders_status ON orders (status)", 10).await.unwrap();
+    for i in 1..=30 {
+        run(&mut conn, &format!("INSERT INTO orders (customer_id, id, status, total, ordered_at) VALUES ({}, {i}, '{}', {}.25, '2026-01-{:02}')", 1 + i % 5, if i % 3 == 0 { "pending" } else { "shipped" }, 10 + i, 1 + i % 28), 10).await.unwrap();
+    }
+    let c = run(&mut conn, "SELECT id, status, total, ordered_at FROM orders WHERE customer_id = 2", 100).await.unwrap();
+    assert_eq!(c.columns, vec!["id", "status", "total", "ordered_at"]);
+    assert_eq!(c.rows.rows(), 6);
+    assert_eq!(c.rows.cell(0, 2), Some("11.25"));
+    assert!(c.rows.cell(0, 3).unwrap().starts_with("2026-01-02"));
+    let c = run(&mut conn, "SELECT * FROM orders", 10).await.unwrap();
+    assert_eq!(c.rows.rows(), 10);
+    assert!(c.truncated);
+    let cat = conn.introspect().await.unwrap();
+    assert_eq!(cat.default_schema, "databug_store");
+    assert!(cat.schema("system").is_none());
+    let t = cat.find_table(Some("databug_store"), "orders").unwrap();
+    assert_eq!(t.primary_key().iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["customer_id", "id"]);
+    assert!(t.indexes.iter().any(|i| i.name == "orders_status" && i.columns == vec!["status".to_string()]));
+    let err = run(&mut conn, "SELECT * FROM nope", 10).await.err().unwrap();
+    assert!(err.to_string().to_lowercase().contains("nope"), "{err}");
+}
+
+/// `DATABUG_TEST_COUCHDB=host:port:user:password`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn couchdb_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_COUCHDB") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::CouchDb);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.user = p.get(2).cloned().unwrap_or_default();
+    cfg.ssl = databug_core::SslMode::Disable;
+    let mut conn = connect(&cfg, p.get(3).map(String::as_str)).await.unwrap();
+    let _ = run(&mut conn, "db.databug_orders.drop()", 10).await;
+    run(&mut conn, "db.createCollection('databug_orders')", 10).await.unwrap();
+    let docs: Vec<String> = (1..=40).map(|i| format!("{{_id: 'order-{i}', customer_id: {}, status: '{}', total: {}.5}}", 1 + i % 7, if i % 4 == 0 { "pending" } else { "shipped" }, 10 + i)).collect();
+    let c = run(&mut conn, &format!("db.databug_orders.insertMany([{}])", docs.join(", ")), 10).await.unwrap();
+    assert_eq!(c.affected, Some(40));
+    run(&mut conn, "db.databug_orders.createIndex({total: 1})", 10).await.unwrap();
+    let c = run(&mut conn, "db.databug_orders.find({status: 'shipped', total: {$gt: 30}}, {_id: 1, total: 1}).sort({total: -1}).limit(3)", 100).await.unwrap();
+    assert_eq!(c.columns, vec!["_id", "total"]);
+    assert_eq!(c.rows.rows(), 3);
+    assert_eq!(c.rows.cell(0, 0), Some("order-39"));
+    let c = run(&mut conn, "db.databug_orders.find({})", 25).await.unwrap();
+    assert_eq!(c.rows.rows(), 25);
+    assert!(c.truncated);
+    let c = run(&mut conn, "db.databug_orders.countDocuments({status: 'pending'})", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("10"));
+    let c = run(&mut conn, "GET /databug_orders", 10).await.unwrap();
+    assert!(c.columns.contains(&"doc_count".to_string()));
+    let cat = conn.introspect().await.unwrap();
+    let t = cat.find_table(None, "databug_orders").unwrap();
+    assert!(t.column("status").is_some() && t.column("_id").unwrap().primary_key);
+    assert!(t.indexes.iter().any(|i| i.columns == vec!["total".to_string()]));
+    let plan = conn.explain("db.databug_orders.find({total: {$gt: 30}})", false).await.unwrap();
+    assert!(plan.raw.contains("index"));
+    run(&mut conn, "db.databug_orders.drop()", 10).await.unwrap();
+    if !cfg.user.is_empty() {
+        let err = connect(&cfg, Some("not-the-password")).await.err().unwrap();
+        assert!(err.to_string().contains("401"), "{err}");
+    }
+}
+
+/// `DATABUG_TEST_INFLUXDB=host:port:org:bucket:token` (InfluxDB 2.x)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn influxdb_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_INFLUXDB") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::InfluxDb);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.org = p[2].clone();
+    cfg.database = p[3].clone();
+    cfg.ssl = databug_core::SslMode::Disable;
+    let mut conn = connect(&cfg, Some(&p[4])).await.unwrap();
+    let lines: Vec<String> = (0..60).map(|i| format!("store_orders,region={} total={}.5,qty={}i {}", if i % 2 == 0 { "east" } else { "west" }, 10 + i, 1 + i % 4, 1_767_225_600_000_000_000i64 + i as i64 * 60_000_000_000)).collect();
+    let c = run(&mut conn, &format!("INSERT {}", lines.join("\n")), 10).await.unwrap();
+    assert_eq!(c.affected, Some(60));
+    let c = run(&mut conn, "SELECT total, qty, region FROM store_orders WHERE time >= '2026-01-01T00:00:00Z' AND time < '2026-01-01T01:00:00Z'", 100).await.unwrap();
+    assert_eq!(c.columns, vec!["time", "total", "qty", "region"]);
+    assert_eq!(c.rows.rows(), 60);
+    let c = run(&mut conn, "SELECT count(total) FROM store_orders WHERE time >= '2026-01-01T00:00:00Z' GROUP BY region", 100).await.unwrap();
+    assert!(c.columns.contains(&"region".to_string()));
+    let c = run(&mut conn, &format!("from(bucket: \"{}\") |> range(start: 2026-01-01T00:00:00Z, stop: 2026-01-01T01:00:00Z) |> filter(fn: (r) => r._measurement == \"store_orders\" and r._field == \"total\") |> count()", p[3]), 100).await.unwrap();
+    assert!(c.columns.contains(&"_value".to_string()), "{:?}", c.columns);
+    let cat = conn.introspect().await.unwrap();
+    let t = cat.find_table(None, "store_orders").unwrap();
+    assert_eq!(t.column("region").unwrap().data_type, "tag");
+    assert_eq!(t.column("total").unwrap().data_type, "float");
+    assert_eq!(t.column("qty").unwrap().data_type, "integer");
+    let err = connect(&cfg, Some("not-the-token")).await.err().unwrap();
+    assert!(err.to_string().contains("401"), "{err}");
+}
+
+/// `DATABUG_TEST_ORACLE=host:port:service:user:password` (needs the
+/// `oracle` feature and Oracle Instant Client). Not run in CI.
+#[cfg(feature = "oracle")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oracle_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_ORACLE") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::Oracle);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.database = p[2].clone();
+    cfg.user = p[3].clone();
+    let mut conn = connect(&cfg, Some(&p[4])).await.unwrap();
+    let _ = run(&mut conn, "DROP TABLE databug_orders", 10).await;
+    run(&mut conn, "CREATE TABLE databug_orders (id NUMBER(10) PRIMARY KEY, status VARCHAR2(20), total NUMBER(12,2))", 10).await.unwrap();
+    run(&mut conn, "INSERT INTO databug_orders SELECT LEVEL, CASE MOD(LEVEL, 3) WHEN 0 THEN 'pending' ELSE 'shipped' END, LEVEL + 0.5 FROM dual CONNECT BY LEVEL <= 200", 10).await.unwrap();
+    let c = run(&mut conn, "SELECT * FROM databug_orders ORDER BY id LIMIT 5", 100).await.unwrap();
+    assert_eq!(c.rows.rows(), 5);
+    let cat = conn.introspect().await.unwrap();
+    assert!(cat.find_table(None, "DATABUG_ORDERS").unwrap().column("ID").unwrap().primary_key);
+    assert!(!conn.explain("SELECT * FROM databug_orders WHERE id = 3", false).await.unwrap().raw.is_empty());
+    run(&mut conn, "DROP TABLE databug_orders", 10).await.unwrap();
+}
+
+/// `DATABUG_TEST_DB2=host:port:database:user:password` (needs the `db2`
+/// feature, unixODBC and the IBM Db2 ODBC driver). Not run in CI.
+#[cfg(feature = "db2")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn db2_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_DB2") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::Db2);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.database = p[2].clone();
+    cfg.user = p[3].clone();
+    let mut conn = connect(&cfg, Some(&p[4])).await.unwrap();
+    seed_store(&mut conn, Dialect::Postgres).await;
+    store_checks(&mut conn).await;
+}
+
+/// `DATABUG_TEST_SPARK=host:port:database[:user]` for a Spark Thrift server
+/// (needs the `spark` feature, unixODBC and a Spark ODBC driver). Not run in CI.
+#[cfg(feature = "spark")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spark_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_SPARK") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::Spark);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.database = p[2].clone();
+    cfg.user = p.get(3).cloned().unwrap_or_default();
+    let mut conn = connect(&cfg, None).await.unwrap();
+    run(&mut conn, "CREATE OR REPLACE TEMPORARY VIEW nums AS SELECT id FROM range(100)", 10).await.unwrap();
+    let c = run(&mut conn, "SELECT * FROM nums", 10).await.unwrap();
+    assert!(c.truncated);
+    let cat = conn.introspect().await.unwrap();
+    assert!(!cat.schemas.is_empty());
 }

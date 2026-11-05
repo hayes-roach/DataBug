@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["postgres", "mysql", "mssql", "sqlite", "mongodb"]
+default = ["postgres", "mysql", "mssql", "sqlite", "mongodb", "cockroachdb", "timescaledb", "questdb", "h2", "duckdb", "cassandra", "couchdb", "influxdb"]
 postgres = ["dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls", "dep:webpki-roots"]
 mysql = ["dep:mysql_async", "dep:rustls"]
 mssql = ["dep:tiberius", "dep:tokio-util", "dep:chrono"]
@@ -15,6 +15,26 @@ mssql = ["dep:tiberius", "dep:tokio-util", "dep:chrono"]
 kerberos = ["mssql", "tiberius/integrated-auth-gssapi", "tokio/process"]
 sqlite = ["dep:rusqlite"]
 mongodb = ["dep:mongodb", "dep:json5"]
+# Engines that speak the PostgreSQL wire protocol reuse the Postgres driver
+# with their own introspection. H2 is reached through its PostgreSQL server
+# mode (`-pg`).
+cockroachdb = ["postgres"]
+timescaledb = ["postgres"]
+questdb = ["postgres"]
+h2 = ["postgres"]
+# DuckDB is compiled from source (needs only a C++ compiler, like SQLite).
+duckdb = ["dep:duckdb"]
+cassandra = ["dep:scylla", "dep:rustls"]
+couchdb = ["dep:reqwest", "dep:json5", "dep:rustls"]
+influxdb = ["dep:reqwest", "dep:rustls"]
+# Not in the default build because they need software that isn't bundled:
+# Oracle loads Oracle Instant Client at run time (nothing is needed to build).
+oracle = ["dep:oracle"]
+# Db2 and Spark go through ODBC: building needs the ODBC driver manager
+# (unixODBC on macOS/Linux, built into Windows), and running needs the
+# engine's ODBC driver (IBM Data Server Driver, Simba/Databricks Spark ODBC).
+db2 = ["dep:odbc-api"]
+spark = ["dep:odbc-api"]
 
 [dependencies]
 databug-core.workspace = true
@@ -37,6 +57,11 @@ chrono = { version = "0.4", optional = true, default-features = false, features 
 rusqlite = { version = "0.37", optional = true, features = ["bundled", "column_decltype"] }
 mongodb = { version = "3", optional = true }
 json5 = { version = "0.4", optional = true }
+duckdb = { version = "1", optional = true, default-features = false, features = ["bundled"] }
+scylla = { version = "1", optional = true, default-features = false, features = ["rustls-023"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls-no-provider"] }
+oracle = { version = "0.6", optional = true }
+odbc-api = { version = "29", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

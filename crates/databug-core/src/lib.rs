@@ -7,7 +7,7 @@ pub mod plan;
 pub mod result;
 
 pub use catalog::{Catalog, ColumnInfo, DbObject, ForeignKey, IndexInfo, ObjectKind, SchemaInfo, TableInfo};
-pub use config::{Capabilities, ConnectionConfig, DbKind, Dialect, MsAuth, SslMode};
+pub use config::{Capabilities, ConnectionConfig, DbCategory, DbKind, Dialect, MsAuth, SslMode};
 pub use plan::{Plan, PlanNode};
 pub use result::{ColumnMeta, ResultSet};
 

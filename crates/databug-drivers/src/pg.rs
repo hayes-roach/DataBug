@@ -2,62 +2,22 @@ use crate::{build_catalog, cell, collect, plan, scalar, split_list, truthy, Batc
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
 use std::sync::{Arc, Mutex};
-use databug_core::{Capabilities, Catalog, ColumnMeta, ConnectionConfig, DbObject, Dialect, ForeignKey, IndexInfo, ObjectKind, Plan, QueryEvent, SslMode};
+use databug_core::{Capabilities, Catalog, ColumnMeta, ConnectionConfig, DbKind, DbObject, Dialect, ForeignKey, IndexInfo, ObjectKind, Plan, QueryEvent, SslMode};
 use tokio_postgres::{AsyncMessage, Client, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+/// Also used for engines that speak the PostgreSQL protocol (see `pgwire`).
 pub struct PgConn {
-    client: Client,
+    pub(crate) client: Client,
     tls: MakeRustlsConnect,
     notices: Arc<Mutex<Option<Sink>>>,
+    pub(crate) kind: DbKind,
 }
 
 fn tls_config() -> MakeRustlsConnect {
     // Like libpq's `sslmode=prefer/require`: encrypt, but don't verify the
     // server certificate (most self-hosted servers use self-signed certs).
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let cfg = rustls::ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-        .expect("TLS versions")
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
-        .with_no_client_auth();
-    MakeRustlsConnect::new(cfg)
-}
-
-#[derive(Debug)]
-struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for NoVerify {
-    fn verify_server_cert(
-        &self,
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &[rustls::pki_types::CertificateDer<'_>],
-        _: &rustls::pki_types::ServerName<'_>,
-        _: &[u8],
-        _: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
-    }
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
-    }
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
-    }
+    MakeRustlsConnect::new(crate::tls::no_verify_config())
 }
 
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> anyhow::Error {
@@ -120,16 +80,18 @@ impl PgConn {
             }
         });
         if cfg.read_only {
-            client.simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY").await.map_err(pg_error)?;
+            if let Some(sql) = crate::pgwire::read_only_sql(cfg.kind) {
+                client.simple_query(sql).await.map_err(pg_error)?;
+            }
         }
-        Ok(PgConn { client, tls, notices })
+        Ok(PgConn { client, tls, notices, kind: cfg.kind })
     }
 }
 
 #[async_trait]
 impl DbConnection for PgConn {
     fn capabilities(&self) -> Capabilities {
-        Capabilities { schemas: true, transactions: true, explain: true, explain_analyze: true, server_cancel: true, sql: true }
+        crate::pgwire::capabilities(self.kind)
     }
 
     fn canceller(&self) -> Option<Canceller> {
@@ -153,12 +115,43 @@ impl DbConnection for PgConn {
     }
 
     async fn list_databases(&mut self) -> anyhow::Result<(Vec<String>, String)> {
+        if self.kind != DbKind::Postgres {
+            return crate::pgwire::list_databases(self).await;
+        }
+        self.pg_list_databases().await
+    }
+
+    async fn introspect(&mut self) -> anyhow::Result<Catalog> {
+        if self.kind != DbKind::Postgres {
+            return crate::pgwire::introspect(self).await;
+        }
+        self.introspect_pg().await
+    }
+
+    async fn object_source(&mut self, schema: &str, obj: &SourceRef) -> anyhow::Result<String> {
+        if self.kind != DbKind::Postgres {
+            return crate::pgwire::object_source(self, schema, obj).await;
+        }
+        self.pg_object_source(schema, obj).await
+    }
+
+    async fn explain(&mut self, stmt: &str, analyze: bool) -> anyhow::Result<Plan> {
+        if !matches!(self.kind, DbKind::Postgres | DbKind::TimescaleDb) {
+            return crate::pgwire::explain(self, stmt, analyze).await;
+        }
+        self.pg_explain(stmt, analyze).await
+    }
+}
+
+/// The PostgreSQL catalog queries, shared with TimescaleDB.
+impl PgConn {
+    pub(crate) async fn pg_list_databases(&mut self) -> anyhow::Result<(Vec<String>, String)> {
         let names = collect(self, "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1").await?;
         let current = scalar(self, "SELECT current_database()").await?.unwrap_or_default();
         Ok((names.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect(), current))
     }
 
-    async fn introspect(&mut self) -> anyhow::Result<Catalog> {
+    pub(crate) async fn introspect_pg(&mut self) -> anyhow::Result<Catalog> {
         let rows = collect(self, INTROSPECT).await?;
         let schemas = collect(self, &format!("SELECT nspname FROM pg_namespace n WHERE {SYS} ORDER BY 1")).await?;
         let mut extras = Extras::default();
@@ -198,7 +191,7 @@ impl DbConnection for PgConn {
         Ok(build_catalog(rows, default, schemas.into_iter().filter_map(|r| r[0].clone()).collect(), extras))
     }
 
-    async fn object_source(&mut self, schema: &str, obj: &SourceRef) -> anyhow::Result<String> {
+    pub(crate) async fn pg_object_source(&mut self, schema: &str, obj: &SourceRef) -> anyhow::Result<String> {
         let d = Dialect::Postgres;
         let q = format!("{}.{}", d.quote_ident(schema), d.quote_ident(&obj.name));
         let lit = |s: &str| d.quote_literal(s);
@@ -254,7 +247,7 @@ impl DbConnection for PgConn {
         }
     }
 
-    async fn explain(&mut self, stmt: &str, analyze: bool) -> anyhow::Result<Plan> {
+    pub(crate) async fn pg_explain(&mut self, stmt: &str, analyze: bool) -> anyhow::Result<Plan> {
         let modifies = databug_sql::classify(stmt, databug_core::Dialect::Postgres).modifies();
         let sql = format!("EXPLAIN (FORMAT JSON{}) {}", if analyze { ", ANALYZE, BUFFERS" } else { "" }, stmt);
         // EXPLAIN ANALYZE runs the statement; keep writes from sticking.
@@ -315,10 +308,13 @@ impl PgConn {
                         b.cells().push(row.get(i));
                     }
                     if !b.row_done() {
-                        // Stop the server from streaming rows we won't keep.
+                        // Stop the server from streaming rows we won't keep (engines
+                        // without cancel just stream the rest, which is skipped).
                         stopped = true;
-                        if let Some(c) = self.canceller() {
-                            c();
+                        if self.capabilities().server_cancel {
+                            let token = self.client.cancel_token();
+                            let cancel = token.cancel_query(self.tls.clone());
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), cancel).await;
                         }
                     }
                 }
@@ -331,6 +327,12 @@ impl PgConn {
                 }
                 _ => {}
             }
+        }
+        if stopped && self.capabilities().server_cancel {
+            // The cancel reaches the server process as a signal; if the query
+            // finished first, it would cancel whatever runs next. A throwaway
+            // query takes it instead.
+            let _ = self.client.simple_query("SELECT 1").await;
         }
         Ok(())
     }

@@ -18,6 +18,26 @@ mod mysql;
 mod pg;
 #[cfg(feature = "sqlite")]
 mod sqlite;
+#[cfg(feature = "postgres")]
+mod pgwire;
+#[cfg(feature = "duckdb")]
+mod duck;
+#[cfg(feature = "cassandra")]
+mod cassandra;
+#[cfg(feature = "couchdb")]
+mod couch;
+#[cfg(feature = "influxdb")]
+mod influx;
+#[cfg(feature = "oracle")]
+mod oracle;
+#[cfg(any(feature = "db2", feature = "spark"))]
+mod odbc;
+#[cfg(any(feature = "couchdb", feature = "influxdb"))]
+mod http;
+#[cfg(any(feature = "postgres", feature = "cassandra", feature = "couchdb", feature = "influxdb"))]
+mod tls;
+#[allow(dead_code)]
+mod infoschema;
 
 /// Receives streamed events from a running statement.
 pub type Sink = Arc<dyn Fn(QueryEvent) + Send + Sync>;
@@ -132,6 +152,28 @@ pub fn available() -> Vec<DbKind> {
     v.push(DbKind::Sqlite);
     #[cfg(feature = "mongodb")]
     v.push(DbKind::MongoDb);
+    #[cfg(feature = "oracle")]
+    v.push(DbKind::Oracle);
+    #[cfg(feature = "db2")]
+    v.push(DbKind::Db2);
+    #[cfg(feature = "duckdb")]
+    v.push(DbKind::DuckDb);
+    #[cfg(feature = "cassandra")]
+    v.push(DbKind::Cassandra);
+    #[cfg(feature = "couchdb")]
+    v.push(DbKind::CouchDb);
+    #[cfg(feature = "cockroachdb")]
+    v.push(DbKind::CockroachDb);
+    #[cfg(feature = "timescaledb")]
+    v.push(DbKind::TimescaleDb);
+    #[cfg(feature = "questdb")]
+    v.push(DbKind::QuestDb);
+    #[cfg(feature = "influxdb")]
+    v.push(DbKind::InfluxDb);
+    #[cfg(feature = "spark")]
+    v.push(DbKind::Spark);
+    #[cfg(feature = "h2")]
+    v.push(DbKind::H2);
     v
 }
 
@@ -151,6 +193,28 @@ pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> anyhow::
             DbKind::Sqlite => Ok(Box::new(sqlite::LiteConn::connect(cfg).await?) as Box<dyn DbConnection>),
             #[cfg(feature = "mongodb")]
             DbKind::MongoDb => Ok(Box::new(mongo::MongoConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "cockroachdb")]
+            DbKind::CockroachDb => Ok(Box::new(pg::PgConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "timescaledb")]
+            DbKind::TimescaleDb => Ok(Box::new(pg::PgConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "questdb")]
+            DbKind::QuestDb => Ok(Box::new(pg::PgConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "h2")]
+            DbKind::H2 => Ok(Box::new(pg::PgConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "duckdb")]
+            DbKind::DuckDb => Ok(Box::new(duck::DuckConn::connect(cfg).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "cassandra")]
+            DbKind::Cassandra => Ok(Box::new(cassandra::CassConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "couchdb")]
+            DbKind::CouchDb => Ok(Box::new(couch::CouchConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "influxdb")]
+            DbKind::InfluxDb => Ok(Box::new(influx::InfluxConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "oracle")]
+            DbKind::Oracle => Ok(Box::new(oracle::OraConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "db2")]
+            DbKind::Db2 => Ok(Box::new(odbc::OdbcConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "spark")]
+            DbKind::Spark => Ok(Box::new(odbc::OdbcConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
             #[allow(unreachable_patterns)]
             other => anyhow::bail!("{} support isn't included in this build", other.label()),
         }
@@ -164,7 +228,7 @@ pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> anyhow::
 /// Several dependencies enable different rustls crypto backends; pick one
 /// process-wide so none of them panic.
 fn init_crypto() {
-    #[cfg(any(feature = "postgres", feature = "mysql"))]
+    #[cfg(any(feature = "postgres", feature = "mysql", feature = "cassandra", feature = "couchdb", feature = "influxdb"))]
     {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
@@ -370,6 +434,63 @@ pub fn replace_create(def: &str, dialect: databug_core::Dialect, replacement: &s
     def.to_string()
 }
 
+/// Transaction control the app sends as SQL, for engines that do it
+/// through their driver API instead (Oracle has no `BEGIN`; ODBC uses
+/// autocommit).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxCommand {
+    Begin,
+    Commit,
+    Rollback,
+}
+
+#[allow(dead_code)]
+pub(crate) fn tx_command(stmt: &str) -> Option<TxCommand> {
+    let s = stmt.trim().trim_end_matches(';').trim().to_ascii_uppercase();
+    let words: Vec<&str> = s.split_whitespace().collect();
+    match words.as_slice() {
+        ["BEGIN"] | ["BEGIN", "TRANSACTION" | "WORK" | "TRAN"] | ["START", "TRANSACTION"] => Some(TxCommand::Begin),
+        ["COMMIT"] | ["COMMIT", "WORK" | "TRANSACTION"] => Some(TxCommand::Commit),
+        ["ROLLBACK"] | ["ROLLBACK", "WORK" | "TRANSACTION"] => Some(TxCommand::Rollback),
+        _ => None,
+    }
+}
+
+/// A text plan (one line per row) for engines without a parsed plan format.
+#[allow(dead_code)]
+pub(crate) fn plan_text_rows(lines: Vec<String>) -> Plan {
+    Plan { root: None, raw: lines.join("\n"), format: "text" }
+}
+
 pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_statements() {
+        assert_eq!(tx_command("BEGIN"), Some(TxCommand::Begin));
+        assert_eq!(tx_command("start transaction;"), Some(TxCommand::Begin));
+        assert_eq!(tx_command(" commit "), Some(TxCommand::Commit));
+        assert_eq!(tx_command("ROLLBACK WORK"), Some(TxCommand::Rollback));
+        // a PL/SQL block is not a transaction start
+        assert_eq!(tx_command("BEGIN NULL; END;"), None);
+        assert_eq!(tx_command("ROLLBACK TO SAVEPOINT a"), None);
+    }
+
+    #[test]
+    fn default_build_has_the_pure_rust_engines() {
+        let a = available();
+        #[cfg(feature = "cockroachdb")]
+        assert!(a.contains(&DbKind::CockroachDb));
+        #[cfg(feature = "duckdb")]
+        assert!(a.contains(&DbKind::DuckDb));
+        #[cfg(not(feature = "oracle"))]
+        assert!(!a.contains(&DbKind::Oracle));
+        let _ = a;
+    }
 }

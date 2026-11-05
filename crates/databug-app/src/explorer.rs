@@ -323,6 +323,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 DbKind::MsSql => "sql server",
                 DbKind::Sqlite => "sqlite",
                 DbKind::MongoDb => "mongodb",
+                k => k.label(),
             };
             let detail = if disconnected {
                 "disconnected".to_string()

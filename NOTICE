@@ -24,10 +24,13 @@ policies that apply to the systems you connect to.
 TRADEMARKS
 
 DataBug is an independent open source project. It is not affiliated with,
-endorsed by, or sponsored by JetBrains (DataGrip), Oracle (MySQL), MariaDB,
-Microsoft (SQL Server), MongoDB, Inc., the PostgreSQL Global Development
-Group, the SQLite developers, the Apache Software Foundation (CouchDB), or
-any other database vendor or project.
+endorsed by, or sponsored by JetBrains (DataGrip), Oracle (Oracle Database,
+MySQL), IBM (Db2), MariaDB, Microsoft (SQL Server), MongoDB, Inc., the
+PostgreSQL Global Development Group, the SQLite developers, the Apache
+Software Foundation (CouchDB, Cassandra, Spark), DuckDB Labs / the DuckDB
+Foundation, Cockroach Labs (CockroachDB), Timescale (TimescaleDB), QuestDB,
+InfluxData (InfluxDB), the H2 Database Engine project, or any other
+database vendor or project.
 
 All product names, logos and brands are the property of their respective
 owners. They are used only to identify which database a connection uses

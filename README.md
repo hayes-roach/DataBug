@@ -1,6 +1,6 @@
 # DataBug
 
-A fast, memory-light database client written in Rust for macOS, Windows and Linux, with a DataGrip-style workflow: a schema explorer that shows every kind of object, a SQL editor that understands your schema, a virtualized results grid, query plans, table and routine editing, schema compare, ER diagrams, CSV import, rename refactoring, and guard rails for production.
+A fast, memory-light, free and open source database client written in Rust for macOS, Windows and Linux, with a DataGrip-style workflow (DataBug isn't affiliated with JetBrains; see [Disclaimer](#disclaimer)): a schema explorer that shows every kind of object, a SQL editor that understands your schema, a virtualized results grid, query plans, table and routine editing, schema compare, ER diagrams, CSV import, rename refactoring, and guard rails for production.
 
 ![DataBug editor with schema-aware completion](docs/screenshot-editor.png)
 
@@ -263,6 +263,14 @@ The live tests cover streaming, NULLs, row limits, affected-row counts, server m
 
 Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the branching strategy (GitHub flow: short-lived `feat/`, `fix/`, `docs/` … branches off `main`, squash-merged pull requests, Conventional Commit titles), testing and releases. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), report security problems privately as described in [SECURITY.md](SECURITY.md), and see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
+## Disclaimer
+
+**Use DataBug at your own risk.** It is provided **"as is", without warranty of any kind**, express or implied (sections 7 and 8 of the [Apache License 2.0](LICENSE)). To the fullest extent permitted by law, the authors and contributors are **not responsible for anything that happens as a result of using DataBug**, and are not liable for any damages of any kind, including lost, changed or corrupted data, security incidents, locked accounts, downtime, lost profits, or anything else, however it's caused. By using DataBug you accept this.
+
+DataBug runs the SQL and commands you give it, including statements that change or delete data. Guard rails like the read-only and production flags and the confirmations help, but they don't replace care: review what you run, keep backups, and test against non-production databases first. Follow the policies of the systems you connect to.
+
+DataBug is an independent project and is not affiliated with, endorsed by, or sponsored by JetBrains, Oracle, Microsoft, MongoDB, Inc., the PostgreSQL Global Development Group, the SQLite developers, the Apache Software Foundation, or any other database vendor. DataGrip, PostgreSQL, MySQL, MariaDB, SQL Server, MongoDB, SQLite, CouchDB and other names and logos are trademarks of their respective owners. They're used only to identify databases and comparable tools, and their use doesn't imply endorsement. See [NOTICE](NOTICE) and [the logo notice](crates/databug-app/assets/logos/NOTICE.md).
+
 ## License
 
-Apache-2.0. Bundled fonts: Inter and JetBrains Mono, both under the SIL Open Font License (see `crates/databug-app/assets/fonts`).
+Apache-2.0: free for personal and commercial use. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Bundled fonts: Inter and JetBrains Mono, both under the SIL Open Font License (see `crates/databug-app/assets/fonts`).

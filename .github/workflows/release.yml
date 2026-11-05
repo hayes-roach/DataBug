@@ -49,6 +49,8 @@ jobs:
           New-Item -ItemType Directory -Force dist/DataBug | Out-Null
           Copy-Item target/release/databug.exe dist/DataBug/DataBug.exe
           Copy-Item -Recurse crates/databug-app/assets/logos dist/DataBug/logos
+          Copy-Item LICENSE dist/DataBug/LICENSE.txt
+          Copy-Item NOTICE dist/DataBug/NOTICE.txt
           Compress-Archive -Path dist/DataBug/* -DestinationPath dist/DataBug-windows-x86_64.zip
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress }
@@ -63,7 +65,7 @@ jobs:
           cargo build --release --locked --features kerberos
           mkdir -p DataBug dist
           cp target/release/databug DataBug/
-          cp packaging/linux/databug.desktop packaging/linux/install.sh DataBug/
+          cp packaging/linux/databug.desktop packaging/linux/install.sh LICENSE NOTICE DataBug/
           cp crates/databug-app/assets/icon/icon.png DataBug/databug.png
           cp -r crates/databug-app/assets/logos DataBug/logos
           tar czf dist/DataBug-linux-x86_64.tar.gz DataBug

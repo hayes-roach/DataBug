@@ -1,0 +1,45 @@
+DataBug
+Copyright 2026 The DataBug authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+NO WARRANTY. USE AT YOUR OWN RISK.
+
+DataBug is provided "AS IS", WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+either express or implied, including warranties of merchantability, fitness
+for a particular purpose, title and non-infringement (Apache License 2.0,
+section 7). In no event shall the authors or contributors be liable for any
+damages arising from the use of DataBug, including loss of data, corrupted
+databases, downtime or lost profits (section 8).
+
+To the fullest extent permitted by law, the authors and contributors are
+not responsible for anything that happens as a result of using DataBug,
+however it is caused. By using DataBug you accept this.
+
+DataBug runs the SQL and commands you give it against your databases,
+including statements that change or delete data. You are responsible for
+reviewing what you run, for keeping backups, and for complying with the
+policies that apply to the systems you connect to.
+
+TRADEMARKS
+
+DataBug is an independent open source project. It is not affiliated with,
+endorsed by, or sponsored by JetBrains (DataGrip), Oracle (MySQL), MariaDB,
+Microsoft (SQL Server), MongoDB, Inc., the PostgreSQL Global Development
+Group, the SQLite developers, the Apache Software Foundation (CouchDB), or
+any other database vendor or project.
+
+All product names, logos and brands are the property of their respective
+owners. They are used only to identify which database a connection uses
+and which tools DataBug is comparable to. Use of these names and logos does
+not imply endorsement.
+
+THIRD-PARTY COMPONENTS
+
+- Inter font, (c) The Inter Project Authors, SIL Open Font License 1.1
+  (crates/databug-app/assets/fonts/LICENSE-Inter.txt)
+- JetBrains Mono font, (c) The JetBrains Mono Project Authors, SIL Open
+  Font License 1.1 (crates/databug-app/assets/fonts/LICENSE-JetBrainsMono.txt)
+- Rust crates listed in Cargo.lock, each under its own license (mostly MIT
+  and/or Apache-2.0).
+- Database logos in crates/databug-app/assets/logos: see NOTICE.md there.

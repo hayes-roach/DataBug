@@ -76,7 +76,16 @@ To install DataBug, drag DataBug.app onto the Applications folder.
 
 First launch: if macOS says the app is from an unidentified developer,
 right-click DataBug in Applications and choose Open, then Open again.
+
+DataBug is free and open source under the Apache License 2.0. Use it at
+your own risk: it is provided "as is", without warranty of any kind, and
+to the fullest extent permitted by law the authors are not responsible for
+anything that happens as a result of using it. Review the SQL you run and
+keep backups. DataBug is not affiliated with JetBrains or any database
+vendor; product names and logos belong to their owners.
 TXT
+cp LICENSE "$STAGE/LICENSE.txt"
+cp NOTICE "$STAGE/NOTICE.txt"
 DMG="dist/DataBug-macos-$ARCH.dmg"
 rm -f "$DMG"
 hdiutil create -volname "DataBug $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null

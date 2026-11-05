@@ -2366,6 +2366,12 @@ impl DataBugApp {
                             check_now = true;
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Apache-2.0 · use at your own risk, no warranty").size(11.0).color(p.faint));
+                        if ui.small_button("License").clicked() {
+                            crate::update::open_page(&format!("https://github.com/{}/blob/main/LICENSE", crate::update::REPO));
+                        }
+                    });
                     changed |= ui.checkbox(&mut self.settings.check_updates, "Check for updates automatically").on_hover_text("Asks GitHub for the latest release at startup and once a day. Nothing installs without your click.").changed();
                     if changed {
                         self.store.save_settings(&self.settings);
@@ -2484,13 +2490,17 @@ impl DataBugApp {
                 }
             }
             ui.add_space(28.0);
-            for (k, v) in [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run script"), ("Ctrl + Space", "Completion"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")] {
+            let shortcuts = [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run script"), ("Ctrl + Space", "Completion"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")];
+            for (k, v) in shortcuts {
                 ui.horizontal(|ui| {
                     ui.add_space((ui.available_width() - 360.0).max(0.0) / 2.0);
                     ui.add_sized([170.0, 18.0], egui::Label::new(RichText::new(k).font(FontId::monospace(12.0)).color(p.muted)));
                     ui.label(RichText::new(v).color(p.faint));
                 });
             }
+            ui.add_space(28.0);
+            ui.label(RichText::new("Free and open source under the Apache License 2.0. Use at your own risk: it's provided as is, without warranty, and the authors aren't responsible for anything that happens from using it.").size(11.0).color(p.faint));
+            ui.label(RichText::new("Not affiliated with JetBrains or any database vendor; product names and logos belong to their owners.").size(11.0).color(p.faint));
         });
         actions
     }

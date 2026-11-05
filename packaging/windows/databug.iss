@@ -48,6 +48,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "DataBug.exe"; Flags: ignoreversion
 Source: "..\..\crates\databug-app\assets\logos\*"; DestDir: "{app}\logos"; Flags: ignoreversion onlyifdoesntexist
+Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\..\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\DataBug"; Filename: "{app}\DataBug.exe"

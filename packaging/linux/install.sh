@@ -30,6 +30,7 @@ command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
 
 echo "DataBug installed. Open it from your applications menu, or run: databug"
+echo "DataBug is free and open source (Apache-2.0). Use at your own risk: it comes with no warranty and the authors aren't responsible for anything that happens from using it."
 case ":$PATH:" in
   *":$bin:"*) ;;
   *) echo "Note: $bin isn't on your PATH, so the 'databug' command needs the full path." ;;

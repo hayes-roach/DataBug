@@ -10,6 +10,11 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 - Contributing guide, code of conduct, security policy, issue and pull request templates
 
+### Changed
+
+- README screenshots updated, with new ones for multiple databases, find and replace, and themes
+- SQL Server marked as tested against a live server
+
 ## [0.1.0] - 2026-11-04
 
 First public release.

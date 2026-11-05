@@ -4,17 +4,21 @@ A fast, memory-light database client written in Rust for macOS, Windows and Linu
 
 ![DataBug editor with schema-aware completion](docs/screenshot-editor.png)
 
-| Explorer: procedures, functions, mat views, triggers | Schema compare with migration DDL | ER diagram |
+| Several databases per server, projects, disconnected connections | Find and replace (`Ctrl/⌘ + F`) | Six themes and custom colors |
 |---|---|---|
-| ![explorer](docs/screenshot-explorer.png) | ![compare](docs/screenshot-compare.png) | ![er](docs/screenshot-er.png) |
+| ![explorer with several databases](docs/screenshot-explorer.png) | ![find and replace](docs/screenshot-find.png) | ![themes](docs/screenshot-themes.png) |
 
-| Modify table | CSV import | Rename refactoring |
+| Schema compare with migration DDL | ER diagram | Modify table |
 |---|---|---|
-| ![table editor](docs/screenshot-table-editor.png) | ![csv](docs/screenshot-csv.png) | ![rename](docs/screenshot-rename.png) |
+| ![compare](docs/screenshot-compare.png) | ![er](docs/screenshot-er.png) | ![table editor](docs/screenshot-table-editor.png) |
 
-| Query plan (Postgres `EXPLAIN ANALYZE`) | Connection dialog | Light theme |
+| CSV import | Rename refactoring | Query plan |
 |---|---|---|
-| ![plan](docs/screenshot-plan.png) | ![connection](docs/screenshot-connection.png) | ![light](docs/screenshot-light.png) |
+| ![csv](docs/screenshot-csv.png) | ![rename](docs/screenshot-rename.png) | ![plan](docs/screenshot-plan.png) |
+
+| Connection dialog | Light theme | |
+|---|---|---|
+| ![connection](docs/screenshot-connection.png) | ![light](docs/screenshot-light.png) | |
 
 ## Install
 
@@ -44,7 +48,7 @@ To build installers yourself:
 | PostgreSQL | `tokio-postgres` | ✔ | ✔ (pg_catalog) | JSON tree, `ANALYZE` | ✔ | ✔ Postgres 16 |
 | MySQL / MariaDB | `mysql_async` | ✔ | ✔ (information_schema) | JSON tree, `ANALYZE` text | ✔ (`KILL QUERY`) | ✔ MariaDB 10.11 |
 | SQLite | `rusqlite` (bundled) | ✔ | ✔ | `EXPLAIN QUERY PLAN` tree | ✔ (interrupt) | ✔ |
-| SQL Server | `tiberius` | ✔ | ✔ (sys catalog) | Showplan XML tree | drops connection | compiles, not yet run against a server |
+| SQL Server | `tiberius` | ✔ | ✔ (sys catalog) | Showplan XML tree | drops connection | ✔ live server |
 | MongoDB | `mongodb` | ✔ shell syntax | ✔ (sampled fields) | `explain` tree | drops connection | compiles, not yet run against a server |
 
 ### What the explorer shows
@@ -222,14 +226,14 @@ cargo test --workspace                       # adds live Postgres and MySQL test
 
 The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
 
-`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`.
+`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`. The README screenshots come from `main` (editor), `multidb`, `find`, `theme`, `compare`, `er`, `table`, `csv`, `rename`, `plan`, `dialog` and `light`, captured at the default window size and scaled to 1440×900.
 
 `DATABUG_TEST_KRB="user@REALM:password"` with `--features databug-drivers/kerberos` adds a test that signs in to a Kerberos realm through the SQL Server Windows-credentials path.
 
 ## Not done yet
 
 - **macOS and Windows builds haven't been run yet.** Dependency resolution checks out for both, and the wgpu renderer they use was exercised on Linux. CI (`ci.yml`) and the release workflow (`release.yml`) build and test on real macOS and Windows runners; push to GitHub to run them.
-- SQL Server and MongoDB still haven't run against live servers. That includes SQL Server's CLR objects, sequences and synonyms, and `CREATE OR ALTER` editing.
+- MongoDB still hasn't run against a live server. SQL Server has been tested against a live server; its less common objects (CLR objects, sequences, synonyms) and `CREATE OR ALTER` editing have seen the least use, so reports are welcome.
 - SSH tunnels, client certificates, and cloud sign-in (AWS IAM, Microsoft Entra ID).
 - SQL Server Windows authentication hasn't been tried against a real domain. The macOS/Linux `kinit` step was tested against a local Kerberos realm (right and wrong passwords); the handshake with SQL Server itself is tiberius' and is untested here.
 - Schema visibility doesn't skip hidden schemas during introspection yet, so very large servers still load everything once.

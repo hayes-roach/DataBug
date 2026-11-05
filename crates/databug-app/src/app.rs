@@ -1167,7 +1167,7 @@ impl DataBugApp {
             Some(c) => c.id.clone(),
             None => {
                 let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
-                cfg.name = "Sample store".into();
+                cfg.name = "Store".into();
                 cfg.path = path_s;
                 cfg.color = [95, 184, 101];
                 let id = cfg.id.clone();
@@ -2680,6 +2680,37 @@ impl DataBugApp {
                             self.explorer.open_key(format!("t:{id}:public:orders"));
                             self.explorer.selected = Some(format!("t:{id}:public:orders"));
                         }
+                        "compare" => {
+                            // a second SQLite database with a slightly different schema
+                            let src = self.tabs[self.active].conn_id.clone();
+                            let path = std::env::temp_dir().join(format!("databug-staging-{}.db", std::process::id()));
+                            let _ = std::fs::remove_file(&path);
+                            let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+                            cfg.name = "Store staging".into();
+                            cfg.path = path.display().to_string();
+                            cfg.color = [224, 176, 74];
+                            let ddl = "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, city TEXT);\n\
+                                CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL, name TEXT NOT NULL, price NUMERIC(10,2) NOT NULL);\n\
+                                CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id), status TEXT NOT NULL, total NUMERIC(12,2));\n\
+                                CREATE TABLE coupons (code TEXT PRIMARY KEY, percent INTEGER NOT NULL);";
+                            let c2 = cfg.clone();
+                            let _ = self.rt.block_on(async move {
+                                let mut c = databug_drivers::connect(&c2, None).await?;
+                                let sink: databug_drivers::Sink = std::sync::Arc::new(|_| {});
+                                for r in split_statements(ddl, Dialect::Sqlite) {
+                                    c.execute(&ddl[r], &ExecOptions::default(), &sink).await?;
+                                }
+                                anyhow::Ok(())
+                            });
+                            let dst = cfg.id.clone();
+                            self.connections.push(cfg);
+                            self.apply(Action::Compare(src.clone(), "main".into()), ctx);
+                            if let Some(Tool::Compare(cv)) = self.tabs.last_mut().and_then(|t| t.tool.as_mut()) {
+                                cv.right = (dst, "main".into());
+                            }
+                            let tid = self.tabs.last().map(|t| t.id).unwrap_or(0);
+                            self.start_compare(tid, ctx);
+                        }
                         "pg-compare" => {
                             let id = self.connections.first().map(|c| c.id.clone()).unwrap_or_default();
                             self.apply(Action::Compare(id.clone(), "public".into()), ctx);
@@ -2899,7 +2930,7 @@ impl DataBugApp {
                     self.apply_rename(ctx);
                 }
             }
-            2 if plan.scene == "pg-compare" && plan.wait_frames < 400 && !compare_done => {
+            2 if (plan.scene == "pg-compare" || plan.scene == "compare") && plan.wait_frames < 400 && !compare_done => {
                 plan.wait_frames = plan.wait_frames.min(5);
             }
             2 if plan.wait_frames == 4 && (plan.scene == "main" || plan.scene == "light") => {
@@ -2908,7 +2939,7 @@ impl DataBugApp {
                     i.events.push(egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL });
                 });
             }
-            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" => 60, "pg-compare" => 30, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
+            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" => 60, "pg-compare" | "compare" => 30, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
                 plan.step = 3;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }

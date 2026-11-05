@@ -9,7 +9,7 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Se
 - **Report a bug** with the bug report form under [Issues](https://github.com/hayes-roach/DataBug/issues/new/choose). Include the DataBug version, your OS, the database engine and version, and the steps to reproduce.
 - **Suggest a feature** with the feature request form. Explain the problem you're trying to solve, not only the feature you have in mind.
 - **Pick up an issue.** Issues labelled `good first issue` are small and well described; `help wanted` ones are larger. Comment on an issue before starting so two people don't build the same thing.
-- **Test against real servers.** SQL Server and MongoDB haven't been run against live servers yet (see *Not done yet* in the README). Reports from real setups are valuable even without a fix.
+- **Test against real servers.** MongoDB hasn't been run against a live server yet, and SQL Server's less common objects (CLR objects, sequences, synonyms) have seen little use (see *Not done yet* in the README). Reports from real setups are valuable even without a fix.
 
 For anything bigger than a bug fix (a new driver, a new panel, a change to how sessions work), open an issue or a draft pull request to agree on the approach first.
 

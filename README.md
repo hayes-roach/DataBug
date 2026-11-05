@@ -240,6 +240,10 @@ The live tests cover streaming, NULLs, row limits, affected-row counts, server m
 - More engines (CouchDB, Redis, ClickHouse) behind the same `DbConnection` trait.
 - The UI is pinned to egui 0.31; moving to the current egui release is a mechanical upgrade.
 
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the branching strategy (GitHub flow: short-lived `feat/`, `fix/`, `docs/` … branches off `main`, squash-merged pull requests, Conventional Commit titles), testing and releases. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), report security problems privately as described in [SECURITY.md](SECURITY.md), and see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
 ## License
 
 Apache-2.0. Bundled fonts: Inter and JetBrains Mono, both under the SIL Open Font License (see `crates/databug-app/assets/fonts`).

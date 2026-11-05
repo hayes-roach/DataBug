@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe what you're trying to do and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+      description: How you picture it working. Sketches and examples from other tools are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've tried
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Which databases does this affect?
+      multiple: true
+      options:
+        - PostgreSQL
+        - MySQL / MariaDB
+        - SQL Server
+        - SQLite
+        - MongoDB
+        - All / not database-specific
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself (see CONTRIBUTING.md)

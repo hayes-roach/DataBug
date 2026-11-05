@@ -311,6 +311,12 @@ impl DbConnection for MongoConn {
         }
     }
 
+    async fn list_databases(&mut self) -> anyhow::Result<(Vec<String>, String)> {
+        let mut names = self.client.list_database_names().await?;
+        names.sort();
+        Ok((names, self.db_name.clone()))
+    }
+
     async fn introspect(&mut self) -> anyhow::Result<Catalog> {
         let db = self.db();
         let mut specs: Vec<mongodb::results::CollectionSpecification> = db.list_collections().await?.try_collect().await?;

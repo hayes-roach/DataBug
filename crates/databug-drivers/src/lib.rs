@@ -50,6 +50,12 @@ pub trait DbConnection: Send {
 
     async fn introspect(&mut self) -> anyhow::Result<Catalog>;
 
+    /// Databases on the same server, and the one this connection uses.
+    /// Engines without separate databases return an empty list.
+    async fn list_databases(&mut self) -> anyhow::Result<(Vec<String>, String)> {
+        Ok((Vec::new(), String::new()))
+    }
+
     async fn explain(&mut self, stmt: &str, analyze: bool) -> anyhow::Result<Plan>;
 
     /// Editable DDL for a view, routine, trigger, sequence or other object:

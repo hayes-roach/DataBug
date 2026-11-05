@@ -4,11 +4,35 @@
 use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Stroke, TextStyle, Visuals};
 use std::sync::Arc;
 
+/// Built-in color themes. `Dark` is the default.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, Default)]
 pub enum ThemeKind {
     #[default]
     Dark,
     Light,
+    Midnight,
+    Forest,
+    Paper,
+    HighContrast,
+}
+
+impl ThemeKind {
+    pub const ALL: [ThemeKind; 6] = [ThemeKind::Dark, ThemeKind::Light, ThemeKind::Midnight, ThemeKind::Forest, ThemeKind::Paper, ThemeKind::HighContrast];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeKind::Dark => "Dark",
+            ThemeKind::Light => "Light",
+            ThemeKind::Midnight => "Midnight",
+            ThemeKind::Forest => "Forest",
+            ThemeKind::Paper => "Paper",
+            ThemeKind::HighContrast => "High contrast",
+        }
+    }
+
+    pub fn is_dark(self) -> bool {
+        !matches!(self, ThemeKind::Light | ThemeKind::Paper)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -97,11 +121,189 @@ pub const LIGHT: Palette = Palette {
     syn_operator: Color32::from_rgb(0x08, 0x08, 0x08),
 };
 
-pub fn palette(kind: ThemeKind) -> &'static Palette {
+const fn rgb(v: u32) -> Color32 {
+    Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// Deep navy with cool blues and teal accents.
+pub const MIDNIGHT: Palette = Palette {
+    canvas: rgb(0x0B1020),
+    island: rgb(0x121A2E),
+    raised: rgb(0x1C2640),
+    hover: rgb(0x223050),
+    selection: rgb(0x26407A),
+    border: rgb(0x2B3756),
+    text: rgb(0xE3E8F4),
+    muted: rgb(0x8B97B5),
+    faint: rgb(0x56617E),
+    accent: rgb(0x5A8DFF),
+    success: rgb(0x4FC08D),
+    danger: rgb(0xFF6B7F),
+    warning: rgb(0xF2C14E),
+    grid_alt: rgb(0x151E34),
+    edited: rgb(0x3A3620),
+    tree_selected: rgb(0x080C18),
+    syn_keyword: rgb(0x82AAFF),
+    syn_string: rgb(0xC3E88D),
+    syn_number: rgb(0xF78C6C),
+    syn_comment: rgb(0x637196),
+    syn_ident: rgb(0xD0D7EA),
+    syn_quoted: rgb(0xC792EA),
+    syn_function: rgb(0x7FDBCA),
+    syn_param: rgb(0xFFCB6B),
+    syn_operator: rgb(0x89DDFF),
+};
+
+/// Dark greens and warm earth tones.
+pub const FOREST: Palette = Palette {
+    canvas: rgb(0x111612),
+    island: rgb(0x18201A),
+    raised: rgb(0x243026),
+    hover: rgb(0x2A372C),
+    selection: rgb(0x2F5236),
+    border: rgb(0x34413A),
+    text: rgb(0xDDE5D8),
+    muted: rgb(0x8E9E8A),
+    faint: rgb(0x5B6A5A),
+    accent: rgb(0x6CBF6A),
+    success: rgb(0x8FD16B),
+    danger: rgb(0xE5675D),
+    warning: rgb(0xE3B45A),
+    grid_alt: rgb(0x1C251E),
+    edited: rgb(0x3D3A1F),
+    tree_selected: rgb(0x0B0F0C),
+    syn_keyword: rgb(0xD9A35B),
+    syn_string: rgb(0xA8CF7A),
+    syn_number: rgb(0x7FC8B5),
+    syn_comment: rgb(0x6F7F6B),
+    syn_ident: rgb(0xCBD5C3),
+    syn_quoted: rgb(0xD39BC0),
+    syn_function: rgb(0x8CC4E8),
+    syn_param: rgb(0xE8C07D),
+    syn_operator: rgb(0xB6C4AE),
+};
+
+/// Warm off-white paper with ink-dark text.
+pub const PAPER: Palette = Palette {
+    canvas: rgb(0xE9E2D3),
+    island: rgb(0xFBF7EE),
+    raised: rgb(0xF1EBDD),
+    hover: rgb(0xEAE2D0),
+    selection: rgb(0xF2DFAE),
+    border: rgb(0xD8CFBB),
+    text: rgb(0x2B2620),
+    muted: rgb(0x6E6455),
+    faint: rgb(0xA89D8A),
+    accent: rgb(0xB5651D),
+    success: rgb(0x4E7D2B),
+    danger: rgb(0xB8352F),
+    warning: rgb(0x9C6A00),
+    grid_alt: rgb(0xF5F0E4),
+    edited: rgb(0xFFEFB8),
+    tree_selected: rgb(0xE3D9C3),
+    syn_keyword: rgb(0x8A3B12),
+    syn_string: rgb(0x3D6B1F),
+    syn_number: rgb(0x1F5E8A),
+    syn_comment: rgb(0x9A8E78),
+    syn_ident: rgb(0x2B2620),
+    syn_quoted: rgb(0x7A2E73),
+    syn_function: rgb(0x0F5C6E),
+    syn_param: rgb(0x7A2E73),
+    syn_operator: rgb(0x3E372E),
+};
+
+/// Black background, bright text and saturated syntax colors.
+pub const HIGH_CONTRAST: Palette = Palette {
+    canvas: rgb(0x000000),
+    island: rgb(0x0A0A0A),
+    raised: rgb(0x1E1E1E),
+    hover: rgb(0x2A2A2A),
+    selection: rgb(0x0050C8),
+    border: rgb(0x6F6F6F),
+    text: rgb(0xFFFFFF),
+    muted: rgb(0xC8C8C8),
+    faint: rgb(0x9A9A9A),
+    accent: rgb(0x3FA9FF),
+    success: rgb(0x4CE07A),
+    danger: rgb(0xFF5C5C),
+    warning: rgb(0xFFD33F),
+    grid_alt: rgb(0x141414),
+    edited: rgb(0x4A4200),
+    tree_selected: rgb(0x003A8C),
+    syn_keyword: rgb(0x5CC8FF),
+    syn_string: rgb(0x7CFF8A),
+    syn_number: rgb(0xFFB45C),
+    syn_comment: rgb(0xB0B0B0),
+    syn_ident: rgb(0xFFFFFF),
+    syn_quoted: rgb(0xFF8CF0),
+    syn_function: rgb(0xFFE66B),
+    syn_param: rgb(0xFF8CF0),
+    syn_operator: rgb(0xFFFFFF),
+};
+
+pub fn preset(kind: ThemeKind) -> &'static Palette {
     match kind {
         ThemeKind::Dark => &DARK,
         ThemeKind::Light => &LIGHT,
+        ThemeKind::Midnight => &MIDNIGHT,
+        ThemeKind::Forest => &FOREST,
+        ThemeKind::Paper => &PAPER,
+        ThemeKind::HighContrast => &HIGH_CONTRAST,
     }
+}
+
+/// Every palette color a user can customize: (key, label, accessor).
+pub type ColorSlot = (&'static str, &'static str, fn(&mut Palette) -> &mut Color32);
+
+pub const SLOTS: &[ColorSlot] = &[
+    ("canvas", "Window background", |p| &mut p.canvas),
+    ("island", "Panels", |p| &mut p.island),
+    ("raised", "Buttons and inputs", |p| &mut p.raised),
+    ("hover", "Hover", |p| &mut p.hover),
+    ("selection", "Selection", |p| &mut p.selection),
+    ("border", "Borders", |p| &mut p.border),
+    ("text", "Text", |p| &mut p.text),
+    ("muted", "Secondary text", |p| &mut p.muted),
+    ("faint", "Faint text", |p| &mut p.faint),
+    ("accent", "Accent", |p| &mut p.accent),
+    ("success", "Success", |p| &mut p.success),
+    ("danger", "Danger", |p| &mut p.danger),
+    ("warning", "Warning", |p| &mut p.warning),
+    ("grid_alt", "Alternate grid rows", |p| &mut p.grid_alt),
+    ("edited", "Edited cells", |p| &mut p.edited),
+    ("tree_selected", "Selected explorer row", |p| &mut p.tree_selected),
+    ("syn_keyword", "Code: keywords", |p| &mut p.syn_keyword),
+    ("syn_ident", "Code: identifiers", |p| &mut p.syn_ident),
+    ("syn_string", "Code: strings", |p| &mut p.syn_string),
+    ("syn_number", "Code: numbers", |p| &mut p.syn_number),
+    ("syn_comment", "Code: comments", |p| &mut p.syn_comment),
+    ("syn_quoted", "Code: quoted names", |p| &mut p.syn_quoted),
+    ("syn_function", "Code: functions", |p| &mut p.syn_function),
+    ("syn_param", "Code: parameters", |p| &mut p.syn_param),
+    ("syn_operator", "Code: operators", |p| &mut p.syn_operator),
+];
+
+/// A preset with the user's color overrides (key → RGB) applied.
+pub fn palette(kind: ThemeKind, overrides: &std::collections::BTreeMap<String, [u8; 3]>) -> Palette {
+    let mut p = *preset(kind);
+    for (key, _, get) in SLOTS {
+        if let Some(c) = overrides.get(*key) {
+            *get(&mut p) = Color32::from_rgb(c[0], c[1], c[2]);
+        }
+    }
+    p
+}
+
+/// A stable fingerprint of a palette, so caches keyed on colors can tell
+/// when the theme changed.
+pub fn fingerprint(p: &Palette) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut q = *p;
+    for (_, _, get) in SLOTS {
+        get(&mut q).to_array().hash(&mut h);
+    }
+    h.finish()
 }
 
 pub const BOLD: &str = "bold";
@@ -124,26 +326,19 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD.into()))
 }
 
-pub fn apply(ctx: &egui::Context, kind: ThemeKind, code_size: f32) {
-    let p = palette(kind);
-    let mut v = match kind {
-        ThemeKind::Dark => Visuals::dark(),
-        ThemeKind::Light => Visuals::light(),
-    };
+pub fn apply(ctx: &egui::Context, p: &Palette, dark: bool, code_size: f32) {
+    let mut v = if dark { Visuals::dark() } else { Visuals::light() };
     v.panel_fill = p.island;
     v.window_fill = p.island;
     // text fields sit slightly inset from panels and dialogs
-    v.extreme_bg_color = match kind {
-        ThemeKind::Dark => p.canvas,
-        ThemeKind::Light => p.raised,
-    };
+    v.extreme_bg_color = if dark { p.canvas } else { p.raised };
     v.faint_bg_color = p.grid_alt;
     v.code_bg_color = p.raised;
     v.window_stroke = Stroke::new(1.0_f32, p.border);
     v.window_corner_radius = CornerRadius::same(10);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.window_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(if kind == ThemeKind::Dark { 140 } else { 40 }) };
-    v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if kind == ThemeKind::Dark { 120 } else { 30 }) };
+    v.window_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(if dark { 140 } else { 40 }) };
+    v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if dark { 120 } else { 30 }) };
     v.selection.bg_fill = p.selection;
     v.selection.stroke = Stroke::new(1.0_f32, p.text);
     v.hyperlink_color = p.accent;

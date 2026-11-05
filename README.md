@@ -70,6 +70,26 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - The choice is saved per connection. Ticking every schema switches back to "All", which also picks up schemas created later. MySQL calls them databases.
 - Hidden schemas are only hidden in the explorer; completion, compare and the ER diagram still see everything.
 
+**Databases** (several per server, like schemas)
+- PostgreSQL, SQL Server and MongoDB connections get a **"2 of 9 databases"** chip (also *Choose databases…* in the connection's menu). Tick databases to show each as its own node with its own schemas, schema picker, consoles and completion. *All* and *Default only* shortcuts.
+- When a connection names no database, DataBug uses the default: `postgres` on PostgreSQL, the login's default database on SQL Server, `test` on MongoDB.
+
+**Connections and projects**
+- *Disconnect* (right-click a connection) closes its sessions but keeps it in the explorer; *Connect*, a double-click, or running a query reconnects. Connected connections show a green dot.
+- Drag connections to reorder them.
+- **Projects**: the switcher above the tree picks *All connections* or a project. Each project keeps its own ordered list of connections; new connections join the current project; right-click → *Add to project* / *Remove from project*. Saved in `projects.json`.
+
+**Running procedures**
+- Right-click a procedure → *Execute (EXEC)…* on SQL Server or *Execute (CALL)…* on PostgreSQL/MySQL; functions get *Run in console…* (`SELECT …`). Each parameter gets a `NULL` placeholder with its declared type as a comment; routines without parameters run immediately.
+- Completion after `EXEC`, `EXECUTE` and `CALL` lists procedures with their parameters.
+
+**Find**
+- `Ctrl/⌘ + F` in the editor opens a find bar like VS Code's: match case (`Alt+C`), whole word (`Alt+W`), regex (`Alt+R`), "2 of 14", Enter / Shift+Enter or F3 / ⌘G to step, all matches highlighted. `Ctrl + H` (⌘⌥F on macOS) adds replace (one or all, `$1` groups with regex).
+- **Find in database**: press `Ctrl/⌘ + F` again in the find bar, outside the editor, or use *Find* in the explorer. Searches object names, columns, and optionally the definitions of views, routines and triggers, in one connection or all of them. Click a result to reveal it in the explorer, double-click to open it. *Search table data…* generates a query that counts matching rows in every text column.
+
+**Themes**
+- Six built-in themes: Dark (default), Light, Midnight, Forest, Paper and High contrast, picked from the toolbar's theme menu. *Customize colors…* lets you change any of the 25 interface and syntax colors per theme, with per-color and whole-theme reset.
+
 **Editor**
 - Syntax highlighting per dialect, line numbers, current-line highlight, toggle comment (`Ctrl/⌘ + /`), formatter (`Ctrl + Alt + L`).
 - Schema-aware completion that works on half-typed SQL: columns resolved through aliases (including aliases defined *after* the cursor), tables after `FROM`/`JOIN`, `schema.` drill-down, fuzzy matching (`cid` → `customer_id`), and join conditions after `ON` inferred from `<table>_id` naming.
@@ -122,7 +142,7 @@ Requires Rust 1.81 or newer and a C compiler (for bundled SQLite and the vendore
 cargo run --release
 ```
 
-On first launch, choose **Open sample database** to get a SQLite store database (customers, products, orders, order items) with a demo query.
+On first launch, choose **New connection**. (`crates/databug-app/assets/sample.sql` is kept only as a test fixture for CI and `--screenshot`.)
 
 To build with only some drivers:
 
@@ -146,6 +166,9 @@ Settings live in your platform's config directory (`~/.config/databug` on Linux,
 | `Ctrl + Space` | Completion |
 | `Ctrl + Alt + L` or `Ctrl/⌘ + Shift + F` | Format |
 | `Ctrl/⌘ + /` | Toggle comment |
+| `Ctrl/⌘ + F` | Find in the editor; again (or outside the editor) to find in the database |
+| `Ctrl + H` / `⌘ + ⌥ + F` | Find and replace |
+| `Enter` / `Shift + Enter`, `F3` / `Shift + F3` | Next / previous match |
 | `Shift + F6` | Rename the table, column or alias under the cursor |
 | `Ctrl/⌘ + T` / `Ctrl/⌘ + W` | New console / close console |
 | Arrows, `F2`, `Ctrl/⌘ + C` in the grid | Move, edit, copy cell |
@@ -182,7 +205,7 @@ cargo test --workspace                       # adds live Postgres and MySQL test
 
 The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
 
-`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`.
+`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`.
 
 `DATABUG_TEST_KRB="user@REALM:password"` with `--features databug-drivers/kerberos` adds a test that signs in to a Kerberos realm through the SQL Server Windows-credentials path.
 

@@ -58,6 +58,15 @@ impl DbKind {
         }
     }
 
+    /// Database used when the connection doesn't name one.
+    pub fn default_database(self) -> &'static str {
+        match self {
+            DbKind::Postgres => "postgres",
+            DbKind::MongoDb => "test",
+            _ => "",
+        }
+    }
+
     pub fn is_file_based(self) -> bool {
         matches!(self, DbKind::Sqlite)
     }
@@ -186,6 +195,13 @@ pub struct ConnectionConfig {
     /// Schemas shown in the explorer. `None` shows every schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_schemas: Option<Vec<String>>,
+    /// Extra databases on the same server shown in the explorer, like
+    /// schemas. `None` shows only the connection's own database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_databases: Option<Vec<String>>,
+    /// Schema visibility for the extra databases, by database name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub database_schemas: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 fn default_color() -> [u8; 3] {
@@ -218,7 +234,43 @@ impl ConnectionConfig {
             color: default_color(),
             ms_auth: MsAuth::SqlServer,
             visible_schemas: None,
+            visible_databases: None,
+            database_schemas: Default::default(),
         }
+    }
+
+    /// The database to connect to: the configured one, or the engine's
+    /// default when none is set (`postgres` on PostgreSQL; SQL Server uses
+    /// the login's default database and MySQL connects without one).
+    pub fn effective_database(&self) -> String {
+        if !self.database.trim().is_empty() {
+            return self.database.trim().to_string();
+        }
+        self.kind.default_database().to_string()
+    }
+
+    /// Whether this engine has several databases per server that can be
+    /// browsed separately (MySQL's databases are its schemas).
+    pub fn supports_databases(&self) -> bool {
+        matches!(self.kind, DbKind::Postgres | DbKind::MsSql | DbKind::MongoDb)
+    }
+
+    /// The config for another database on the same server. Its id is
+    /// `<connection id>@<database>`, which `base_id` maps back.
+    pub fn for_database(&self, db: &str) -> ConnectionConfig {
+        let mut c = self.clone();
+        c.id = format!("{}@{}", self.id, db);
+        c.name = format!("{} · {}", self.name, db);
+        c.database = db.to_string();
+        c.visible_schemas = self.database_schemas.get(db).cloned();
+        c.visible_databases = None;
+        c.database_schemas = Default::default();
+        c
+    }
+
+    /// The saved connection an id belongs to (strips `@database`).
+    pub fn base_id(id: &str) -> &str {
+        id.split_once('@').map(|(a, _)| a).unwrap_or(id)
     }
 
     /// Whether the explorer shows this schema. The default schema is always
@@ -238,7 +290,14 @@ impl ConnectionConfig {
         match self.kind {
             DbKind::Sqlite => self.path.clone(),
             DbKind::MongoDb if !self.uri.is_empty() => self.uri.clone(),
-            _ => format!("{}:{}/{}", self.host, self.port, self.database),
+            _ => {
+                let db = self.effective_database();
+                if db.is_empty() {
+                    format!("{}:{} (default database)", self.host, self.port)
+                } else {
+                    format!("{}:{}/{}", self.host, self.port, db)
+                }
+            }
         }
     }
 }

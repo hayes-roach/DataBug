@@ -313,7 +313,9 @@ impl ResultView {
         }
 
         // ---- table ----
-        let row_h = 22.0;
+        let row_h = 25.0;
+        // seamless grid: no spacing between cells, thin dividers drawn by hand
+        let divider = Stroke::new(1.0_f32, p.border.gamma_multiply(0.55));
         let n_rows = self.order.len();
         let gutter_w = ((n_rows.max(1) as f32).log10().floor() + 1.0) * 7.5 + 18.0;
         let mut clicked: Option<(usize, usize)> = None;
@@ -326,6 +328,11 @@ impl ResultView {
         let sel = self.selected;
         let editable = self.edit_target.is_some();
         egui::ScrollArea::horizontal().id_salt(("grid-h", self.table_id)).auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            // resize handles: invisible until hovered, so they don't read as gaps
+            ui.visuals_mut().widgets.noninteractive.bg_stroke = Stroke::NONE;
+            ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1.5_f32, p.accent);
+            ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1.5_f32, p.accent);
             let mut tb = TableBuilder::new(ui)
                 .id_salt(("grid", self.table_id))
                 .striped(true)
@@ -336,18 +343,26 @@ impl ResultView {
             for w in &self.widths {
                 tb = tb.column(Column::initial(*w).at_least(36.0).clip(true));
             }
-            tb.header(26.0, |mut h| {
+            tb.header(28.0, |mut h| {
                 h.col(|ui| {
-                    ui.painter().rect_filled(ui.max_rect(), CornerRadius::ZERO, p.raised);
+                    let rect = ui.max_rect();
+                    ui.painter().rect_filled(rect, CornerRadius { nw: 6, ..CornerRadius::ZERO }, p.raised);
+                    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, p.border));
+                    ui.painter().vline(rect.right() - 0.5, rect.y_range(), divider);
                 });
+                let last = self.columns.len().saturating_sub(1);
                 for (ci, col) in self.columns.iter().enumerate() {
                     h.col(|ui| {
                         let rect = ui.max_rect();
-                        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.raised);
+                        let round = if ci == last { CornerRadius { ne: 6, ..CornerRadius::ZERO } } else { CornerRadius::ZERO };
                         let resp = ui.interact(rect, ui.id().with(("hdr", ci)), Sense::click());
-                        ui.add_space(4.0);
+                        ui.painter().rect_filled(rect, round, if resp.hovered() { p.hover } else { p.raised });
+                        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, p.border));
+                        ui.painter().vline(rect.right() - 0.5, rect.y_range(), divider);
+                        ui.add_space(8.0);
                         ui.label(RichText::new(&col.name).font(bold(12.5)).color(p.text));
                         if !col.type_name.is_empty() {
+                            ui.add_space(6.0);
                             ui.label(RichText::new(&col.type_name).size(11.0).color(p.faint));
                         }
                         if let Some((sc, asc)) = self.sort {
@@ -367,14 +382,18 @@ impl ResultView {
                     let vr = row.index();
                     let dr = self.order[vr];
                     row.col(|ui| {
+                        let rect = ui.max_rect();
+                        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.raised.gamma_multiply(0.5));
+                        ui.painter().vline(rect.right() - 0.5, rect.y_range(), divider);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(6.0);
+                            ui.add_space(8.0);
                             ui.label(RichText::new((vr + 1).to_string()).size(11.0).color(p.faint));
                         });
                     });
                     for ci in 0..self.columns.len() {
                         row.col(|ui| {
                             let rect = ui.max_rect();
+                            ui.painter().vline(rect.right() - 0.5, rect.y_range(), divider);
                             let is_sel = sel == Some((vr, ci));
                             let edited = self.edits.contains_key(&(dr, ci as u16));
                             if edited {
@@ -401,7 +420,7 @@ impl ResultView {
                             }
                             let value = self.cell(dr, ci);
                             let resp = ui.interact(rect, ui.id().with(("cell", vr, ci)), Sense::click());
-                            ui.add_space(4.0);
+                            ui.add_space(8.0);
                             match value {
                                 None => {
                                     ui.label(RichText::new("<null>").italics().size(12.0).color(p.faint));
@@ -412,7 +431,7 @@ impl ResultView {
                                     let text = RichText::new(first).font(FontId::monospace(12.5)).color(p.text);
                                     if numeric {
                                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            ui.add_space(6.0);
+                                            ui.add_space(8.0);
                                             ui.add(egui::Label::new(text).truncate().selectable(false));
                                         });
                                     } else {

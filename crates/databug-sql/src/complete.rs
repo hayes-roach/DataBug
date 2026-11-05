@@ -184,6 +184,12 @@ pub fn complete(src: &str, cursor: usize, catalog: Option<&Catalog>, dialect: Di
                 add_columns(&mut b, t, None, 50, &quote);
             }
             if let Some(s) = cat.schema(&q) {
+                let after_exec = before.first().map(|t| t.is_kw(stmt, "EXEC") || t.is_kw(stmt, "EXECUTE") || t.is_kw(stmt, "CALL")).unwrap_or(false) && before.len() == 3;
+                if after_exec {
+                    for o in s.objects.iter().filter(|o| matches!(o.kind, ObjectKind::Procedure | ObjectKind::ClrProcedure)) {
+                        b.add(&o.name, quote(&o.name), if o.detail.is_empty() { "procedure".to_string() } else { format!("({})", o.detail) }, ItemKind::Function, 60);
+                    }
+                }
                 for t in &s.tables {
                     b.add(&t.name, quote(&t.name), format!("{} · {} cols", s.name, t.columns.len()), table_kind(t), 40);
                 }
@@ -219,6 +225,30 @@ pub fn complete(src: &str, cursor: usize, catalog: Option<&Catalog>, dialect: Di
     if before.is_empty() {
         for (i, kw) in STATEMENT_STARTERS.iter().enumerate() {
             b.add(*kw, *kw, "statement", ItemKind::Keyword, 20 - i as i32);
+        }
+        match dialect {
+            Dialect::MsSql => b.add("EXEC", "EXEC ", "run a procedure", ItemKind::Keyword, 5),
+            Dialect::Postgres | Dialect::MySql => b.add("CALL", "CALL ", "run a procedure", ItemKind::Keyword, 5),
+            _ => {}
+        }
+        return finish(b, stmt_start + word_start..stmt_start + word_end, prefix);
+    }
+
+    // EXEC / EXECUTE / CALL <procedure>
+    let exec_kw = last.filter(|t| t.is_kw(stmt, "EXEC") || t.is_kw(stmt, "EXECUTE") || t.is_kw(stmt, "CALL"));
+    if exec_kw.is_some() && before.len() == 1 {
+        if let Some(cat) = catalog {
+            for s in &cat.schemas {
+                let in_default = s.name.eq_ignore_ascii_case(&cat.default_schema) || cat.schemas.len() == 1;
+                for o in s.objects.iter().filter(|o| matches!(o.kind, ObjectKind::Procedure | ObjectKind::ClrProcedure)) {
+                    let insert = if in_default { quote(&o.name) } else { format!("{}.{}", quote(&s.name), quote(&o.name)) };
+                    let detail = if o.detail.is_empty() { format!("{} · procedure", s.name) } else { format!("{} · ({})", s.name, o.detail) };
+                    b.add(&o.name, insert, detail, ItemKind::Function, if in_default { 30 } else { 0 });
+                }
+            }
+            for s in &cat.schemas {
+                b.add(&s.name, quote(&s.name), "schema", ItemKind::Schema, -10);
+            }
         }
         return finish(b, stmt_start + word_start..stmt_start + word_end, prefix);
     }
@@ -453,7 +483,7 @@ mod tests {
             schemas: vec![
                 SchemaInfo {
                     name: "public".into(),
-                    objects: vec![],
+                    objects: vec![databug_core::DbObject { name: "refresh_totals".into(), kind: ObjectKind::Procedure, detail: "days integer".into(), ident: String::new(), table: None }],
                     tables: vec![
                         TableInfo { name: "orders".into(), kind: ObjectKind::Table, columns: vec![col("id", true), col("customer_id", false), col("total", false), col("currency", false)], indexes: vec![], foreign_keys: vec![] },
                         TableInfo { name: "customers".into(), kind: ObjectKind::Table, columns: vec![col("id", true), col("name", false)], indexes: vec![], foreign_keys: vec![] },
@@ -468,6 +498,15 @@ mod tests {
         let cursor = src.find('|').unwrap();
         let s = src.replace('|', "");
         complete(&s, cursor, Some(&cat()), Dialect::Postgres).items.into_iter().map(|i| i.label).collect()
+    }
+
+    #[test]
+    fn procedures_after_exec() {
+        let l = labels("CALL ref|");
+        assert_eq!(l[0], "refresh_totals");
+        let l = labels("EXEC |");
+        assert!(l.contains(&"refresh_totals".to_string()));
+        assert!(!l.contains(&"orders".to_string()));
     }
 
     #[test]

@@ -1250,6 +1250,7 @@ dependencies = [
  "image",
  "keyring",
  "png 0.17.16",
+ "regex",
  "rfd",
  "serde",
  "serde_json",

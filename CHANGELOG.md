@@ -6,6 +6,12 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-13
+
+### Changed
+
+- Record why the rand 0.7 advisory doesn't apply
+
 ## [0.3.5] - 2026-11-13
 
 ### Fixed

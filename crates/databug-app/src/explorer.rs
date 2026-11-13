@@ -65,8 +65,10 @@ pub struct DbList {
 
 /// Everything about connections the explorer shows beyond their config.
 pub struct ExplorerCtx<'a> {
-    /// Connections with an open session.
+    /// Connections signed in right now.
     pub connected: &'a HashSet<String>,
+    /// Connections signing in right now.
+    pub connecting: &'a HashSet<String>,
     /// Connections the user disconnected.
     pub disconnected: &'a HashSet<String>,
     /// Connections whose last sign-in failed, with the error.
@@ -186,7 +188,8 @@ struct RowOut {
 }
 
 enum Glyph {
-    Engine(DbKind, [u8; 3]),
+    /// Engine logo, connection color, and whether it's connected.
+    Engine(DbKind, [u8; 3], bool),
     Database,
     Schema,
     Group(ObjectKind),
@@ -275,12 +278,17 @@ fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos,
     }
     let icon = Rect::from_center_size(egui::pos2(x0 + 21.0, rect.center().y), egui::vec2(15.0, 15.0));
     match glyph {
-        Glyph::Engine(kind, color) => {
+        Glyph::Engine(kind, color, live) => {
             logos.paint(ui, icon.shrink(0.5), kind);
             // connection color dot, ringed so it stays separate from the logo
             let dot = egui::pos2(icon.right() + 1.5, icon.bottom() - 0.5);
             painter.circle_filled(dot, 3.6, p.island);
-            painter.circle_filled(dot, 2.6, connection_color(color));
+            // filled while connected, a ring in the connection's color when not
+            if live {
+                painter.circle_filled(dot, 2.6, connection_color(color));
+            } else {
+                painter.circle_stroke(dot, 2.2, Stroke::new(1.2_f32, connection_color(color)));
+            }
         }
         Glyph::Database => {
             let c = icon.center();
@@ -423,16 +431,19 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 "sign-in failed".to_string()
             } else if connected {
                 format!("{engine} · connected")
+            } else if cx.connecting.contains(&cfg.id) {
+                format!("{engine} · connecting…")
             } else {
                 engine.to_string()
             };
             let sense = if filtering { Sense::click() } else { Sense::click_and_drag() };
-            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, cfg.color), &cfg.name, &detail, false, true, sense, disconnected);
+            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, cfg.color, connected && !disconnected), &cfg.name, &detail, false, true, sense, disconnected);
             headers.push(r.resp.rect);
-            if connected && !disconnected {
-                // green "live" dot at the right edge of the row
+            let connecting = cx.connecting.contains(&cfg.id);
+            if !disconnected && (connected || connecting) {
+                // status at the right edge: green when signed in, amber while signing in
                 let c = egui::pos2(r.resp.rect.right() - 9.0, r.resp.rect.center().y);
-                ui.painter().circle_filled(c, 3.0, p.success);
+                ui.painter().circle_filled(c, 3.0, if connected { p.success } else { p.warning });
             }
             if r.resp.drag_started() {
                 st.dragging = Some(cfg.id.clone());
@@ -1463,7 +1474,8 @@ mod tests {
         fn frame(&mut self, wheel: f32) {
             let p = crate::theme::palette(crate::theme::ThemeKind::Dark, &Default::default());
             let (a, b, c, d) = (HashSet::new(), HashSet::new(), HashMap::new(), HashMap::new());
-            let cx = ExplorerCtx { connected: &a, disconnected: &b, failed: &c, databases: &d, projects: &[], current_project: None };
+            let none: HashSet<String> = HashSet::new();
+            let cx = ExplorerCtx { connected: &a, connecting: &none, disconnected: &b, failed: &c, databases: &d, projects: &[], current_project: None };
             let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 1100.0))), ..Default::default() };
             if wheel != 0.0 {
                 input.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 500.0)));

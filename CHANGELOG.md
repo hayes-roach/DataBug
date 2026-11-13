@@ -6,6 +6,14 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- After disconnecting, a connection could still show green dots; a connection the server had dropped could also still look connected
+
+### Changed
+
+- Connection dots follow the real connection state: the status dot is green only while signed in (amber while signing in), and the connection-color dots on the icon, toolbar and tabs turn into hollow rings when you're disconnected
+
 ## [0.3.2] - 2026-11-13
 
 ### Changed

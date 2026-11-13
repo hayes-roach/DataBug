@@ -230,6 +230,8 @@ pub struct DataBugApp {
     failed: HashMap<String, String>,
     /// Extra databases to reload once their connection signs in again.
     pending_virtual_refresh: HashSet<String>,
+    /// What each metadata session last reported (connecting, connected, …).
+    meta_state: HashMap<String, ConnState>,
     projects: Vec<Project>,
     theme_editor: bool,
     theme_dirty: bool,
@@ -345,6 +347,7 @@ impl DataBugApp {
             disconnected: HashSet::new(),
             failed: HashMap::new(),
             pending_virtual_refresh: HashSet::new(),
+            meta_state: HashMap::new(),
             projects,
             theme_editor: false,
             theme_dirty: false,
@@ -446,6 +449,7 @@ impl DataBugApp {
             }
             keep
         });
+        self.meta_state.retain(|k, _| ConnectionConfig::base_id(k) != base);
         for (k, e) in self.catalogs.iter_mut() {
             if ConnectionConfig::base_id(k) == base {
                 e.loading = false;
@@ -486,6 +490,25 @@ impl DataBugApp {
         let e = self.catalogs.entry(conn_id.to_string()).or_insert(CatalogEntry { catalog: Catalog::default(), generation: 0, loading: false, error: None });
         e.loading = true;
         e.error = None;
+    }
+
+    /// (connected, connecting) for a saved connection: whether any of its
+    /// sessions is signed in right now, or is signing in.
+    fn liveness(&self, base: &str) -> (bool, bool) {
+        let mut live = false;
+        let mut connecting = false;
+        let states = self.meta_state.iter().filter(|(k, _)| ConnectionConfig::base_id(k) == base).map(|(_, s)| s).chain(self.tabs.iter().filter(|t| t.session.is_some() && ConnectionConfig::base_id(&t.conn_id) == base).map(|t| &t.state));
+        for s in states {
+            match s {
+                ConnState::Connected => live = true,
+                ConnState::Connecting => connecting = true,
+                _ => {}
+            }
+        }
+        if self.disconnected.contains(base) {
+            return (false, false);
+        }
+        (live, connecting && !live)
     }
 
     fn is_failed(&self, conn_id: &str) -> bool {
@@ -721,7 +744,14 @@ impl DataBugApp {
                             Err(e) => d.error = Some(e),
                         }
                     }
+                    Ev::Connecting => {
+                        self.meta_state.insert(conn_id.clone(), ConnState::Connecting);
+                    }
+                    Ev::Dropped => {
+                        self.meta_state.insert(conn_id.clone(), ConnState::Idle);
+                    }
                     Ev::Connected(_) => {
+                        self.meta_state.insert(conn_id.clone(), ConnState::Connected);
                         let base = ConnectionConfig::base_id(&conn_id).to_string();
                         self.failed.remove(&base);
                         if conn_id == base && self.pending_virtual_refresh.remove(&base) {
@@ -730,6 +760,7 @@ impl DataBugApp {
                     }
                     Ev::Catalog(Err(msg)) | Ev::ConnectFailed(msg) => {
                         if is_connect_failure {
+                            self.meta_state.remove(&conn_id);
                             let base = ConnectionConfig::base_id(&conn_id).to_string();
                             self.failed.insert(base.clone(), msg.clone());
                             self.pending_virtual_refresh.remove(&base);
@@ -1135,6 +1166,7 @@ impl DataBugApp {
                     self.catalogs.remove(&k);
                 }
                 self.meta.retain(|k, _| ConnectionConfig::base_id(k) != id);
+                self.meta_state.retain(|k, _| ConnectionConfig::base_id(k) != id);
                 self.tabs.retain(|t| ConnectionConfig::base_id(&t.conn_id) != id);
                 self.databases.remove(&id);
                 self.disconnected.remove(&id);
@@ -2231,7 +2263,11 @@ impl DataBugApp {
                 if let Some(cfg) = self.conn(&t.conn_id) {
                     egui::Frame::new().fill(p.island).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(8, 3)).show(ui, |ui| {
                         self.logos.show(ui, cfg.kind, 15.0);
-                        crate::grid::painted_dot(ui, connection_color(cfg.color), 4.0);
+                        if self.liveness(ConnectionConfig::base_id(&cfg.id)).0 {
+                            crate::grid::painted_dot(ui, connection_color(cfg.color), 4.0);
+                        } else {
+                            crate::grid::painted_ring(ui, connection_color(cfg.color), 4.0);
+                        }
                         ui.label(RichText::new(&cfg.name).color(p.text));
                         ui.label(RichText::new(cfg.kind.label()).size(11.5).color(p.muted));
                     });
@@ -2421,6 +2457,7 @@ impl DataBugApp {
         let mut select = None;
         let mut close = None;
         let mut new_tab = false;
+        let live_tabs: HashSet<u64> = self.tabs.iter().filter(|t| self.liveness(ConnectionConfig::base_id(&t.conn_id)).0).map(|t| t.id).collect();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 34.0).show(ui, |ui| {
@@ -2437,7 +2474,13 @@ impl DataBugApp {
                         } else if resp.hovered() {
                             ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 2.0)), CornerRadius::same(6), p.hover);
                         }
-                        ui.painter().circle_filled(egui::pos2(rect.left() + 12.0, rect.center().y), 3.5, color);
+                        // filled while the connection is signed in, a ring when it isn't
+                        let dot = egui::pos2(rect.left() + 12.0, rect.center().y);
+                        if live_tabs.contains(&t.id) {
+                            ui.painter().circle_filled(dot, 3.5, color);
+                        } else {
+                            ui.painter().circle_stroke(dot, 3.0, Stroke::new(1.3_f32, color));
+                        }
                         ui.painter().galley(egui::pos2(rect.left() + 22.0, rect.center().y - title_galley.size().y / 2.0), title_galley, p.text);
                         if t.running.is_some() {
                             ui.painter().circle_filled(egui::pos2(rect.right() - 14.0, rect.center().y), 3.0, p.accent);
@@ -2774,6 +2817,7 @@ impl DataBugApp {
                     t.editor.dialect = cfg.kind.dialect();
                 }
                 self.meta.retain(|k, _| ConnectionConfig::base_id(k) != cfg.id);
+                self.meta_state.retain(|k, _| ConnectionConfig::base_id(k) != cfg.id);
                 self.refreshed.retain(|k| ConnectionConfig::base_id(k) != cfg.id);
                 self.databases.remove(&cfg.id);
                 self.failed.remove(&cfg.id);
@@ -3078,6 +3122,15 @@ impl DataBugApp {
                                 t.editor.cursor = 40;
                             }
                             self.request_run(false, Some(false), ctx);
+                        }
+                        "reconnect" => {
+                            let id = self.tabs[self.active].conn_id.clone();
+                            self.apply(Action::Disconnect(id.clone()), ctx);
+                            self.apply(Action::Connect(id), ctx);
+                        }
+                        "disconnect" => {
+                            let id = self.tabs[self.active].conn_id.clone();
+                            self.apply(Action::Disconnect(id), ctx);
                         }
                         "quiet" => {
                             let id = self.tabs[self.active].conn_id.clone();
@@ -3431,8 +3484,21 @@ impl eframe::App for DataBugApp {
         let mut actions = Vec::new();
         let width = self.settings.explorer_width;
         let visible = self.visible_connections();
-        let connected: HashSet<String> = self.meta.keys().map(|k| ConnectionConfig::base_id(k).to_string()).chain(self.tabs.iter().filter(|t| t.session.is_some()).map(|t| ConnectionConfig::base_id(&t.conn_id).to_string())).collect();
-        let views: HashMap<String, CatalogView> = self
+        let (connected, connecting): (HashSet<String>, HashSet<String>) = {
+            let mut a = HashSet::new();
+            let mut b = HashSet::new();
+            for c in &self.connections {
+                let (live, pending) = self.liveness(&c.id);
+                if live {
+                    a.insert(c.id.clone());
+                }
+                if pending {
+                    b.insert(c.id.clone());
+                }
+            }
+            (a, b)
+        };
+        let views: HashMap<String, CatalogView<'_>> = self
             .catalogs
             .iter()
             .map(|(k, e)| (k.clone(), CatalogView { catalog: &e.catalog, generation: e.generation, loading: e.loading, error: e.error.as_deref(), age: if e.catalog.introspected_at > 0 { ago(e.catalog.introspected_at) } else { String::new() } }))
@@ -3446,7 +3512,7 @@ impl eframe::App for DataBugApp {
             .show(ctx, |ui| {
                 island.show(ui, |ui| {
                     ui.set_min_height(ui.available_height());
-                    let cx = ExplorerCtx { connected: &connected, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
+                    let cx = ExplorerCtx { connected: &connected, connecting: &connecting, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
                     let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
                     // don't start another refresh while one is loading
                     acts.retain(|a| match a {

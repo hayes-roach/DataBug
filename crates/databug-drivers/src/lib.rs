@@ -67,6 +67,13 @@ pub trait DbConnection: Send {
     /// is `None`, the caller aborts the request and reconnects instead.
     fn canceller(&self) -> Option<Canceller>;
 
+    /// Whether the server side of the connection is known to be gone.
+    /// Engines that can't tell return false; the session also checks error
+    /// messages for lost connections.
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     /// Run one statement (or one batch), streaming results into `sink`.
     async fn execute(&mut self, stmt: &str, opts: &ExecOptions, sink: &Sink) -> anyhow::Result<()>;
 

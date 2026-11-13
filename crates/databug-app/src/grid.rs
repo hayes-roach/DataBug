@@ -1032,6 +1032,12 @@ pub fn fmt_duration(d: Duration) -> String {
     }
 }
 
+/// A hollow dot: the connection's color while it isn't connected.
+pub fn painted_ring(ui: &mut egui::Ui, color: Color32, r: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(r * 2.0 + 2.0, r * 2.0 + 2.0), Sense::hover());
+    ui.painter().circle_stroke(rect.center(), r - 0.6, Stroke::new(1.3_f32, color));
+}
+
 pub fn painted_dot(ui: &mut egui::Ui, color: Color32, r: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(r * 2.0 + 2.0, r * 2.0 + 2.0), Sense::hover());
     ui.painter().circle_filled(rect.center(), r, color);

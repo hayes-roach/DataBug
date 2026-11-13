@@ -84,6 +84,33 @@ impl Session {
     }
 }
 
+/// Whether an error means the connection itself is gone (server restarted,
+/// network dropped, idle timeout), so the next command must reconnect.
+fn connection_lost(c: &dyn DbConnection, err: &str) -> bool {
+    c.is_closed() || lost_message(err)
+}
+
+fn lost_message(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    [
+        "connection closed",
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "server has gone away",
+        "lost connection",
+        "connection was closed",
+        "not connected",
+        "connection aborted",
+        "unexpected eof",
+        "end of file",
+        "socket closed",
+        "timed out",
+    ]
+    .iter()
+    .any(|k| e.contains(k))
+}
+
 /// Answer a command that can't run because the connection failed.
 fn fail(send: &impl Fn(Ev), cmd: Cmd, msg: &str) {
     let msg = msg.to_string();
@@ -165,7 +192,9 @@ async fn worker(
                     match res {
                         Some(Ok(())) => send(Ev::StmtDone { job, idx, elapsed, error: None }),
                         Some(Err(e)) => {
-                            send(Ev::StmtDone { job, idx, elapsed, error: Some(format!("{e:#}")) });
+                            let msg = format!("{e:#}");
+                            dropped = connection_lost(c.as_ref(), &msg);
+                            send(Ev::StmtDone { job, idx, elapsed, error: Some(msg) });
                             break;
                         }
                         None => {
@@ -189,7 +218,16 @@ async fn worker(
                     _ = abort.notified() => None,
                 };
                 match res {
-                    Some(r) => send(Ev::Plan { job, result: r.map_err(|e| format!("{e:#}")), elapsed: start.elapsed() }),
+                    Some(r) => {
+                        let r = r.map_err(|e| format!("{e:#}"));
+                        let lost = r.as_ref().err().map(|m| connection_lost(c.as_ref(), m)).unwrap_or(false);
+                        send(Ev::Plan { job, result: r, elapsed: start.elapsed() });
+                        if lost {
+                            conn = None;
+                            *canceller.lock().unwrap() = None;
+                            send(Ev::Dropped);
+                        }
+                    }
                     None => {
                         conn = None;
                         send(Ev::Plan { job, result: Err("Cancelled".into()), elapsed: start.elapsed() });
@@ -199,7 +237,13 @@ async fn worker(
             }
             Cmd::Introspect => {
                 let r = c.introspect().await.map_err(|e| format!("{e:#}"));
+                let lost = r.as_ref().err().map(|m| connection_lost(c.as_ref(), m)).unwrap_or(false);
                 send(Ev::Catalog(r));
+                if lost {
+                    conn = None;
+                    *canceller.lock().unwrap() = None;
+                    send(Ev::Dropped);
+                }
             }
             Cmd::ListDatabases => {
                 let r = c.list_databases().await.map_err(|e| format!("{e:#}"));
@@ -214,5 +258,19 @@ async fn worker(
                 send(Ev::Sources { req, results });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lost_message;
+
+    #[test]
+    fn lost_connections() {
+        assert!(lost_message("db error: connection closed"));
+        assert!(lost_message("MySQL server has gone away"));
+        assert!(lost_message("Broken pipe (os error 32)"));
+        assert!(!lost_message("relation \"nope\" does not exist"));
+        assert!(!lost_message("FOREIGN KEY constraint failed"));
     }
 }

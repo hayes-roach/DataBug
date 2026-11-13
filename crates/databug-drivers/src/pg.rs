@@ -94,6 +94,10 @@ impl DbConnection for PgConn {
         crate::pgwire::capabilities(self.kind)
     }
 
+    fn is_closed(&self) -> bool {
+        self.client.is_closed()
+    }
+
     fn canceller(&self) -> Option<Canceller> {
         let token = self.client.cancel_token();
         let tls = self.tls.clone();

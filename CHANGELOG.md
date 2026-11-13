@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-13
+
 ### Changed
 
 - Double-clicking a table or view in the explorer (and running a procedure without parameters) shows only the results; the query is no longer added to the console

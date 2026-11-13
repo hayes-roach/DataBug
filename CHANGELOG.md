@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- The explorer no longer slows the whole window down on databases with thousands of tables, views or routines: it lays out only the rows on screen (about 0.1 ms per frame with 20,000 tables, down from 22 ms)
+
 ## [0.3.0] - 2026-11-05
 
 ### Added

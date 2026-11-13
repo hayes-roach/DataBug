@@ -8,4 +8,12 @@ ignore = [
     # the planned egui upgrade (0.31 -> 0.35).
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # rand 0.7.3 unsound with a custom logger (`log` feature + a logger that
+    # calls thread_rng while it reseeds). Pulled in only by winauth 0.0.5
+    # (tiberius' Windows sign-in for SQL Server), which is compiled only on
+    # Windows and is the newest winauth release, so it can't be upgraded.
+    # Not reachable here: rand's `log` feature is off (Cargo.lock lists no
+    # `log` dependency for rand 0.7.3) and DataBug installs no logger.
+    # Remove once tiberius moves to a winauth that uses rand >= 0.8.6.
+    "RUSTSEC-2026-0097",
 ]

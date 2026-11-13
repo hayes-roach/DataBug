@@ -648,7 +648,7 @@ impl DataBugApp {
         }
         let first = stmts.first().map(|s| s.1.start).unwrap_or(0);
         let last = stmts.last().map(|s| s.1.end).unwrap_or(0);
-        tab.editor.running = Some(first..last);
+        tab.editor.running = (first < last).then_some(first..last);
         tab.editor.error = None;
         let n = stmts.len();
         tab.output.push(LogLine {
@@ -838,7 +838,7 @@ impl DataBugApp {
                             Some(e) => {
                                 run.had_error = true;
                                 tab.output.push(LogLine { at: now_hms(), kind: LogKind::Error, text: e.clone(), sql: Some(one_line(&sql, 200)) });
-                                tab.editor.error = Some(range);
+                                tab.editor.error = (!range.is_empty()).then_some(range);
                                 tab.bottom = BottomTab::Output;
                             }
                             None => {
@@ -934,25 +934,9 @@ impl DataBugApp {
                 let Some(cfg) = self.conn(&id).cloned() else { return };
                 let default = self.catalog(&id).map(|c| c.default_schema.clone()).unwrap_or_default();
                 let sql = select_top(cfg.kind.dialect(), &schema, &table, &default);
-                let ti = match self.tabs.get(self.active).filter(|t| t.conn_id == id && t.running.is_none()) {
-                    Some(_) => self.active,
-                    None => self.open_console(&id, None, ctx),
-                };
-                let tab = &mut self.tabs[ti];
-                let mut text = tab.editor.text.trim_end().to_string();
-                if !text.is_empty() {
-                    text.push_str("\n\n");
-                }
-                let start = text.len();
-                text.push_str(&sql);
-                tab.editor.set_text(text);
-                let end = tab.editor.text.len();
-                tab.editor.cursor = end;
-                tab.editor.selection = None;
-                let range = start..end;
+                // run it without writing it into the editor: only the results show up
                 let stmt = sql.trim_end_matches(';').to_string();
-                let tab_id = tab.id;
-                self.check_and_dispatch(tab_id, vec![(stmt, range)], None, None, ctx);
+                self.run_quietly(&id, stmt, ctx);
             }
             Action::OpenDdl(id, schema, table) => {
                 let Some(cfg) = self.conn(&id).cloned() else { return };
@@ -1054,6 +1038,10 @@ impl DataBugApp {
                 let d = cfg.kind.dialect();
                 let Some(sql) = databug_sql::ddl::exec_template(d, &schema, &obj.name, obj.kind, &obj.detail) else { return };
                 let has_params = sql.contains("NULL");
+                if !has_params {
+                    self.run_quietly(&id, sql.trim_end_matches(';').to_string(), ctx);
+                    return;
+                }
                 let ti = match self.tabs.get(self.active).filter(|t| t.conn_id == id && t.running.is_none() && t.tool.is_none()) {
                     Some(_) => self.active,
                     None => self.open_console(&id, None, ctx),
@@ -1068,15 +1056,9 @@ impl DataBugApp {
                 tab.editor.set_text(text);
                 let end = tab.editor.text.len();
                 self.active = ti;
-                if has_params {
-                    // select the statement so Ctrl/⌘ + Enter runs it once the arguments are filled in
-                    self.tabs[ti].editor.select(start..end);
-                    self.toast(format!("Fill in the arguments of {}, then run with Ctrl/⌘ + Enter", obj.name));
-                } else {
-                    let tab_id = self.tabs[ti].id;
-                    self.tabs[ti].editor.select(end..end);
-                    self.check_and_dispatch(tab_id, vec![(sql.trim_end_matches(';').to_string(), start..end)], None, None, ctx);
-                }
+                // select the statement so Ctrl/⌘ + Enter runs it once the arguments are filled in
+                self.tabs[ti].editor.select(start..end);
+                self.toast(format!("Fill in the arguments of {}, then run with Ctrl/⌘ + Enter", obj.name));
             }
             Action::SearchDatabase => self.open_db_search(None),
             Action::SwitchProject(id) => {
@@ -1237,6 +1219,22 @@ impl DataBugApp {
 
     /// Test fixture for `--screenshot` only: a SQLite store database in the
     /// data directory. Not offered in the UI.
+    /// Run one statement in a console for this connection and show its
+    /// results, without adding the SQL to the editor (explorer double-clicks).
+    fn run_quietly(&mut self, conn_id: &str, stmt: String, ctx: &egui::Context) {
+        let ti = match self.tabs.get(self.active).filter(|t| t.conn_id == conn_id && t.running.is_none() && t.tool.is_none()) {
+            Some(_) => self.active,
+            None => match self.tabs.iter().position(|t| t.conn_id == conn_id && t.running.is_none() && t.tool.is_none()) {
+                Some(i) => i,
+                None => self.open_console(conn_id, None, ctx),
+            },
+        };
+        self.active = ti;
+        let tab_id = self.tabs[ti].id;
+        // an empty range: nothing in the editor to highlight while it runs
+        self.check_and_dispatch(tab_id, vec![(stmt, 0..0)], None, None, ctx);
+    }
+
     fn open_sample(&mut self, ctx: &egui::Context) {
         let path = self.store.data_dir().join("sample-store.db");
         if !path.exists() {
@@ -3080,6 +3078,14 @@ impl DataBugApp {
                                 t.editor.cursor = 40;
                             }
                             self.request_run(false, Some(false), ctx);
+                        }
+                        "quiet" => {
+                            let id = self.tabs[self.active].conn_id.clone();
+                            self.apply(Action::SelectTop(id, "main".into(), "products".into()), ctx);
+                        }
+                        "project-new" => {
+                            self.explorer.filter = "ord".into();
+                            self.explorer.start_new_project();
                         }
                         "update-ui" => {
                             if let Ok(r) = crate::update::parse_release(r##"{"tag_name":"v0.2.0","html_url":"https://example.com","body":"Highlights:\n- Row editing: add, duplicate and delete rows in results\n- No automatic retries after a failed sign-in\n- Redesigned explorer header","assets":[]}"##) {

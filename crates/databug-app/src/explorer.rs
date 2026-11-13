@@ -93,6 +93,8 @@ pub struct ExplorerState {
     dragging: Option<String>,
     /// Project name being edited: (project id or None for a new one, name).
     project_edit: Option<(Option<String>, String)>,
+    /// Focus the project name field on the next frame.
+    project_focus: bool,
     scroll_to_selected: bool,
     /// Indexes of each group's objects (all, and those matching the filter),
     /// built once per catalog load instead of on every frame.
@@ -136,6 +138,12 @@ impl ExplorerState {
 
     fn schema_matches(&mut self, conn: &str, generation: u64, s: &SchemaInfo, filter: &str) -> bool {
         ObjectKind::DISPLAY_ORDER.iter().any(|&k| !self.group_items(conn, generation, s, k, filter).is_empty())
+    }
+
+    /// Open the "New project" card (as its menu item does).
+    pub fn start_new_project(&mut self) {
+        self.project_edit = Some((None, String::new()));
+        self.project_focus = true;
     }
 
     pub fn open_key(&mut self, key: impl Into<String>) {
@@ -366,7 +374,11 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
     ui.add_space(4.0);
     project_bar(ui, p, st, cx, &mut actions);
     ui.add_space(4.0);
-    ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text("🔍  Filter objects").desired_width(f32::INFINITY));
+    let id = ui.id().with("explorer-filter");
+    let r = text_field(ui, p, &mut st.filter, "Filter objects", id, FieldIcon::Search);
+    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.filter.clear();
+    }
     ui.add_space(4.0);
     if let Some(id) = st.reveal.take() {
         st.open.insert(format!("c:{}", ConnectionConfig::base_id(&id)));
@@ -774,10 +786,12 @@ fn project_bar(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cx: &Expl
         ui.separator();
         if item(ui, false, "New project…", None) {
             st.project_edit = Some((None, String::new()));
+            st.project_focus = true;
         }
         if let Some(pr) = current {
             if item(ui, false, "Rename project…", None) {
                 st.project_edit = Some((Some(pr.id.clone()), pr.name.clone()));
+                st.project_focus = true;
             }
             if item(ui, false, "Delete project", None) {
                 actions.push(Action::DeleteProject(pr.id.clone()));
@@ -785,22 +799,43 @@ fn project_bar(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cx: &Expl
         }
     });
     let mut done: Option<bool> = None;
-    if let Some((_, name)) = st.project_edit.as_mut() {
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(name).hint_text("Project name").desired_width((ui.available_width() - 90.0).max(60.0)));
-            if !r.has_focus() && !r.lost_focus() && name.is_empty() {
+    if let Some((id, name)) = st.project_edit.as_mut() {
+        let renaming = id.is_some();
+        ui.add_space(6.0);
+        egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0_f32, p.border)).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.label(RichText::new(if renaming { "Rename project" } else { "New project" }).font(bold(12.5)));
+            let fid = ui.id().with("project-name");
+            let r = text_field(ui, p, name, "Project name", fid, FieldIcon::Folder);
+            // focus the field once, when the card opens
+            if st.project_focus {
                 r.request_focus();
+                st.project_focus = false;
             }
-            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter {
                 done = Some(true);
             }
-            if ui.small_button("Save").clicked() {
-                done = Some(true);
-            }
-            if ui.small_button("✕").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 done = Some(false);
             }
+            if !renaming {
+                ui.label(RichText::new("New connections are added to it. Add existing ones from their right-click menu.").size(11.0).color(p.faint));
+            }
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ok = !name.trim().is_empty();
+                    let save = egui::Button::new(RichText::new(if renaming { "Save" } else { "Create" }).color(if ok { Color32::WHITE } else { p.faint })).fill(if ok { p.accent } else { p.hover }).min_size(egui::vec2(72.0, 26.0));
+                    if ui.add_enabled(ok, save).on_hover_text("Enter").clicked() {
+                        done = Some(true);
+                    }
+                    if ui.add(egui::Button::new("Cancel").fill(p.island).stroke(Stroke::new(1.0_f32, p.border)).min_size(egui::vec2(72.0, 26.0))).on_hover_text("Esc").clicked() {
+                        done = Some(false);
+                    }
+                });
+            });
         });
+        ui.add_space(2.0);
     }
     if let Some(save) = done {
         if let Some((id, name)) = st.project_edit.take() {
@@ -809,6 +844,55 @@ fn project_bar(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cx: &Expl
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum FieldIcon {
+    Search,
+    Folder,
+}
+
+/// A 30px rounded text field with an icon and a clear button, used for the
+/// explorer filter and the project name.
+fn text_field(ui: &mut egui::Ui, p: &Palette, text: &mut String, hint: &str, id: egui::Id, icon: FieldIcon) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), Sense::hover());
+    let focused = ui.memory(|m| m.has_focus(id));
+    let hovered = ui.rect_contains_pointer(rect);
+    let stroke = if focused { Stroke::new(1.5_f32, p.accent) } else if hovered { Stroke::new(1.0_f32, p.border) } else { Stroke::new(1.0_f32, p.border.gamma_multiply(0.6)) };
+    ui.painter().rect(rect, CornerRadius::same(7), if focused { p.island } else { p.raised }, stroke, egui::StrokeKind::Inside);
+    let c = egui::pos2(rect.left() + 15.0, rect.center().y);
+    let ic = if focused { p.accent } else { p.muted };
+    match icon {
+        FieldIcon::Search => {
+            let o = c + egui::vec2(-1.0, -1.0);
+            ui.painter().circle_stroke(o, 4.2, Stroke::new(1.5_f32, ic));
+            ui.painter().line_segment([o + egui::vec2(3.1, 3.1), o + egui::vec2(6.2, 6.2)], Stroke::new(1.7_f32, ic));
+        }
+        FieldIcon::Folder => {
+            let f = Rect::from_center_size(c + egui::vec2(0.0, 0.5), egui::vec2(12.0, 9.0));
+            ui.painter().rect_filled(Rect::from_min_size(f.left_top() + egui::vec2(0.0, -2.0), egui::vec2(5.0, 3.0)), CornerRadius::same(1), ic);
+            ui.painter().rect_filled(f, CornerRadius::same(2), ic.gamma_multiply(0.85));
+        }
+    }
+    let clear_w = if text.is_empty() { 0.0 } else { 24.0 };
+    let inner = Rect::from_min_max(egui::pos2(rect.left() + 28.0, rect.top()), egui::pos2(rect.right() - 6.0 - clear_w, rect.bottom()));
+    let te = egui::TextEdit::singleline(text).id(id).frame(false).hint_text(RichText::new(hint).color(p.faint)).vertical_align(egui::Align::Center).desired_width(inner.width()).margin(egui::Margin::symmetric(0, 0));
+    let r = ui.put(inner, te);
+    if !text.is_empty() {
+        let b = Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(18.0, 18.0));
+        let br = ui.interact(b, id.with("clear"), Sense::click());
+        if br.hovered() {
+            ui.painter().circle_filled(b.center(), 9.0, p.hover);
+        }
+        let x = if br.hovered() { p.text } else { p.muted };
+        ui.painter().line_segment([b.center() + egui::vec2(-3.5, -3.5), b.center() + egui::vec2(3.5, 3.5)], Stroke::new(1.5_f32, x));
+        ui.painter().line_segment([b.center() + egui::vec2(-3.5, 3.5), b.center() + egui::vec2(3.5, -3.5)], Stroke::new(1.5_f32, x));
+        if br.on_hover_text("Clear").clicked() {
+            text.clear();
+            r.request_focus();
+        }
+    }
+    r
 }
 
 /// The "2 of 9 databases" row under a connection, and its checklist.

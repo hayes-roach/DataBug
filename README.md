@@ -93,7 +93,7 @@ The new-connection dialog groups engines by type: **Relational / SQL** (PostgreS
 | Events | | ✔ | | | |
 | CLR procedures, functions, aggregates, triggers, assemblies | | | ✔ | | |
 
-Every object with a definition has an **edit** button (the pencil that appears on hover or selection, also on double-click). Tables open the table editor. Views, materialized views, procedures, functions, triggers, sequences, synonyms and events open their definition as runnable DDL in a console: `CREATE OR REPLACE` on Postgres and MySQL views, `CREATE OR ALTER` on SQL Server (2016 SP1+), `DROP` + `CREATE` where the engine has no replace (MySQL routines, SQLite, Postgres materialized views). CLR objects open their `EXTERNAL NAME` binding, and assemblies show their details and the objects bound to them.
+Every object with a definition has an **edit** button (the pencil that appears on hover or selection). Tables open the table editor. Views, materialized views, procedures, functions, triggers, sequences, synonyms and events open their definition as runnable DDL in a console: `CREATE OR REPLACE` on Postgres and MySQL views, `CREATE OR ALTER` on SQL Server (2016 SP1+), `DROP` + `CREATE` where the engine has no replace (MySQL routines, SQLite, Postgres materialized views). CLR objects open their `EXTERNAL NAME` binding, and assemblies show their details and the objects bound to them.
 
 Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb`, `cockroachdb`, `timescaledb`, `questdb`, `h2`, `duckdb`, `cassandra`, `couchdb`, `influxdb`, `oracle`, `db2`, `spark`), so a build can leave out the ones it doesn't need. Everything except `oracle`, `db2`, `spark` and `cassandra-tls` is in the default build and needs no system libraries. Those are opt-in because they need software DataBug can't bundle (`cassandra-tls` pulls in rustls' aws-lc backend, a C library):
 
@@ -142,10 +142,10 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - *Disconnect* (right-click a connection) closes its sessions but keeps it in the explorer; *Connect*, a double-click, or running a query reconnects. Connected connections show a green dot.
 - Drag connections to reorder them.
 - **No automatic retries after a failed sign-in.** When a connection can't sign in, DataBug shows the error and stops: no reconnecting in the background, no second attempt for queued work, so a wrong password can't lock the account. *Retry*, *Connect*, *Refresh schema*, running a query or editing the connection tries again.
-- **Projects**: the switcher above the tree picks *All connections* or a project. Each project keeps its own ordered list of connections; new connections join the current project; right-click → *Add to project* / *Remove from project*. Saved in `projects.json`.
+- **Projects**: the switcher above the tree picks *All connections* or a project. *New project…* and *Rename project…* open a small card with the name field ready to type in (Enter creates or saves, Esc or *Cancel* closes it). Each project keeps its own ordered list of connections; new connections join the current project; right-click → *Add to project* / *Remove from project*. Saved in `projects.json`.
 
 **Running procedures**
-- Right-click a procedure → *Execute (EXEC)…* on SQL Server or *Execute (CALL)…* on PostgreSQL/MySQL; functions get *Run in console…* (`SELECT …`). Each parameter gets a `NULL` placeholder with its declared type as a comment; routines without parameters run immediately.
+- Right-click a procedure → *Execute (EXEC)…* on SQL Server or *Execute (CALL)…* on PostgreSQL/MySQL; functions get *Run in console…* (`SELECT …`). Each parameter gets a `NULL` placeholder with its declared type as a comment; routines without parameters run immediately, and only their results are shown (the SQL isn't added to your console).
 - Completion after `EXEC`, `EXECUTE` and `CALL` lists procedures with their parameters.
 
 **Find**
@@ -185,7 +185,9 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - Cancel asks the server to stop the query. Pressing it again (or on engines without server cancel) drops and reopens the connection.
 
 **Explorer**
-- Connections → schemas → object groups → objects, with columns, indexes, foreign keys and triggers under each table, and filtering across all of them.
+- Connections → schemas → object groups → objects, with columns, indexes, foreign keys and triggers under each table.
+- **Double-click a table or view** to see its first 100 rows. The query runs in the background and only the results appear, so your console isn't filled with `SELECT … LIMIT 100` lines. Double-clicking a procedure, function or trigger opens its definition; expand a table with its arrow to see its columns.
+- **Filter objects** above the tree narrows every connection to matching tables, views, routines and other objects as you type; the × button or Esc clears it.
 - The selected row gets a darker background with an accent bar.
 - Engine logos ship with DataBug: they live in `crates/databug-app/assets/logos`, are compiled into the binary, and every release download includes them in a `logos` folder next to the application (next to `DataBug.exe` / `databug`; on macOS next to `DataBug.app`, and inside it). To swap one, replace `postgresql`, `mysql`, `sqlserver`, `sqlite`, `mongodb`, `couchdb`, `oracle`, `db2`, `duckdb`, `cassandra`, `cockroachdb`, `timescaledb`, `questdb`, `influxdb`, `spark` or `h2` (`.svg` or `.png`) in that folder and restart DataBug. The newer engines ship with DataBug's own monogram tiles rather than their official logos; [`SOURCES.md`](crates/databug-app/assets/logos/SOURCES.md) lists where each file comes from and its license. `mariadb.png` is included for later (MariaDB detection).
 

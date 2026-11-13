@@ -3,3 +3,4 @@
 .databug/
 /dist
 /.claude/
+.DS_Store

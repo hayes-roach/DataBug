@@ -6,6 +6,12 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- Double-clicking a table or view in the explorer (and running a procedure without parameters) shows only the results; the query is no longer added to the console
+- Redesigned *Filter objects* field: search icon, clear button, Esc clears it
+- *New project* / *Rename project* open a card with the name field focused and *Cancel* next to *Create*; the field no longer grabs focus back after you click elsewhere
+
 ## [0.3.1] - 2026-11-13
 
 ### Fixed

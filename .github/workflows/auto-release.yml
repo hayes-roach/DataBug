@@ -1,0 +1,100 @@
+name: Auto release
+
+# After every merge to main: work out the next version from the merged pull
+# request titles (Conventional Commits, see .github/scripts/release.py), bump
+# Cargo.toml, move the Unreleased changelog entries under the new version,
+# commit that to main as `chore(release): vX.Y.Z`, tag it, and start the
+# Release workflow, which builds the installers and publishes the release.
+#
+# Docs-, CI- and test-only merges don't make a release; they ship with the next one.
+#
+# Pushing the release commit to main needs GitHub Actions allowed to bypass
+# the main branch ruleset (Settings → Rules → Rulesets → bypass list).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# one release at a time; a merge that lands meanwhile is picked up by the next run
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: read
+
+jobs:
+  release:
+    # the release commit itself is pushed with GITHUB_TOKEN and doesn't start
+    # workflows; this guard also covers a release commit pushed by hand
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Changes since the last release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*')
+          current=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "Last release $last, Cargo.toml $current"
+          : > changes.txt
+          # one line per merge (first parent), titled by its pull request when there is one
+          for sha in $(git rev-list --first-parent --reverse "$last"..HEAD); do
+            subject=$(git log -1 --format=%s "$sha")
+            case "$subject" in "chore(release):"*) continue ;; esac
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls" --jq 'map(select(.merged_at != null)) | .[0] | select(. != null) | "\(.title)\t#\(.number)"' || true)
+            if [ -n "$pr" ]; then
+              echo "$pr" >> changes.txt
+            else
+              printf '%s\t%s\n' "$subject" "$(git rev-parse --short "$sha")" >> changes.txt
+            fi
+          done
+          cat changes.txt
+          next=$(python3 -I .github/scripts/release.py plan "$current" changes.txt)
+          if [ -z "$next" ]; then
+            echo "Nothing that needs a release since $last"
+          elif git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
+            echo "::error::Tag v$next already exists"
+            exit 1
+          else
+            echo "Releasing $next"
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.plan.outputs.version != ''
+
+      - name: Bump version, changelog, commit and tag
+        if: steps.plan.outputs.version != ''
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
+          cargo update --workspace
+          python3 -I .github/scripts/release.py changelog "$VERSION" "$(date -u +%F)" changes.txt CHANGELOG.md
+          rm changes.txt
+          git diff --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v$VERSION"
+          git tag -a "v$VERSION" -m "DataBug $VERSION"
+          git push origin HEAD:main "v$VERSION"
+
+      # A tag pushed with GITHUB_TOKEN doesn't trigger workflows, so start
+      # the Release workflow on the tag directly.
+      - name: Build and publish
+        if: steps.plan.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: gh workflow run release.yml --ref "v$VERSION"

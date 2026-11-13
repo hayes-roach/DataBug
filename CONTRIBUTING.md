@@ -87,13 +87,17 @@ DataBug uses **GitHub flow**: one long-lived branch, `main`, plus short-lived br
 ### Releases and hotfixes
 
 - Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor bump (`0.2.0`) may contain breaking changes to settings or behaviour; patch releases (`0.1.1`) only fix bugs.
-- To release, a maintainer:
-  1. Moves the *Unreleased* entries in [CHANGELOG.md](CHANGELOG.md) under the new version with today's date.
-  2. Bumps `version` in the root `Cargo.toml`.
-  3. Merges that as a pull request titled `chore(release): vX.Y.Z`.
-  4. Tags the merge commit on `main` and pushes the tag: `git tag -a vX.Y.Z -m "DataBug X.Y.Z" && git push origin vX.Y.Z`.
+- **Every merge to `main` releases automatically.** `.github/workflows/auto-release.yml` reads the titles of the pull requests merged since the last tag and picks the next version:
 
-  The tag triggers `.github/workflows/release.yml`, which builds the installers and publishes the GitHub release. Tags are never moved or deleted once a release is published.
+  | Pull request title | Release |
+  |---|---|
+  | `feat: …` | minor (`0.3.0` → `0.4.0`) |
+  | `fix: …`, `perf: …`, `refactor: …`, `revert: …`, `build: …`, `chore(deps): …` | patch (`0.3.0` → `0.3.1`) |
+  | `feat!: …` (any type with `!`) | major; minor before 1.0 |
+  | `docs: …`, `ci: …`, `test: …`, `style: …`, other `chore: …` | none on its own; ships with the next release |
+
+  It bumps `version` in `Cargo.toml`, moves the *Unreleased* entries in [CHANGELOG.md](CHANGELOG.md) under the new version with today's date (listing the pull request titles when there are none, as for Dependabot updates), commits that to `main` as `chore(release): vX.Y.Z`, tags it and starts `.github/workflows/release.yml`, which builds the installers and publishes the GitHub release. So pull request titles matter: they decide the version. Tags are never moved or deleted once a release is published.
+- To release by hand instead (for example a `release/X.Y` hotfix), move the *Unreleased* entries under the new version, bump `version` in `Cargo.toml`, commit that as `chore(release): vX.Y.Z` (a commit with that title never triggers an automatic release), then tag it and push the tag: `git tag -a vX.Y.Z -m "DataBug X.Y.Z" && git push origin vX.Y.Z`.
 - **Hotfixes** normally go to `main` like any fix, followed by a patch release. If `main` already holds unreleased work that shouldn't ship yet, a maintainer creates `release/X.Y` from the last tag, merges the fix there through a pull request, tags `vX.Y.Z+1` from that branch, and brings the fix back to `main` with a pull request.
 
 ## Dependency updates

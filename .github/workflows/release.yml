@@ -1,11 +1,21 @@
 name: Release
 
 # Push a tag like v0.2.0 to build DataBug for macOS, Windows and Linux and
-# attach the downloads to a GitHub release.
+# attach the downloads to a GitHub release. To build an existing tag again
+# (e.g. after fixing this workflow), run it from main with that tag:
+#   gh workflow run release.yml -f tag=v0.3.1
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish, e.g. v0.3.1
+        required: true
+
+# the tag being released, pushed or chosen
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -18,16 +28,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - name: Tag matches Cargo.toml
+        env:
+          DISPATCHED_TAG: ${{ inputs.tag }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+          tag="${TAG#v}"
+          if [ -z "$DISPATCHED_TAG" ] && [ "${GITHUB_REF_TYPE}" != "tag" ]; then
             echo "::error::Releases are made by pushing a tag (v$version), not by running this workflow on a branch"
             exit 1
           fi
           if [ "$tag" != "$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml. Bump the version (and CHANGELOG), commit, then tag that commit."
+            echo "::error::Tag $TAG doesn't match version $version in Cargo.toml. Bump the version (and CHANGELOG), commit, then tag that commit."
             exit 1
           fi
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
@@ -39,7 +53,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-14 runners were retired; builds are universal (arm64 + x86_64) either way
+          - os: macos-15
             name: macos-universal
           - os: windows-latest
             name: windows-x86_64
@@ -48,6 +63,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -104,7 +121,7 @@ jobs:
 
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -114,6 +131,7 @@ jobs:
         run: sha256sum DataBug-* > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.TAG }}
           files: |
             DataBug-*
             SHA256SUMS.txt

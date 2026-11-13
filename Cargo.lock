@@ -1344,7 +1344,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "databug"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "csv",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "databug-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "databug-drivers"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "databug-sql"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "databug-core",
 ]

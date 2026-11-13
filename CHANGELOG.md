@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-13
+
 ### Changed
 
 - Snappier UI, especially on Windows: frames are shown as soon as they're drawn instead of queueing behind vsync (which made the hover highlight trail the mouse with high-polling mice and touchpads), and scrolling is immediate instead of animated

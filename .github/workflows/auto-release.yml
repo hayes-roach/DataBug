@@ -3,13 +3,16 @@ name: Auto release
 # After every merge to main: work out the next version from the merged pull
 # request titles (Conventional Commits, see .github/scripts/release.py), bump
 # Cargo.toml, move the Unreleased changelog entries under the new version,
-# commit that to main as `chore(release): vX.Y.Z`, tag it, and start the
-# Release workflow, which builds the installers and publishes the release.
+# commit that to main as `chore(release): vX.Y.Z` and tag it. The tag starts
+# the Release workflow, which builds the installers and publishes the release.
 #
 # Docs-, CI- and test-only merges don't make a release; they ship with the next one.
 #
-# Pushing the release commit to main needs GitHub Actions allowed to bypass
-# the main branch ruleset (Settings → Rules → Rulesets → bypass list).
+# The release commit is pushed with the RELEASE_TOKEN secret: a fine-grained
+# personal access token of a repository admin, limited to this repository,
+# with Contents: read and write. Admins may bypass the main branch ruleset
+# (GitHub Actions itself can't be added to the bypass list of a personal
+# repository), and unlike GITHUB_TOKEN its tag push starts the Release workflow.
 on:
   push:
     branches: [main]
@@ -21,21 +24,30 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
   pull-requests: read
 
 jobs:
   release:
-    # the release commit itself is pushed with GITHUB_TOKEN and doesn't start
-    # workflows; this guard also covers a release commit pushed by hand
+    # the release commit this workflow pushes (or one pushed by hand) doesn't release again
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     steps:
+      - name: RELEASE_TOKEN is set
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::Add a RELEASE_TOKEN secret (a repository admin's fine-grained token for this repository with Contents: read and write). See the comment at the top of auto-release.yml."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
+          # pushes below use this token
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Changes since the last release
         id: plan
@@ -84,17 +96,9 @@ jobs:
           python3 -I .github/scripts/release.py changelog "$VERSION" "$(date -u +%F)" changes.txt CHANGELOG.md
           rm changes.txt
           git diff --stat
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # the token's owner pushes, so the commit is credited to them too
+          git config user.name "Hayes Roach"
+          git config user.email "54288270+hayes-roach@users.noreply.github.com"
           git commit -am "chore(release): v$VERSION"
           git tag -a "v$VERSION" -m "DataBug $VERSION"
           git push origin HEAD:main "v$VERSION"
-
-      # A tag pushed with GITHUB_TOKEN doesn't trigger workflows, so start
-      # the Release workflow on the tag directly.
-      - name: Build and publish
-        if: steps.plan.outputs.version != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.plan.outputs.version }}
-        run: gh workflow run release.yml --ref "v$VERSION"

@@ -60,7 +60,7 @@ fn ident(h: &str) -> String {
 
 fn detect_delimiter(sample: &str) -> u8 {
     let line = sample.lines().next().unwrap_or("");
-    [b',', b';', b'\t', b'|'].into_iter().max_by_key(|d| line.matches(*d as char).count()).unwrap_or(b',')
+    (*b",;\t|").into_iter().max_by_key(|d| line.matches(*d as char).count()).unwrap_or(b',')
 }
 
 fn type_for(d: Dialect, t: Inferred) -> &'static str {

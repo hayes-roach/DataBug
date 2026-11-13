@@ -87,11 +87,7 @@ impl ResultSet {
     }
 
     pub fn rows(&self) -> usize {
-        if self.width == 0 {
-            0
-        } else {
-            self.ends.len() / self.width
-        }
+        self.ends.len().checked_div(self.width).unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {

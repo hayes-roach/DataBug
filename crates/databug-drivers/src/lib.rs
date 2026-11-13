@@ -420,7 +420,7 @@ pub(crate) fn build_catalog(rows: Vec<Vec<Option<String>>>, default_schema: Stri
     let default = cat.default_schema.clone();
     cat.schemas.sort_by(|a, b| (a.name != default).cmp(&(b.name != default)).then(a.name.cmp(&b.name)));
     for s in &mut cat.schemas {
-        s.tables.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        s.tables.sort_by_cached_key(|t| t.name.to_lowercase());
         s.objects.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())).then(a.detail.cmp(&b.detail)));
         s.objects.dedup_by(|a, b| a.kind == b.kind && a.name == b.name && a.detail == b.detail && a.table == b.table);
         for t in &mut s.tables {

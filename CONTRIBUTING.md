@@ -135,7 +135,7 @@ The body says *why* the change is needed and anything a reviewer should know. Re
 
 ## Code guidelines
 
-- **Lints are configured once** in the workspace `Cargo.toml` (`[workspace.lints]`) and CI treats clippy warnings as errors. Every `unsafe` block needs a `// SAFETY:` comment saying why it's sound. If you have to silence a lint, use the narrowest `#[allow(...)]` with a comment explaining why.
+- **Lints are configured once** in the workspace `Cargo.toml` (`[workspace.lints]`) and CI treats clippy warnings as errors. CI's clippy runs on a pinned Rust version (in `.github/workflows/ci.yml`); run `cargo +<that version> clippy --workspace --all-targets --all-features -- -D warnings` to match it, and bump the pin in its own pull request together with fixes for any new lints. Every `unsafe` block needs a `// SAFETY:` comment saying why it's sound. If you have to silence a lint, use the narrowest `#[allow(...)]` with a comment explaining why.
 - **Dependencies are audited:** CI runs `cargo audit`. An advisory that can't be fixed yet goes in `.cargo/audit.toml` with the reason and what will remove it.
 - **Match the style around you.** The code isn't run through `cargo fmt` (its lines are longer than rustfmt's defaults), so don't reformat files you're not otherwise changing. Keep diffs focused on the change.
 - **The UI never blocks.** Database I/O runs on the Tokio runtime inside sessions; the UI talks to them over channels. Don't call `block_on` or do network or disk work that can take time on the UI thread.

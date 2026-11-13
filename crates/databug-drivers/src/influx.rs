@@ -281,7 +281,7 @@ impl DbConnection for InfluxConn {
                 }
             }
         }
-        tables.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        tables.sort_by_cached_key(|t| t.name.to_lowercase());
         Ok(Catalog { default_schema: schema.clone(), introspected_at: crate::now_secs(), schemas: vec![SchemaInfo { name: schema, tables, objects: vec![] }] })
     }
 

@@ -3,6 +3,7 @@ name = "databug-drivers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [features]
 default = ["postgres", "mysql", "mssql", "sqlite", "mongodb", "cockroachdb", "timescaledb", "questdb", "h2", "duckdb", "cassandra", "couchdb", "influxdb"]

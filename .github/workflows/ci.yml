@@ -21,8 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned so a new Rust release (with new clippy lints) can't fail CI on
+      # its own. To move to a newer Rust, change this version and fix any new
+      # warnings in the same pull request.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.100"
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Headers for the optional drivers (Kerberos, ODBC)

@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-13
+
 ### Security
 
 - Upgraded the SQL Server driver (tiberius 0.13), whose TLS stack (rustls 0.21) accepted distrusted intermediate certificates and could be downgraded, and the bundled SQLite (rusqlite 0.42, SQLite with the fix for RUSTSEC-2026-0459). Also upgraded mysql_async (0.37, drops an unsound LRU cache) and zip (9)

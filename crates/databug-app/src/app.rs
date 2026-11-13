@@ -3429,7 +3429,7 @@ impl eframe::App for DataBugApp {
         let views: HashMap<String, CatalogView> = self
             .catalogs
             .iter()
-            .map(|(k, e)| (k.clone(), CatalogView { catalog: &e.catalog, loading: e.loading, error: e.error.as_deref(), age: if e.catalog.introspected_at > 0 { ago(e.catalog.introspected_at) } else { String::new() } }))
+            .map(|(k, e)| (k.clone(), CatalogView { catalog: &e.catalog, generation: e.generation, loading: e.loading, error: e.error.as_deref(), age: if e.catalog.introspected_at > 0 { ago(e.catalog.introspected_at) } else { String::new() } }))
             .collect();
         let side = egui::SidePanel::left("explorer")
             .resizable(true)

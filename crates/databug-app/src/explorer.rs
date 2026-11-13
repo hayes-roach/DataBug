@@ -9,6 +9,7 @@ use databug_drivers::SourceRef;
 use databug_sql::rename::RenameTarget;
 use eframe::egui::{self, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 pub enum Action {
     NewConsole(String),
@@ -93,6 +94,15 @@ pub struct ExplorerState {
     /// Project name being edited: (project id or None for a new one, name).
     project_edit: Option<(Option<String>, String)>,
     scroll_to_selected: bool,
+    /// Indexes of each group's objects (all, and those matching the filter),
+    /// built once per catalog load instead of on every frame.
+    groups: HashMap<String, Rc<Vec<u32>>>,
+    groups_filter: String,
+    /// Lay out every row, even off-screen ones (tests compare the two).
+    full_layout: bool,
+    /// Height of the tree's content and its scroll offset in the last frame.
+    content_height: f32,
+    scroll_y: f32,
 }
 
 impl ExplorerState {
@@ -100,6 +110,32 @@ impl ExplorerState {
     pub fn request_picker(&mut self, conn_id: &str) {
         self.open.insert(format!("c:{conn_id}"));
         self.picker_request = Some(conn_id.to_string());
+    }
+
+    /// Indexes into `s.tables` (relation kinds) or `s.objects` of the objects
+    /// of `kind` whose name contains `filter` (already lower case).
+    fn group_items(&mut self, conn: &str, generation: u64, s: &SchemaInfo, kind: ObjectKind, filter: &str) -> Rc<Vec<u32>> {
+        if self.groups_filter != filter || self.groups.len() > 4096 {
+            self.groups.clear();
+            self.groups_filter = filter.to_string();
+        }
+        // the generation changes on every catalog load; the counts are a backstop
+        let key = format!("{conn}\u{1}{generation}\u{1}{}\u{1}{}\u{1}{}\u{1}{kind:?}\u{1}{filter}", s.name, s.tables.len(), s.objects.len());
+        self.groups
+            .entry(key)
+            .or_insert_with(|| {
+                let keep = |name: &str| filter.is_empty() || name.to_lowercase().contains(filter);
+                Rc::new(if kind.is_relation() {
+                    s.tables.iter().enumerate().filter(|(_, t)| t.kind == kind && keep(&t.name)).map(|(i, _)| i as u32).collect()
+                } else {
+                    s.objects.iter().enumerate().filter(|(_, o)| o.kind == kind && keep(&o.name)).map(|(i, _)| i as u32).collect()
+                })
+            })
+            .clone()
+    }
+
+    fn schema_matches(&mut self, conn: &str, generation: u64, s: &SchemaInfo, filter: &str) -> bool {
+        ObjectKind::DISPLAY_ORDER.iter().any(|&k| !self.group_items(conn, generation, s, k, filter).is_empty())
     }
 
     pub fn open_key(&mut self, key: impl Into<String>) {
@@ -127,6 +163,8 @@ impl ExplorerState {
 
 pub struct CatalogView<'a> {
     pub catalog: &'a Catalog,
+    /// Bumped on every catalog load.
+    pub generation: u64,
     pub loading: bool,
     pub error: Option<&'a str>,
     pub age: String,
@@ -151,6 +189,48 @@ enum Glyph {
 }
 
 const ROW_H: f32 = 22.0;
+
+/// Leaves out rows that are scrolled out of view: instead of laying them
+/// out, it adds their height as empty space, so the scroll bar and the
+/// position of everything else stay the same. Large databases have tens of
+/// thousands of rows; only the few dozen on screen are built each frame.
+struct Skipper {
+    on: bool,
+    pitch: f32,
+    pending: f32,
+}
+
+impl Skipper {
+    fn new(ui: &egui::Ui, st: &ExplorerState) -> Self {
+        // revealing an object needs its row laid out to scroll to it
+        Skipper { on: !st.scroll_to_selected && !st.full_layout, pitch: ROW_H + ui.spacing().item_spacing.y, pending: 0.0 }
+    }
+
+    /// Whether a block of `rows` rows would be on screen. If not, its
+    /// height is set aside and the caller skips it.
+    fn visible(&mut self, ui: &mut egui::Ui, rows: usize) -> bool {
+        if !self.on {
+            return true;
+        }
+        let h = rows as f32 * self.pitch;
+        let top = ui.cursor().top() + self.pending;
+        let clip = ui.clip_rect();
+        if top + h < clip.top() - 2.0 * ROW_H || top > clip.bottom() + 2.0 * ROW_H {
+            self.pending += h;
+            false
+        } else {
+            self.finish(ui);
+            true
+        }
+    }
+
+    fn finish(&mut self, ui: &mut egui::Ui) {
+        if self.pending > 0.0 {
+            ui.add_space(self.pending);
+            self.pending = 0.0;
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, key: &str, depth: usize, expandable: bool, glyph: Glyph, label: &str, detail: &str, editable: bool, strong: bool) -> RowOut {
@@ -293,7 +373,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
     }
     let filter = st.filter.to_lowercase();
     let filtering = !filter.is_empty();
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if connections.is_empty() {
             ui.add_space(20.0);
@@ -499,7 +579,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                     st.open.insert(dk.clone());
                     st.open.insert(format!("{dk}:seen"));
                 }
-                if filtering && !vview.map(|v| v.catalog.schemas.iter().any(|s| schema_matches(s, &filter))).unwrap_or(false) {
+                if filtering && !vview.map(|v| v.catalog.schemas.iter().any(|s| st.schema_matches(&vcfg.id, v.generation, s, &filter))).unwrap_or(false) {
                     continue;
                 }
                 let detail = match vview {
@@ -561,6 +641,8 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             }
         }
     });
+    st.content_height = out.content_size.y;
+    st.scroll_y = out.state.offset.y;
     actions
 }
 
@@ -870,7 +952,7 @@ fn conn_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Log
         if !single && !cfg.schema_visible(&s.name) {
             continue;
         }
-        if filtering && !schema_matches(s, filter) {
+        if filtering && !st.schema_matches(&cfg.id, v.generation, s, filter) {
             continue;
         }
         let depth = if single {
@@ -890,7 +972,7 @@ fn conn_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Log
             }
             2 + d0
         };
-        schema_body(ui, p, st, logos, cfg, s, depth, filter, actions);
+        schema_body(ui, p, st, logos, cfg, v.generation, s, depth, filter, actions);
     }
     if v.catalog.introspected_at > 0 && !filtering {
         ui.horizontal(|ui| {
@@ -981,10 +1063,6 @@ fn schema_picker(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
     });
 }
 
-fn schema_matches(s: &SchemaInfo, f: &str) -> bool {
-    s.tables.iter().any(|t| t.name.to_lowercase().contains(f)) || s.objects.iter().any(|o| o.name.to_lowercase().contains(f))
-}
-
 fn schema_menu(resp: egui::Response, cfg: &ConnectionConfig, schema: &str, actions: &mut Vec<Action>) {
     resp.context_menu(|ui| {
         if cfg.kind != DbKind::MongoDb {
@@ -1009,10 +1087,12 @@ fn schema_menu(resp: egui::Response, cfg: &ConnectionConfig, schema: &str, actio
 }
 
 #[allow(clippy::too_many_arguments)]
-fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, cfg: &ConnectionConfig, s: &SchemaInfo, depth: usize, filter: &str, actions: &mut Vec<Action>) {
+#[allow(clippy::too_many_arguments)]
+fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, cfg: &ConnectionConfig, generation: u64, s: &SchemaInfo, depth: usize, filter: &str, actions: &mut Vec<Action>) {
     let filtering = !filter.is_empty();
     for kind in ObjectKind::DISPLAY_ORDER {
-        let n = s.count(kind);
+        let all = st.group_items(&cfg.id, generation, s, kind, "");
+        let n = all.len();
         if n == 0 {
             continue;
         }
@@ -1021,12 +1101,8 @@ fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &L
             st.open.insert(gk.clone());
             st.open.insert(format!("{gk}:seen"));
         }
-        let matching: usize = if kind.is_relation() {
-            s.tables.iter().filter(|t| t.kind == kind && t.name.to_lowercase().contains(filter)).count()
-        } else {
-            s.objects.iter().filter(|o| o.kind == kind && o.name.to_lowercase().contains(filter)).count()
-        };
-        if filtering && matching == 0 {
+        let items = if filtering { st.group_items(&cfg.id, generation, s, kind, filter) } else { all };
+        if items.is_empty() {
             continue;
         }
         let r = row(ui, p, st, logos, &gk, depth, true, Glyph::Group(kind), kind.group_label(), &n.to_string(), false, false);
@@ -1041,12 +1117,24 @@ fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &L
         if !is_open(st, &gk, filtering) {
             continue;
         }
+        let mut skip = Skipper::new(ui, st);
         if kind.is_relation() {
-            for t in s.tables.iter().filter(|t| t.kind == kind && (!filtering || t.name.to_lowercase().contains(filter))) {
-                table_node(ui, p, st, logos, cfg, &s.name, s, t, depth + 1, actions);
+            // expanded tables (usually few) are taller than one row
+            let prefix = format!("t:{}:{}:", cfg.id, s.name);
+            let open: HashSet<String> = st.open.iter().filter_map(|k| k.strip_prefix(prefix.as_str())).map(str::to_string).collect();
+            for &i in items.iter() {
+                let t = &s.tables[i as usize];
+                let rows = if open.contains(&t.name) { table_rows(&open, s, t) } else { 1 };
+                if skip.visible(ui, rows) {
+                    table_node(ui, p, st, logos, cfg, &s.name, s, t, depth + 1, actions);
+                }
             }
         } else {
-            for o in s.objects.iter().filter(|o| o.kind == kind && (!filtering || o.name.to_lowercase().contains(filter))) {
+            for &i in items.iter() {
+                if !skip.visible(ui, 1) {
+                    continue;
+                }
+                let o = &s.objects[i as usize];
                 let key = format!("o:{}:{}:{:?}:{}:{}:{}", cfg.id, s.name, o.kind, o.name, o.detail, o.table.as_deref().unwrap_or(""));
                 let detail = match o.kind {
                     ObjectKind::Procedure | ObjectKind::Function | ObjectKind::TableFunction | ObjectKind::Aggregate if !o.detail.is_empty() => format!("({})", o.detail),
@@ -1087,7 +1175,23 @@ fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &L
                 });
             }
         }
+        skip.finish(ui);
     }
+}
+
+/// Rows a table takes when expanded, matching what `table_node` draws.
+/// `open` holds the open keys under this schema, without the `t:conn:schema:` prefix.
+fn table_rows(open: &HashSet<String>, s: &SchemaInfo, t: &TableInfo) -> usize {
+    let mut n = 1 + t.columns.len();
+    let mut folder = |count: usize, suffix: &str| {
+        if count > 0 {
+            n += 1 + if open.contains(&format!("{}:{suffix}", t.name)) { count } else { 0 };
+        }
+    };
+    folder(t.indexes.iter().filter(|i| !i.primary || t.kind == ObjectKind::Collection).count(), "idx");
+    folder(t.foreign_keys.len(), "fk");
+    folder(s.objects.iter().filter(|o| matches!(o.kind, ObjectKind::Trigger | ObjectKind::ClrTrigger) && o.table.as_deref() == Some(t.name.as_str())).count(), "trg");
+    n
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1159,7 +1263,11 @@ fn table_node(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Lo
     if !st.open.contains(&key) {
         return;
     }
+    let mut skip = Skipper::new(ui, st);
     for c in &t.columns {
+        if !skip.visible(ui, 1) {
+            continue;
+        }
         let ckey = format!("{key}:col:{}", c.name);
         let detail = format!("{}{}", c.data_type, if c.nullable || c.primary_key { "" } else { " not null" });
         let r = row(ui, p, st, logos, &ckey, depth + 1, false, Glyph::Column(c.primary_key, t.is_fk_column(&c.name)), &c.name, &detail, false, false);
@@ -1184,6 +1292,7 @@ fn table_node(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Lo
                 }
             });
     }
+    skip.finish(ui);
     let secondary: Vec<_> = t.indexes.iter().filter(|i| !i.primary || t.kind == ObjectKind::Collection).collect();
     if !secondary.is_empty() {
         let k = format!("{key}:idx");
@@ -1214,6 +1323,136 @@ fn table_node(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Lo
                     actions.push(Action::EditObject(cfg.id.clone(), schema.to_string(), SourceRef::from_object(o)));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use databug_core::{ColumnInfo, ForeignKey, IndexInfo};
+
+    /// A schema with `tables` tables (8 columns, an index and a foreign key
+    /// each), `funcs` functions and `triggers` triggers.
+    fn catalog(tables: usize, funcs: usize, triggers: usize) -> Catalog {
+        let mut s = SchemaInfo { name: "public".into(), ..Default::default() };
+        for i in 0..tables {
+            let mut t = TableInfo::new(format!("table_{i:05}"), ObjectKind::Table);
+            for c in 0..8 {
+                t.columns.push(ColumnInfo { name: format!("col_{c}"), data_type: "integer".into(), nullable: true, primary_key: c == 0, default: None });
+            }
+            t.indexes.push(IndexInfo { name: format!("ix_{i}"), columns: vec!["col_1".into()], unique: false, primary: false });
+            t.foreign_keys.push(ForeignKey { name: format!("fk_{i}"), columns: vec!["col_2".into()], ref_schema: "public".into(), ref_table: "table_00000".into(), ref_columns: vec!["col_0".into()], on_delete: String::new() });
+            s.tables.push(t);
+        }
+        for i in 0..funcs {
+            s.objects.push(DbObject { name: format!("fn_{i:05}"), kind: ObjectKind::Function, detail: "a integer, b text".into(), ident: String::new(), table: None });
+        }
+        for i in 0..triggers {
+            s.objects.push(DbObject { name: format!("trg_{i:05}"), kind: ObjectKind::Trigger, detail: String::new(), ident: String::new(), table: Some(format!("table_{:05}", i % tables.max(1))) });
+        }
+        Catalog { default_schema: "public".into(), introspected_at: 1, schemas: vec![s] }
+    }
+
+    struct Harness {
+        ctx: egui::Context,
+        logos: Option<Logos>,
+        cfg: ConnectionConfig,
+        cat: Catalog,
+        st: ExplorerState,
+    }
+
+    impl Harness {
+        fn new(cat: Catalog) -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::install_fonts(&ctx);
+            let mut cfg = ConnectionConfig::new(DbKind::Postgres);
+            cfg.id = "c1".into();
+            let mut st = ExplorerState::default();
+            for k in ["c:c1", "d:c1:", "s:c1:public", "g:c1:public:Table", "g:c1:public:Function", "g:c1:public:Trigger"] {
+                st.open.insert(k.into());
+            }
+            Harness { ctx, logos: None, cfg, cat, st }
+        }
+
+        /// One frame; `wheel` scrolls by that many points.
+        fn frame(&mut self, wheel: f32) {
+            let p = crate::theme::palette(crate::theme::ThemeKind::Dark, &Default::default());
+            let (a, b, c, d) = (HashSet::new(), HashSet::new(), HashMap::new(), HashMap::new());
+            let cx = ExplorerCtx { connected: &a, disconnected: &b, failed: &c, databases: &d, projects: &[], current_project: None };
+            let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 1100.0))), ..Default::default() };
+            if wheel != 0.0 {
+                input.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 500.0)));
+                input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -wheel), modifiers: Default::default() });
+            }
+            let Harness { ctx, logos, cfg, cat, st } = self;
+            let _ = ctx.run(input, |ctx| {
+                let l = logos.get_or_insert_with(|| Logos::discover(ctx));
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut views = HashMap::new();
+                    views.insert("c1".to_string(), CatalogView { catalog: cat, generation: 1, loading: false, error: None, age: String::new() });
+                    show(ui, &p, st, l, std::slice::from_ref(cfg), &views, &cx);
+                });
+            });
+        }
+    }
+
+    #[test]
+    fn skipping_rows_keeps_the_layout() {
+        let mut virt = Harness::new(catalog(400, 300, 120));
+        // a mix of expanded tables and sub-folders, near the top, middle and end
+        for i in [0, 3, 150, 151, 399] {
+            virt.st.open.insert(format!("t:c1:public:table_{i:05}"));
+        }
+        virt.st.open.insert("t:c1:public:table_00003:idx".into());
+        virt.st.open.insert("t:c1:public:table_00150:fk".into());
+        virt.st.open.insert("t:c1:public:table_00150:trg".into());
+        let mut full = Harness::new(virt.cat.clone());
+        full.st.open = virt.st.open.clone();
+        full.st.full_layout = true;
+        for wheel in [0.0, 3000.0, 4000.0, 9000.0, 100_000.0] {
+            for _ in 0..3 {
+                virt.frame(wheel);
+                full.frame(wheel);
+            }
+            assert!(virt.st.content_height > 10_000.0);
+            assert_eq!(virt.st.scroll_y, full.st.scroll_y);
+            assert!(wheel == 0.0 || virt.st.scroll_y > 0.0, "didn't scroll");
+            assert_eq!(virt.st.content_height, full.st.content_height, "after scrolling {wheel}");
+        }
+    }
+
+    #[test]
+    fn filter_uses_cached_groups() {
+        let mut h = Harness::new(catalog(50, 20, 5));
+        h.st.filter = "fn_0001".into();
+        h.frame(0.0);
+        let s = h.cat.schemas[0].clone();
+        assert_eq!(h.st.group_items("c1", 1, &s, ObjectKind::Function, "fn_0001").len(), 10);
+        assert!(h.st.group_items("c1", 1, &s, ObjectKind::Table, "fn_0001").is_empty());
+        assert_eq!(h.st.group_items("c1", 1, &s, ObjectKind::Table, "").len(), 50);
+        // a new catalog load (generation) is never served from the old lists
+        let mut s2 = s.clone();
+        s2.objects.truncate(3);
+        assert_eq!(h.st.group_items("c1", 2, &s2, ObjectKind::Function, "fn_0001").len(), 0);
+    }
+
+    /// `cargo test --release -p databug explorer_frame_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn explorer_frame_cost() {
+        for (t, f, g) in [(50, 20, 10), (1000, 500, 200), (5000, 2000, 1000), (20000, 5000, 3000)] {
+            let mut h = Harness::new(catalog(t, f, g));
+            let mut times = Vec::new();
+            for i in 0..12 {
+                let start = std::time::Instant::now();
+                h.frame(if i == 6 { 50_000.0 } else { 0.0 });
+                if i >= 2 {
+                    times.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            eprintln!("tables {t:>6} functions {f:>5} triggers {g:>5}: {:>7.2} ms per frame", times[times.len() / 2]);
         }
     }
 }

@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- The Windows one-line installer failed with "exit code 5" when DataBug was open or had been installed for all users. It now closes DataBug first (and lets setup close it), updates an existing install where it is, says when you're already up to date, verifies the download's checksum, times out instead of hanging on a stalled connection, and explains failures with the relevant lines of the setup log
+
 ## [0.3.4] - 2026-11-13
 
 ### Changed

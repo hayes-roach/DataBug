@@ -241,6 +241,7 @@ pub struct DataBugApp {
     pending_search: Option<String>,
     db_search: Option<DbSearch>,
     updates: Updates,
+    frame_stats: Option<FrameStats>,
 }
 
 fn now_hms() -> String {
@@ -355,6 +356,7 @@ impl DataBugApp {
             theme_editor: false,
             theme_dirty: false,
             pending_search: None,
+            frame_stats: std::env::var_os("DATABUG_FRAME_STATS").map(|_| FrameStats::default()),
             updates: {
                 let (tx, rx) = mpsc::channel();
                 Updates { tx, rx, checking: false, available: None, window: false, busy: None, error: None }
@@ -3266,6 +3268,16 @@ impl DataBugApp {
                 }
 
             }
+            2 if plan.scene == "perf" && plan.wait_frames < 400 => {
+                let f = plan.wait_frames as f32;
+                let y = 160.0 + (f * 7.0) % 260.0;
+                ctx.input_mut(|i| {
+                    i.events.push(egui::Event::PointerMoved(egui::pos2(110.0, y)));
+                    if plan.wait_frames % 20 == 10 {
+                        i.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, if (plan.wait_frames / 40) % 2 == 0 { -120.0 } else { 120.0 }), modifiers: Modifiers::NONE });
+                    }
+                });
+            }
             2 if plan.scene == "flow" && plan.wait_frames < 60 => {
                 let f = plan.wait_frames;
                 let key = |k: Key, m: Modifiers| egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: m };
@@ -3361,7 +3373,7 @@ impl DataBugApp {
                     i.events.push(egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL });
                 });
             }
-            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
+            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, "perf" => 400, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
                 plan.step = 3;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
@@ -3460,7 +3472,45 @@ impl DataBugApp {
 }
 
 impl eframe::App for DataBugApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let frame_start = Instant::now();
+        self.update_inner(ctx, frame);
+        if let Some(stats) = self.frame_stats.as_mut() {
+            stats.record(frame_start.elapsed(), frame.info().cpu_usage);
+        }
+    }
+}
+
+/// `DATABUG_FRAME_STATS=1`: print how long frames take, every 120 frames.
+#[derive(Default)]
+struct FrameStats {
+    update_ms: Vec<f32>,
+    cpu_ms: Vec<f32>,
+}
+
+impl FrameStats {
+    fn record(&mut self, update: Duration, cpu: Option<f32>) {
+        self.update_ms.push(update.as_secs_f32() * 1000.0);
+        if let Some(c) = cpu {
+            self.cpu_ms.push(c * 1000.0);
+        }
+        if self.update_ms.len() >= 120 {
+            let stat = |v: &mut Vec<f32>| {
+                v.sort_by(f32::total_cmp);
+                let n = v.len().max(1);
+                (v.iter().sum::<f32>() / n as f32, v.get(n * 95 / 100).copied().unwrap_or(0.0), v.last().copied().unwrap_or(0.0))
+            };
+            let (ua, u95, umax) = stat(&mut self.update_ms);
+            let (ca, c95, cmax) = stat(&mut self.cpu_ms);
+            eprintln!("frames: update avg {ua:.2} ms p95 {u95:.2} max {umax:.2} | cpu (update+tessellate) avg {ca:.2} p95 {c95:.2} max {cmax:.2}");
+            self.update_ms.clear();
+            self.cpu_ms.clear();
+        }
+    }
+}
+
+impl DataBugApp {
+    fn update_inner(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let p = self.palette();
         let key = (theme::fingerprint(&p), self.settings.theme.is_dark(), self.settings.code_font_size);
         if self.applied_theme != Some(key) {

@@ -3,7 +3,7 @@
 //! width and editable objects get an inline edit button.
 
 use crate::icons::{self, Logos};
-use crate::theme::{bold, connection_color, Palette};
+use crate::theme::{bold, Palette};
 use databug_core::{Catalog, ConnectionConfig, DbKind, DbObject, ObjectKind, SchemaInfo, TableInfo};
 use databug_drivers::SourceRef;
 use databug_sql::rename::RenameTarget;
@@ -188,8 +188,8 @@ struct RowOut {
 }
 
 enum Glyph {
-    /// Engine logo, connection color, and whether it's connected.
-    Engine(DbKind, [u8; 3], bool),
+    /// Engine logo and whether the connection is signed in.
+    Engine(DbKind, bool),
     Database,
     Schema,
     Group(ObjectKind),
@@ -278,16 +278,16 @@ fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos,
     }
     let icon = Rect::from_center_size(egui::pos2(x0 + 21.0, rect.center().y), egui::vec2(15.0, 15.0));
     match glyph {
-        Glyph::Engine(kind, color, live) => {
+        Glyph::Engine(kind, live) => {
             logos.paint(ui, icon.shrink(0.5), kind);
-            // connection color dot, ringed so it stays separate from the logo
+            // connection state dot, ringed so it stays separate from the logo
             let dot = egui::pos2(icon.right() + 1.5, icon.bottom() - 0.5);
-            painter.circle_filled(dot, 3.6, p.island);
-            // filled while connected, a ring in the connection's color when not
+            painter.circle_filled(dot, 3.8, p.island);
+            // connection state: solid green while connected, a grey ring when not
             if live {
-                painter.circle_filled(dot, 2.6, connection_color(color));
+                painter.circle_filled(dot, 2.8, p.success);
             } else {
-                painter.circle_stroke(dot, 2.2, Stroke::new(1.2_f32, connection_color(color)));
+                painter.circle_stroke(dot, 2.3, Stroke::new(1.3_f32, p.muted));
             }
         }
         Glyph::Database => {
@@ -437,7 +437,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 engine.to_string()
             };
             let sense = if filtering { Sense::click() } else { Sense::click_and_drag() };
-            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, cfg.color, connected && !disconnected), &cfg.name, &detail, false, true, sense, disconnected);
+            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, connected && !disconnected), &cfg.name, &detail, false, true, sense, disconnected);
             headers.push(r.resp.rect);
             let connecting = cx.connecting.contains(&cfg.id);
             if !disconnected && (connected || connecting) {

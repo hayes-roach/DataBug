@@ -393,6 +393,8 @@ pub fn apply(ctx: &egui::Context, p: &Palette, dark: bool, code_size: f32) {
         s.spacing.window_margin = Margin::same(16);
         s.spacing.indent = 14.0;
         s.spacing.scroll = egui::style::ScrollStyle::thin();
+        // scroll immediately instead of gliding: snappier lists and grids
+        s.scroll_animation = egui::style::ScrollAnimation::none();
         s.interaction.selectable_labels = false;
         s.interaction.tooltip_delay = 0.35;
         s.animation_time = 0.08;

@@ -37,7 +37,8 @@ fn main() -> eframe::Result<()> {
             _ => {}
         }
     }
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("DataBug")
             .with_app_id("dev.databug.DataBug")
@@ -49,6 +50,19 @@ fn main() -> eframe::Result<()> {
         vsync: true,
         ..Default::default()
     };
+    // Low input latency: show each frame as soon as it's drawn instead of
+    // queueing frames behind vsync. On Windows, mice and touchpads that report
+    // hundreds of moves a second otherwise queue a frame per move, and the
+    // hover highlight trails the pointer by up to a second. Mailbox is used
+    // where available (no tearing); frames take ~1-2 ms, so this stays cheap.
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        options.wgpu_options = eframe::egui_wgpu::WgpuConfiguration {
+            present_mode: if cfg!(windows) { eframe::wgpu::PresentMode::AutoNoVsync } else { eframe::wgpu::PresentMode::AutoVsync },
+            desired_maximum_frame_latency: Some(1),
+            ..Default::default()
+        };
+    }
     eframe::run_native("DataBug", options, Box::new(move |cc| Ok(Box::new(app::DataBugApp::new(cc, screenshot)))))
 }
 

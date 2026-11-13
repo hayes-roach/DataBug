@@ -6,6 +6,11 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- Snappier UI, especially on Windows: frames are shown as soon as they're drawn instead of queueing behind vsync (which made the hover highlight trail the mouse with high-polling mice and touchpads), and scrolling is immediate instead of animated
+- The dot on a connection's icon is solid green while connected and a grey ring when disconnected
+
 ## [0.3.3] - 2026-11-13
 
 ### Security

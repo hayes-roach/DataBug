@@ -139,7 +139,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - When a connection names no database, DataBug uses the default: `postgres` on PostgreSQL, the login's default database on SQL Server, `test` on MongoDB.
 
 **Connections and projects**
-- *Disconnect* (right-click a connection) closes its sessions but keeps it in the explorer; *Connect*, a double-click, or running a query reconnects. A green dot at the right of a connection means it's signed in right now (amber while it signs in). The small dot on its icon, the toolbar and its console tabs is the connection's color: filled while connected, a hollow ring when it isn't. A connection the server drops (restart, network loss, timeout) shows as disconnected and signs in again on the next query.
+- *Disconnect* (right-click a connection) closes its sessions but keeps it in the explorer; *Connect*, a double-click, or running a query reconnects. A green dot at the right of a connection means it's signed in right now (amber while it signs in). The small dot at the bottom right of its icon is solid green while connected and a grey ring when it isn't; the dots in the toolbar and on its console tabs show the connection's color, filled while connected and a hollow ring when not. A connection the server drops (restart, network loss, timeout) shows as disconnected and signs in again on the next query.
 - Drag connections to reorder them.
 - **No automatic retries after a failed sign-in.** When a connection can't sign in, DataBug shows the error and stops: no reconnecting in the background, no second attempt for queued work, so a wrong password can't lock the account. *Retry*, *Connect*, *Refresh schema*, running a query or editing the connection tries again.
 - **Projects**: the switcher above the tree picks *All connections* or a project. *New project…* and *Rename project…* open a small card with the name field ready to type in (Enter creates or saves, Esc or *Cancel* closes it). Each project keeps its own ordered list of connections; new connections join the current project; right-click → *Add to project* / *Remove from project*. Saved in `projects.json`.
@@ -200,6 +200,8 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - Result cells live in one string arena per result with a `u32` offset and a null bit per cell. That's about 4 bytes of overhead per cell instead of a heap-allocated `String` each.
 - The UI repaints only when something changes, so CPU use is zero while idle. All database I/O runs on a 2-thread Tokio runtime and never blocks the UI.
 - The schema catalog is cached on disk and refreshed in the background, so completion works immediately on startup.
+- Low input latency: a frame takes about 1–2 ms, and each one is shown as soon as it's drawn (on Windows without waiting for vsync, using mailbox presentation where the GPU supports it), so hover highlights and scrolling keep up with fast mice and touchpads. Scrolling is immediate rather than animated.
+- If DataBug still feels slow on a Windows machine, try another graphics backend: set `WGPU_BACKEND=vulkan` (or `opengl`) before starting it. `DATABUG_FRAME_STATS=1` prints how long frames take, every 120 frames, to the terminal it was started from (macOS, Linux, or a Windows debug build; Windows release builds have no console).
 
 ## Build and run
 

@@ -70,8 +70,6 @@ pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
                 if !matches!(next.as_deref(), Some("IF" | "LOOP" | "WHILE" | "REPEAT")) {
                     block_depth -= 1;
                 }
-            } else if text.eq_ignore_ascii_case("CASE") {
-                // handled above
             }
         }
         if first.is_none() {

@@ -195,10 +195,17 @@ macro_rules! api {
         }
 
         impl Api {
+            /// # Safety
+            /// `path` must be a DuckDB library whose C API matches these
+            /// signatures (DuckDB 1.x); loading it runs its initialisers.
             unsafe fn load(path: &Path) -> anyhow::Result<Api> {
-                let lib = libloading::Library::new(path)?;
-                $(let $field = *lib.get::<unsafe extern "C" fn($($arg),*) $(-> $ret)?>(concat!("duckdb_", stringify!($field), "\0").as_bytes())
-                    .map_err(|e| anyhow::anyhow!("{} isn't a usable DuckDB library: {e}", path.display()))?;)*
+                // SAFETY: the caller guarantees `path` is a compatible DuckDB library.
+                let lib = unsafe { libloading::Library::new(path)? };
+                // SAFETY: each symbol is looked up by its DuckDB C API name and given
+                // that function's documented signature; `_lib` keeps the library
+                // loaded for as long as the pointers are used.
+                $(let $field = unsafe { *lib.get::<unsafe extern "C" fn($($arg),*) $(-> $ret)?>(concat!("duckdb_", stringify!($field), "\0").as_bytes())
+                    .map_err(|e| anyhow::anyhow!("{} isn't a usable DuckDB library: {e}", path.display()))? };)*
                 Ok(Api { _lib: lib, $($field,)* })
             }
         }

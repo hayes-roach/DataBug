@@ -55,15 +55,15 @@ tokio-postgres = { version = "0.7", optional = true }
 tokio-postgres-rustls = { version = "0.13", optional = true }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = { version = "0.26", optional = true }
-mysql_async = { version = "0.36", optional = true, default-features = false, features = ["minimal-rust", "default-rustls-no-provider"] }
-tiberius = { version = "0.12", optional = true, default-features = false, features = ["tds73", "rustls", "chrono", "winauth"] }
+mysql_async = { version = "0.37", optional = true, default-features = false, features = ["minimal-rust", "default-rustls-no-provider"] }
+tiberius = { version = "0.13", optional = true, default-features = false, features = ["tds73", "rustls", "chrono", "winauth"] }
 tokio-util = { version = "0.7", optional = true, features = ["compat"] }
 chrono = { version = "0.4", optional = true, default-features = false, features = ["std"] }
-rusqlite = { version = "0.37", optional = true, features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.42", optional = true, features = ["bundled", "column_decltype"] }
 mongodb = { version = "3", optional = true }
 json5 = { version = "0.4", optional = true }
 libloading = { version = "0.8", optional = true }
-zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+zip = { version = "9", optional = true, default-features = false, features = ["deflate"] }
 sha2 = { version = "0.10", optional = true }
 scylla = { version = "1", optional = true, default-features = false }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls-no-provider"] }
@@ -72,3 +72,6 @@ odbc-api = { version = "29", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

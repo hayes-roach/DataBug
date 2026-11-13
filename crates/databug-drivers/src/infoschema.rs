@@ -17,7 +17,7 @@ pub(crate) struct Opts<'a> {
     pub default_schema: String,
 }
 
-fn schema_filter(col: &str, o: &Opts) -> String {
+fn schema_filter(col: &str, o: &Opts<'_>) -> String {
     let list = o.system_schemas.iter().map(|s| format!("'{}'", s.to_ascii_uppercase().replace('\'', "''"))).collect::<Vec<_>>().join(", ");
     if list.is_empty() {
         "1 = 1".into()
@@ -26,7 +26,7 @@ fn schema_filter(col: &str, o: &Opts) -> String {
     }
 }
 
-pub(crate) fn columns_sql(o: &Opts) -> String {
+pub(crate) fn columns_sql(o: &Opts<'_>) -> String {
     let catalog = o.catalog.map(|c| format!(" AND c.TABLE_CATALOG = {c}")).unwrap_or_default();
     format!(
         "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, t.TABLE_TYPE, c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, \
@@ -39,7 +39,7 @@ WHERE {}{catalog} ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION",
     )
 }
 
-fn foreign_keys_sql(o: &Opts) -> String {
+fn foreign_keys_sql(o: &Opts<'_>) -> String {
     format!(
         "SELECT k.TABLE_SCHEMA, k.TABLE_NAME, k.CONSTRAINT_NAME, k.COLUMN_NAME, u.TABLE_SCHEMA, u.TABLE_NAME, u.COLUMN_NAME, r.DELETE_RULE \
 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS r \

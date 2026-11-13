@@ -135,6 +135,8 @@ The body says *why* the change is needed and anything a reviewer should know. Re
 
 ## Code guidelines
 
+- **Lints are configured once** in the workspace `Cargo.toml` (`[workspace.lints]`) and CI treats clippy warnings as errors. Every `unsafe` block needs a `// SAFETY:` comment saying why it's sound. If you have to silence a lint, use the narrowest `#[allow(...)]` with a comment explaining why.
+- **Dependencies are audited:** CI runs `cargo audit`. An advisory that can't be fixed yet goes in `.cargo/audit.toml` with the reason and what will remove it.
 - **Match the style around you.** The code isn't run through `cargo fmt` (its lines are longer than rustfmt's defaults), so don't reformat files you're not otherwise changing. Keep diffs focused on the change.
 - **The UI never blocks.** Database I/O runs on the Tokio runtime inside sessions; the UI talks to them over channels. Don't call `block_on` or do network or disk work that can take time on the UI thread.
 - **Repaint only when needed.** DataBug uses no CPU while idle. Request repaints from events, not on a timer, unless something is animating.
@@ -152,6 +154,7 @@ Before you ask for a review:
 
 - [ ] The branch is up to date with `main`
 - [ ] `cargo test --workspace` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean (CI also runs it with `--all-features`, which needs `libkrb5-dev` and `unixodbc-dev` on Linux)
 - [ ] `cargo build --release` builds without new warnings
 - [ ] UI changes include screenshots in dark and light themes
 - [ ] README and CHANGELOG are updated where it matters

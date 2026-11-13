@@ -99,7 +99,7 @@ async fn kinit(principal: &str, password: &str) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("kinit timed out reaching the domain controller"))??;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr);
-        let msg = msg.lines().filter(|l| !l.trim().is_empty() && !l.contains("Password for")).last().unwrap_or("kinit failed").trim().to_string();
+        let msg = msg.lines().rfind(|l| !l.trim().is_empty() && !l.contains("Password for")).unwrap_or("kinit failed").trim().to_string();
         anyhow::bail!("Kerberos sign-in for {principal} failed: {msg}");
     }
     Ok(())
@@ -256,7 +256,7 @@ impl DbConnection for MsConn {
             return Ok(());
         }
         let mut stream = self.client.simple_query(stmt).await.map_err(ms_error)?;
-        let mut batch: Option<Batcher> = None;
+        let mut batch: Option<Batcher<'_>> = None;
         let mut keep = true;
         let mut any = false;
         while let Some(item) = stream.try_next().await.map_err(ms_error)? {

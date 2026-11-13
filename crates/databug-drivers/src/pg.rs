@@ -55,7 +55,7 @@ impl PgConn {
         }
         // no database given: use the default `postgres` database rather than
         // libpq's fallback of a database named after the user
-        pc.dbname(&cfg.effective_database());
+        pc.dbname(cfg.effective_database());
         pc.ssl_mode(match cfg.ssl {
             SslMode::Disable => tokio_postgres::config::SslMode::Disable,
             SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
@@ -286,7 +286,7 @@ impl PgConn {
         }
         let stream = self.client.simple_query_raw(stmt).await.map_err(pg_error)?;
         futures_util::pin_mut!(stream);
-        let mut batch: Option<Batcher> = None;
+        let mut batch: Option<Batcher<'_>> = None;
         let mut stopped = false;
         loop {
             let msg = match stream.try_next().await {

@@ -77,7 +77,7 @@ pub(crate) fn run_statement(c: &Connection, stmt: &str, limit: usize, sink: &Sin
         sink(QueryEvent::Affected(n as u64));
         return Ok(());
     }
-    let cols: Vec<ColumnMeta> = st.columns().iter().map(|c| ColumnMeta::new(c.name(), c.decl_type().unwrap_or("").to_ascii_lowercase())).collect();
+    let cols: Vec<ColumnMeta> = st.columns().map(|c| ColumnMeta::new(c.name(), c.decl_type().unwrap_or("").to_ascii_lowercase())).collect();
     let mut b = Batcher::new(sink, cols, limit);
     let mut rows = st.raw_query();
     while let Some(row) = rows.next()? {

@@ -6,8 +6,17 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Security
+
+- Upgraded the SQL Server driver (tiberius 0.13), whose TLS stack (rustls 0.21) accepted distrusted intermediate certificates and could be downgraded, and the bundled SQLite (rusqlite 0.42, SQLite with the fix for RUSTSEC-2026-0459). Also upgraded mysql_async (0.37, drops an unsound LRU cache) and zip (9)
+- Passwords inside SQL (`PASSWORD '…'`, `IDENTIFIED BY …`, `SECRET = '…'`, MongoDB `pwd: …`) are masked before statements are saved to the query history
+- CI now runs `cargo audit` and clippy with warnings as errors
+
 ### Fixed
 
+- Editing rows on SQL Server turned characters outside the database's code page (é, 李, emoji) into `?`; string literals for SQL Server now use `N'…'`
+- A result with more than 4 GB of text could crash DataBug; it now stops storing rows at that size and shows "result too large". Release builds also check integer overflow
+- Failed saves of connections, settings, projects, history or the schema cache (full disk, permissions) were ignored; DataBug now shows a message
 - After disconnecting, a connection could still show green dots; a connection the server had dropped could also still look connected
 
 ### Changed

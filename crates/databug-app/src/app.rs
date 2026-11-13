@@ -101,8 +101,11 @@ struct CatalogEntry {
 /// A full-area tool shown in a tab instead of a console.
 enum Tool {
     Er(ErView),
-    Compare(CompareView),
+    Compare(Box<CompareView>),
 }
+
+/// Object definitions that arrived from a metadata session, by request id.
+type SourcesDone = Vec<(u64, Vec<(SourceRef, Result<String, String>)>)>;
 
 /// Why a batch of object definitions was requested.
 enum SourcePurpose {
@@ -715,7 +718,7 @@ impl DataBugApp {
         self.poll_compare(ctx);
     }
 
-    fn pump_inner(&mut self, sources_done: &mut Vec<(u64, Vec<(SourceRef, Result<String, String>)>)>, reload_virtuals: &mut Vec<String>) {
+    fn pump_inner(&mut self, sources_done: &mut SourcesDone, reload_virtuals: &mut Vec<String>) {
         while let Ok((sid, ev)) = self.rx.try_recv() {
             if sid & META_BIT != 0 {
                 let Some(conn_id) = self.meta.iter().find(|(_, s)| s.id == sid).map(|(k, _)| k.clone()) else { continue };
@@ -880,7 +883,7 @@ impl DataBugApp {
                             }
                         }
                         if run.edit_refresh != Some(usize::MAX) {
-                            history = Some(HistoryEntry { at: now_secs(), connection: cfg.as_ref().map(|c| c.name.clone()).unwrap_or_default(), sql: sql.clone(), ms: elapsed.as_millis() as u64, ok: error.is_none() });
+                            history = Some(HistoryEntry { at: now_secs(), connection: cfg.as_ref().map(|c| c.name.clone()).unwrap_or_default(), sql: crate::store::redact_secrets(&sql), ms: elapsed.as_millis() as u64, ok: error.is_none() });
                         }
                     }
                     Ev::JobDone { job } => {
@@ -1235,7 +1238,7 @@ impl DataBugApp {
                 let kind = self.conn(&id).map(|c| c.kind);
                 let other = self.connections.iter().find(|c| c.id != id && Some(c.kind) == kind).map(|c| c.id.clone()).unwrap_or_else(|| id.clone());
                 let other_schema = self.catalog(&other).map(|c| c.default_schema.clone()).unwrap_or_else(|| schema.clone());
-                self.open_tool(&id, "Schema compare".into(), Tool::Compare(CompareView::new((id.clone(), schema), (other, other_schema))));
+                self.open_tool(&id, "Schema compare".into(), Tool::Compare(Box::new(CompareView::new((id.clone(), schema), (other, other_schema)))));
             }
             Action::ImportCsv(id, schema, table) => {
                 let Some(cfg) = self.conn(&id).cloned() else { return };
@@ -3471,6 +3474,12 @@ impl eframe::App for DataBugApp {
         self.sync_zoom(ctx);
         self.pump_events(ctx);
         self.poll_updates(ctx);
+        // a save to disk failed (full disk, permissions): say so once
+        if let Some(e) = self.store.take_error() {
+            if !self.toasts.iter().any(|t| t.text == e) {
+                self.toast(e);
+            }
+        }
         self.drive_screenshot(ctx);
         self.shortcuts(ctx);
         if self.tabs.iter().any(|t| t.running.is_some()) {

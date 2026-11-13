@@ -38,7 +38,7 @@ mod odbc;
 mod http;
 #[cfg(any(feature = "postgres", feature = "cassandra-tls", feature = "couchdb", feature = "influxdb"))]
 mod tls;
-#[allow(dead_code)]
+#[cfg(any(feature = "postgres", feature = "duckdb", feature = "oracle", feature = "db2", feature = "spark"))]
 mod infoschema;
 
 /// Receives streamed events from a running statement.
@@ -198,40 +198,27 @@ pub fn start_duckdb_download(rt: &tokio::runtime::Handle, notify: Arc<dyn Fn() +
 
 /// Drivers compiled into this build.
 pub fn available() -> Vec<DbKind> {
-    let mut v = Vec::new();
-    #[cfg(feature = "postgres")]
-    v.push(DbKind::Postgres);
-    #[cfg(feature = "mysql")]
-    v.push(DbKind::MySql);
-    #[cfg(feature = "mssql")]
-    v.push(DbKind::MsSql);
-    #[cfg(feature = "sqlite")]
-    v.push(DbKind::Sqlite);
-    #[cfg(feature = "mongodb")]
-    v.push(DbKind::MongoDb);
-    #[cfg(feature = "oracle")]
-    v.push(DbKind::Oracle);
-    #[cfg(feature = "db2")]
-    v.push(DbKind::Db2);
-    #[cfg(feature = "duckdb")]
-    v.push(DbKind::DuckDb);
-    #[cfg(feature = "cassandra")]
-    v.push(DbKind::Cassandra);
-    #[cfg(feature = "couchdb")]
-    v.push(DbKind::CouchDb);
-    #[cfg(feature = "cockroachdb")]
-    v.push(DbKind::CockroachDb);
-    #[cfg(feature = "timescaledb")]
-    v.push(DbKind::TimescaleDb);
-    #[cfg(feature = "questdb")]
-    v.push(DbKind::QuestDb);
-    #[cfg(feature = "influxdb")]
-    v.push(DbKind::InfluxDb);
-    #[cfg(feature = "spark")]
-    v.push(DbKind::Spark);
-    #[cfg(feature = "h2")]
-    v.push(DbKind::H2);
-    v
+    [
+        (cfg!(feature = "postgres"), DbKind::Postgres),
+        (cfg!(feature = "mysql"), DbKind::MySql),
+        (cfg!(feature = "mssql"), DbKind::MsSql),
+        (cfg!(feature = "sqlite"), DbKind::Sqlite),
+        (cfg!(feature = "mongodb"), DbKind::MongoDb),
+        (cfg!(feature = "oracle"), DbKind::Oracle),
+        (cfg!(feature = "db2"), DbKind::Db2),
+        (cfg!(feature = "duckdb"), DbKind::DuckDb),
+        (cfg!(feature = "cassandra"), DbKind::Cassandra),
+        (cfg!(feature = "couchdb"), DbKind::CouchDb),
+        (cfg!(feature = "cockroachdb"), DbKind::CockroachDb),
+        (cfg!(feature = "timescaledb"), DbKind::TimescaleDb),
+        (cfg!(feature = "questdb"), DbKind::QuestDb),
+        (cfg!(feature = "influxdb"), DbKind::InfluxDb),
+        (cfg!(feature = "spark"), DbKind::Spark),
+        (cfg!(feature = "h2"), DbKind::H2),
+    ]
+    .into_iter()
+    .filter_map(|(compiled, kind)| compiled.then_some(kind))
+    .collect()
 }
 
 /// Open a connection. Must be called inside a Tokio runtime.
@@ -494,7 +481,7 @@ pub fn replace_create(def: &str, dialect: databug_core::Dialect, replacement: &s
 /// Transaction control the app sends as SQL, for engines that do it
 /// through their driver API instead (Oracle has no `BEGIN`; ODBC uses
 /// autocommit).
-#[allow(dead_code)]
+#[cfg(any(feature = "oracle", feature = "db2", feature = "spark"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TxCommand {
     Begin,
@@ -502,7 +489,7 @@ pub(crate) enum TxCommand {
     Rollback,
 }
 
-#[allow(dead_code)]
+#[cfg(any(feature = "oracle", feature = "db2", feature = "spark"))]
 pub(crate) fn tx_command(stmt: &str) -> Option<TxCommand> {
     let s = stmt.trim().trim_end_matches(';').trim().to_ascii_uppercase();
     let words: Vec<&str> = s.split_whitespace().collect();
@@ -515,7 +502,7 @@ pub(crate) fn tx_command(stmt: &str) -> Option<TxCommand> {
 }
 
 /// A text plan (one line per row) for engines without a parsed plan format.
-#[allow(dead_code)]
+#[cfg(any(feature = "oracle", feature = "db2", feature = "spark"))]
 pub(crate) fn plan_text_rows(lines: Vec<String>) -> Plan {
     Plan { root: None, raw: lines.join("\n"), format: "text" }
 }
@@ -529,6 +516,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(any(feature = "oracle", feature = "db2", feature = "spark"))]
     fn transaction_statements() {
         assert_eq!(tx_command("BEGIN"), Some(TxCommand::Begin));
         assert_eq!(tx_command("start transaction;"), Some(TxCommand::Begin));

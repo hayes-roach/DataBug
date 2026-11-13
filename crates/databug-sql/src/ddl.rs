@@ -570,8 +570,8 @@ mod tests {
         let mut e = edits(&t);
         e[1].column.name = "title".into();
         let s = alter_table(Dialect::MsSql, "dbo", &t, "products", &e, &t.indexes, &[]);
-        assert_eq!(s[0].sql, "EXEC sp_rename 'dbo.items.name', 'title', 'COLUMN'");
-        assert_eq!(s[1].sql, "EXEC sp_rename 'dbo.items', 'products'");
+        assert_eq!(s[0].sql, "EXEC sp_rename N'dbo.items.name', N'title', 'COLUMN'");
+        assert_eq!(s[1].sql, "EXEC sp_rename N'dbo.items', N'products'");
     }
 
     #[test]

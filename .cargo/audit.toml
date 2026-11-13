@@ -1,0 +1,11 @@
+# Advisories `cargo audit` reports that we can't fix yet, with why.
+# Remove an entry as soon as the dependency that pulls it in is upgraded.
+[advisories]
+ignore = [
+    # quick-xml 0.30 (unbounded namespace allocation / quadratic attribute
+    # check): only used by accesskit_unix, egui's Linux accessibility layer,
+    # to parse D-Bus introspection data from the local session bus. Fixed by
+    # the planned egui upgrade (0.31 -> 0.35).
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

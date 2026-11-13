@@ -26,12 +26,25 @@ impl ColumnMeta {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// Most cell text one result can hold: offsets are `u32`, so 4 GiB.
+pub const MAX_TEXT: usize = u32::MAX as usize;
+
+#[derive(Debug, Clone)]
 pub struct ResultSet {
     width: usize,
     text: String,
     ends: Vec<u32>,
     nulls: Vec<u64>,
+    /// Text limit (`MAX_TEXT`; smaller in tests).
+    limit: usize,
+    /// Set when text was dropped because the result reached `limit`.
+    full: bool,
+}
+
+impl Default for ResultSet {
+    fn default() -> Self {
+        ResultSet { width: 0, text: String::new(), ends: Vec::new(), nulls: Vec::new(), limit: MAX_TEXT, full: false }
+    }
 }
 
 impl ResultSet {
@@ -40,11 +53,32 @@ impl ResultSet {
     }
 
     pub fn with_capacity(width: usize, rows: usize) -> Self {
+        let cells = rows.saturating_mul(width);
         ResultSet {
             width,
-            text: String::with_capacity(rows * width * 8),
-            ends: Vec::with_capacity(rows * width),
-            nulls: Vec::with_capacity((rows * width).div_ceil(64)),
+            text: String::with_capacity(cells.saturating_mul(8).min(1 << 24)),
+            ends: Vec::with_capacity(cells.min(1 << 22)),
+            nulls: Vec::with_capacity(cells.div_ceil(64).min(1 << 16)),
+            ..Default::default()
+        }
+    }
+
+    /// Whether this result reached its size limit and stopped storing text.
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    /// Offset of the end of the arena; always fits because pushes and
+    /// appends never let the text grow past `limit` (at most `u32::MAX`).
+    fn end_offset(&self) -> u32 {
+        u32::try_from(self.text.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Undo text written past the limit, so offsets can't wrap around.
+    fn enforce_limit(&mut self, before: usize) {
+        if self.text.len() > self.limit {
+            self.text.truncate(before);
+            self.full = true;
         }
     }
 
@@ -70,11 +104,13 @@ impl ResultSet {
         if idx / 64 >= self.nulls.len() {
             self.nulls.push(0);
         }
+        let before = self.text.len();
         match value {
             Some(v) => self.text.push_str(v),
             None => self.nulls[idx / 64] |= 1 << (idx % 64),
         }
-        self.ends.push(self.text.len() as u32);
+        self.enforce_limit(before);
+        self.ends.push(self.end_offset());
     }
 
     /// Append a cell by writing into the arena directly (avoids a temporary String).
@@ -83,8 +119,10 @@ impl ResultSet {
         if idx / 64 >= self.nulls.len() {
             self.nulls.push(0);
         }
+        let before = self.text.len();
         f(&mut self.text);
-        self.ends.push(self.text.len() as u32);
+        self.enforce_limit(before);
+        self.ends.push(self.end_offset());
     }
 
     /// Remove the last row.
@@ -119,15 +157,28 @@ impl ResultSet {
     }
 
     /// Move all rows from `other` (same width) onto the end of `self`.
-    pub fn append(&mut self, other: ResultSet) {
-        if self.ends.is_empty() && self.width == other.width {
-            *self = other;
-            return;
+    /// Returns false, and keeps `self` unchanged, when the combined text
+    /// would pass the size limit; the result is then marked full.
+    pub fn append(&mut self, other: ResultSet) -> bool {
+        if other.full {
+            self.full = true;
         }
-        let base = self.text.len() as u32;
+        if self.ends.is_empty() && self.width == other.width {
+            let (limit, full) = (self.limit, self.full);
+            *self = other;
+            self.limit = limit;
+            self.full |= full;
+            return true;
+        }
+        if self.text.len().saturating_add(other.text.len()) > self.limit {
+            self.full = true;
+            return false;
+        }
+        let base = self.end_offset();
         let start_idx = self.ends.len();
         self.text.push_str(&other.text);
-        self.ends.extend(other.ends.iter().map(|e| e + base));
+        // can't overflow: the combined text was checked against the limit above
+        self.ends.extend(other.ends.iter().map(|e| e.saturating_add(base)));
         let total = self.ends.len();
         self.nulls.resize(total.div_ceil(64), 0);
         for i in 0..other.ends.len() {
@@ -136,6 +187,7 @@ impl ResultSet {
                 self.nulls[j / 64] |= 1 << (j % 64);
             }
         }
+        true
     }
 
     /// Bytes held on the heap by this result.
@@ -194,5 +246,48 @@ mod tests {
         assert_eq!(a.cell(70, 0), None);
         assert_eq!(a.cell(71, 0), Some("yz"));
         assert_eq!(a.cell(1, 0), Some("x"));
+    }
+
+    fn limited(limit: usize) -> ResultSet {
+        ResultSet { width: 1, limit, ..Default::default() }
+    }
+
+    #[test]
+    fn push_stops_at_the_limit_instead_of_wrapping() {
+        let mut r = limited(8);
+        r.push(Some("abcd"));
+        r.push(Some("efgh"));
+        assert!(!r.is_full());
+        r.push(Some("ij"));
+        assert!(r.is_full());
+        // earlier cells stay intact; the overflowing one is stored empty
+        assert_eq!(r.cell(0, 0), Some("abcd"));
+        assert_eq!(r.cell(1, 0), Some("efgh"));
+        assert_eq!(r.cell(2, 0), Some(""));
+        r.push_with(|s| s.push_str("klmnop"));
+        assert_eq!(r.cell(3, 0), Some(""));
+    }
+
+    #[test]
+    fn append_refuses_rows_past_the_limit() {
+        let mut a = limited(10);
+        let mut chunk = ResultSet::new(1);
+        chunk.push(Some("123456"));
+        assert!(a.append(chunk));
+        let mut more = ResultSet::new(1);
+        more.push(Some("7890"));
+        assert!(a.append(more));
+        let mut too_much = ResultSet::new(1);
+        too_much.push(Some("x"));
+        assert!(!a.append(too_much));
+        assert!(a.is_full());
+        assert_eq!(a.rows(), 2);
+        assert_eq!(a.cell(1, 0), Some("7890"));
+    }
+
+    #[test]
+    fn huge_capacity_hints_dont_overflow() {
+        let r = ResultSet::with_capacity(usize::MAX, usize::MAX);
+        assert_eq!(r.rows(), 0);
     }
 }

@@ -220,12 +220,14 @@ impl Dialect {
         }
     }
 
+    /// A string literal for this dialect. SQL Server gets `N'…'` so text
+    /// outside the database's code page (é, 李, emoji) isn't turned into `?`.
     pub fn quote_literal(self, value: &str) -> String {
         let escaped = value.replace('\'', "''");
-        if self == Dialect::MySql {
-            format!("'{}'", escaped.replace('\\', "\\\\"))
-        } else {
-            format!("'{escaped}'")
+        match self {
+            Dialect::MySql => format!("'{}'", escaped.replace('\\', "\\\\")),
+            Dialect::MsSql => format!("N'{escaped}'"),
+            _ => format!("'{escaped}'"),
         }
     }
 
@@ -419,7 +421,7 @@ impl ConnectionConfig {
     }
 
     pub fn needs_password(&self) -> bool {
-        !(self.kind == DbKind::MsSql && !self.ms_auth.needs_password()) && !self.kind.is_file_based()
+        (self.kind != DbKind::MsSql || self.ms_auth.needs_password()) && !self.kind.is_file_based()
     }
 
     pub fn display_target(&self) -> String {
@@ -501,5 +503,23 @@ mod tests {
         // empty new fields stay out of the saved file
         let out = serde_json::to_string(&c).unwrap();
         assert!(!out.contains("oracle_sid") && !out.contains("odbc_driver"));
+    }
+
+    #[test]
+    fn literals_per_dialect() {
+        assert_eq!(Dialect::Postgres.quote_literal("it's"), "'it''s'");
+        assert_eq!(Dialect::Sqlite.quote_literal("a\\b"), "'a\\b'");
+        assert_eq!(Dialect::MySql.quote_literal("it's a\\b"), "'it''s a\\\\b'");
+        assert_eq!(Dialect::MsSql.quote_literal("Zoë 李's"), "N'Zoë 李''s'");
+    }
+
+    #[test]
+    fn identifiers_per_dialect() {
+        assert_eq!(Dialect::Postgres.quote_ident("orders"), "orders");
+        assert_eq!(Dialect::Postgres.quote_ident("Orders"), "\"Orders\"");
+        assert_eq!(Dialect::Postgres.quote_ident("a\"b"), "\"a\"\"b\"");
+        assert_eq!(Dialect::MySql.quote_ident("a`b"), "`a``b`");
+        assert_eq!(Dialect::MsSql.quote_ident("a]b c"), "[a]]b c]");
+        assert_eq!(Dialect::Sqlite.quote_ident("1st"), "\"1st\"");
     }
 }

@@ -26,6 +26,9 @@ pub struct CassConn {
 /// request, so one entry point works for a client like DataBug.
 struct ThroughEntryPoint(SocketAddr);
 
+// The signature must match scylla's `#[async_trait]` trait exactly, which
+// writes the peer type without a lifetime.
+#[allow(elided_lifetimes_in_paths)]
 #[async_trait]
 impl AddressTranslator for ThroughEntryPoint {
     async fn translate_address(&self, _peer: &UntranslatedPeer) -> Result<SocketAddr, TranslationError> {
@@ -67,7 +70,7 @@ impl CassConn {
     }
 }
 
-pub(crate) fn type_name(t: &ColumnType) -> String {
+pub(crate) fn type_name(t: &ColumnType<'_>) -> String {
     match t {
         ColumnType::Native(n) => match n {
             NativeType::BigInt => "bigint".into(),

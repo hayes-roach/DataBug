@@ -21,10 +21,14 @@ struct Inner {
 // SAFETY: DuckDB connections may be used from any thread when calls are
 // serialized (`lock`); `duckdb_interrupt` may be called concurrently.
 unsafe impl Send for Inner {}
+// SAFETY: shared access only issues DuckDB calls under `lock`, except
+// `duckdb_interrupt`, which DuckDB allows concurrently.
 unsafe impl Sync for Inner {}
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        // SAFETY: `conn` and `db` were opened by `connect` and are closed exactly
+        // once, here; nothing else can use them once `Inner` is being dropped.
         unsafe {
             (self.api.disconnect)(&mut self.conn);
             (self.api.close)(&mut self.db);
@@ -40,25 +44,34 @@ struct QueryResult<'a> {
 
 impl Drop for QueryResult<'_> {
     fn drop(&mut self) {
+        // SAFETY: `raw` was filled by `duckdb_query` (or zeroed, which DuckDB
+        // accepts) and is destroyed once, when the result is dropped.
         unsafe { (self.api.destroy_result)(&mut self.raw) }
     }
 }
 
 impl QueryResult<'_> {
     fn columns(&mut self) -> usize {
+        // SAFETY: `raw` is a live result owned by `self`.
         unsafe { (self.api.column_count)(&mut self.raw) as usize }
     }
     fn name(&mut self, c: usize) -> String {
+        // SAFETY: `raw` is live; DuckDB returns NULL for an out-of-range column,
+        // which `cstr` handles, and the name stays valid while `raw` lives.
         cstr(unsafe { (self.api.column_name)(&mut self.raw, c as u64) })
     }
     fn rows(&mut self) -> usize {
+        // SAFETY: `raw` is a live result owned by `self`.
         unsafe { (self.api.row_count)(&mut self.raw) as usize }
     }
     fn changed(&mut self) -> u64 {
+        // SAFETY: `raw` is a live result owned by `self`.
         unsafe { (self.api.rows_changed)(&mut self.raw) }
     }
     /// The value cast to text, or `None` for NULL.
     fn value(&mut self, c: usize, r: usize) -> Option<String> {
+        // SAFETY: `raw` is live; `value_varchar` returns a newly allocated C
+        // string (or NULL) that we copy and then release with `duckdb_free`.
         unsafe {
             if (self.api.value_is_null)(&mut self.raw, c as u64, r as u64) {
                 return None;
@@ -78,8 +91,13 @@ impl Inner {
     fn query(&self, sql: &str) -> anyhow::Result<QueryResult<'_>> {
         let c = CString::new(sql).map_err(|_| anyhow::anyhow!("The statement contains a NUL character"))?;
         let mut res = QueryResult { api: &self.api, raw: RawResult::zeroed() };
+        // SAFETY: `conn` is open for the life of `Inner`, `c` is NUL-terminated and
+        // outlives the call, and `res.raw` is a zeroed result for DuckDB to fill.
+        // Callers hold `lock` (see `DuckConn::blocking`), so calls don't overlap.
         let state = unsafe { (self.api.query)(self.conn, c.as_ptr(), &mut res.raw) };
         if state != 0 {
+            // SAFETY: `res.raw` was just filled by `duckdb_query`; the message is
+            // owned by the result and copied before it's destroyed.
             let msg = cstr(unsafe { (self.api.result_error)(&mut res.raw) });
             anyhow::bail!("{}", if msg.is_empty() { "DuckDB reported an error".to_string() } else { msg });
         }
@@ -100,6 +118,10 @@ impl DuckConn {
                 anyhow::bail!("Choose a database file, or enter :memory: for a scratch database");
             }
             let api = api()?;
+            // SAFETY: every handle passed to DuckDB is either null (to be filled)
+            // or one it just returned; `cpath` and the config strings are
+            // NUL-terminated and outlive the calls; the config is destroyed after
+            // opening and `db` is closed if connecting fails.
             unsafe {
                 let mut config: Handle = std::ptr::null_mut();
                 if (api.create_config)(&mut config) != 0 {
@@ -168,7 +190,7 @@ pub(crate) fn wrap(stmt: &str, limit: usize) -> String {
     format!("SELECT CAST(COLUMNS(*) AS VARCHAR) FROM (\n{stmt}\n){limit}")
 }
 
-fn send_rows(res: &mut QueryResult, names: Vec<String>, types: Vec<String>, limit: usize, sink: &Sink) {
+fn send_rows(res: &mut QueryResult<'_>, names: Vec<String>, types: Vec<String>, limit: usize, sink: &Sink) {
     let width = names.len();
     let cols = names.into_iter().enumerate().map(|(i, n)| ColumnMeta::new(n, types.get(i).cloned().unwrap_or_default())).collect();
     let mut b = Batcher::new(sink, cols, limit);
@@ -238,6 +260,8 @@ impl DbConnection for DuckConn {
 
     fn canceller(&self) -> Option<Canceller> {
         let inner = self.inner.clone();
+        // SAFETY: `duckdb_interrupt` is documented as safe to call from another
+        // thread while a query runs; the `Arc` keeps `conn` open meanwhile.
         Some(Arc::new(move || unsafe { (inner.api.interrupt)(inner.conn) }))
     }
 

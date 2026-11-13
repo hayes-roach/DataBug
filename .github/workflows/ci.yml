@@ -14,6 +14,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # clippy with warnings as errors (default build and every optional driver),
+  # and known vulnerabilities in dependencies. Formatting isn't checked: the
+  # code deliberately doesn't follow rustfmt's line width (see CONTRIBUTING).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Headers for the optional drivers (Kerberos, ODBC)
+        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev unixodbc-dev
+      - name: clippy (default build)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy (all drivers)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit
+        run: cargo audit
+
   linux:
     runs-on: ubuntu-latest
     services:

@@ -187,7 +187,10 @@ impl ResultView {
     }
 
     pub fn append(&mut self, rows: ResultSet) {
-        self.data.append(rows);
+        // past the 4 GiB a result can hold, stop storing rows and say so
+        if !self.data.append(rows) || self.data.is_full() {
+            self.truncated = true;
+        }
         self.order_dirty = true;
     }
 
@@ -322,7 +325,11 @@ impl ResultView {
             }
             ui.label(RichText::new(summary).color(p.muted));
             if self.truncated {
-                ui.label(RichText::new("limit reached").color(p.warning)).on_hover_text("DataBug stopped fetching at the row limit. Change it in settings, or add a LIMIT/WHERE.");
+                if self.data.is_full() {
+                    ui.label(RichText::new("result too large").color(p.warning)).on_hover_text("This result reached the 4 GB a single result can hold, so DataBug stopped storing rows. Select fewer or narrower columns, or add a LIMIT/WHERE.");
+                } else {
+                    ui.label(RichText::new("limit reached").color(p.warning)).on_hover_text("DataBug stopped fetching at the row limit. Change it in settings, or add a LIMIT/WHERE.");
+                }
             }
             let filter = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter rows…").desired_width(180.0));
             if filter.changed() {
@@ -1011,7 +1018,7 @@ pub fn group(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -1130,6 +1137,19 @@ mod tests {
         g.edits_applied();
         assert_eq!(g.row_count(), 2);
         assert_eq!(g.data.cell(0, 1), Some("bb"));
+    }
+
+    #[test]
+    fn sql_server_edits_keep_unicode() {
+        let cols = vec![ColumnMeta::new("id", "int"), ColumnMeta::new("name", "nvarchar")];
+        let mut g = ResultView::new("r".into(), cols, Dialect::MsSql, 1);
+        let mut rs = ResultSet::new(2);
+        rs.push(Some("7"));
+        rs.push(Some("old"));
+        g.append(rs);
+        g.edit_target = Some(EditTarget { qualified: "dbo.t".into(), pk_cols: vec![0], numeric: vec![true, false] });
+        g.set_cell(0, 1, Some("Zoë 李".into()));
+        assert_eq!(g.update_statements().unwrap(), vec!["UPDATE dbo.t SET name = N'Zoë 李' WHERE id = 7"]);
     }
 
     #[test]

@@ -60,8 +60,7 @@ pub fn table_refs(src: &str, dialect: Dialect) -> Vec<TableRef> {
         if toks.get(i).map(|t| t.is_kw(src, "RECURSIVE")).unwrap_or(false) {
             i += 1;
         }
-        loop {
-            let Some(name) = toks.get(i).filter(|t| t.is_name()) else { break };
+        while let Some(name) = toks.get(i).filter(|t| t.is_name()) {
             refs.push(TableRef {
                 schema: None,
                 name: unquote(name.text(src)),

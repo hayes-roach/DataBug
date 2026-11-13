@@ -54,7 +54,7 @@ pub(crate) fn value_text(v: &Value, out: &mut String) {
             }
         }
         Value::Time(neg, d, h, m, s, _us) => {
-            let _ = write!(out, "{}{:02}:{m:02}:{s:02}", if *neg { "-" } else { "" }, *d as u32 * 24 + *h as u32);
+            let _ = write!(out, "{}{:02}:{m:02}:{s:02}", if *neg { "-" } else { "" }, *d * 24 + u32::from(*h));
         }
     }
 }

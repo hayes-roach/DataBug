@@ -21,12 +21,30 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 async-trait = "0.1"
 futures-util = "0.3"
 
+# Lint levels for every crate (each crate opts in with `[lints] workspace = true`).
+# CI runs clippy with warnings as errors, so these must stay clean.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 4
 strip = true
 panic = "abort"
+# Overflowing arithmetic stops with an error instead of silently wrapping
+# (which could corrupt data or cause a crash later). Costs very little here.
+overflow-checks = true
 
 [profile.dev.package."*"]
 opt-level = 1

@@ -29,7 +29,9 @@ fn sink() -> (Sink, Arc<Mutex<Collected>>) {
                 c.types = cols.iter().map(|c| c.type_name.clone()).collect();
                 c.rows = ResultSet::new(cols.len());
             }
-            QueryEvent::Rows(r) => c.rows.append(r),
+            QueryEvent::Rows(r) => {
+                c.rows.append(r);
+            }
             QueryEvent::Truncated => c.truncated = true,
             QueryEvent::Affected(n) => c.affected = Some(n),
             QueryEvent::Message(m) => c.messages.push(m),

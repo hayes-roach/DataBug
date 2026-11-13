@@ -1182,7 +1182,6 @@ fn schema_menu(resp: egui::Response, cfg: &ConnectionConfig, schema: &str, actio
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, cfg: &ConnectionConfig, generation: u64, s: &SchemaInfo, depth: usize, filter: &str, actions: &mut Vec<Action>) {
     let filtering = !filter.is_empty();
     for kind in ObjectKind::DISPLAY_ORDER {

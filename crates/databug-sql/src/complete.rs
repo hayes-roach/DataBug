@@ -312,7 +312,7 @@ pub fn complete(src: &str, cursor: usize, catalog: Option<&Catalog>, dialect: Di
     finish(b, stmt_start + word_start..stmt_start + word_end, prefix)
 }
 
-fn add_columns(b: &mut Builder, t: &TableInfo, qualifier: Option<&str>, bonus: i32, quote: &dyn Fn(&str) -> String) {
+fn add_columns(b: &mut Builder<'_>, t: &TableInfo, qualifier: Option<&str>, bonus: i32, quote: &dyn Fn(&str) -> String) {
     for c in &t.columns {
         let detail = format!("{}{} · {}", c.data_type, if c.primary_key { " PK" } else { "" }, t.name);
         let insert = match qualifier {
@@ -398,7 +398,7 @@ fn join_conditions(refs: &[TableRef], cat: &Catalog, dialect: Dialect) -> Vec<St
     out
 }
 
-fn finish(mut b: Builder, replace: std::ops::Range<usize>, prefix: &str) -> Completion {
+fn finish(mut b: Builder<'_>, replace: std::ops::Range<usize>, prefix: &str) -> Completion {
     b.items.sort_by(|a, c| c.score.cmp(&a.score).then(a.kind.cmp(&c.kind)).then(a.label.len().cmp(&c.label.len())).then(a.label.cmp(&c.label)));
     b.items.truncate(200);
     // nothing useful to add if the only item is exactly what's typed

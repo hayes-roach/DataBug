@@ -53,11 +53,9 @@ fn format_one(stmt: &str, dialect: Dialect, out: &mut String) {
         let breaks = is_kw && BREAK_BEFORE.contains(&word) && !joins_prev && !(word == "SET" && clause != "UPDATE");
         let base = depth;
 
-        if breaks && out.len() > 0 && !line_start {
+        if breaks && !out.is_empty() && !line_start {
             indent(out, base);
-        } else if is_kw && (word == "AND" || word == "OR") && matches!(clause.as_str(), "WHERE" | "HAVING" | "ON") {
-            indent(out, base + 1);
-        } else if is_kw && word == "ON" {
+        } else if is_kw && (((word == "AND" || word == "OR") && matches!(clause.as_str(), "WHERE" | "HAVING" | "ON")) || word == "ON") {
             indent(out, base + 1);
         } else if !line_start {
             let no_space_before = matches!(raw, "," | ")" | "." | ";") || prev_text == "." || prev_text == "(" || (raw == "(" && matches!(prev_kind, TokKind::Ident | TokKind::QuotedIdent));

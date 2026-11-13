@@ -163,11 +163,11 @@ impl Logos {
             }
         }
         for (kind, name, bytes) in BUILT_IN {
-            if !uris.contains_key(&kind) {
+            uris.entry(kind).or_insert_with(|| {
                 let uri = format!("bytes://databug/logos/{name}");
                 ctx.include_bytes(uri.clone(), bytes);
-                uris.insert(kind, uri);
-            }
+                uri
+            });
         }
         Logos { uris }
     }

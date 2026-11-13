@@ -86,6 +86,8 @@ pub struct Store {
     /// Passwords for this session when the keychain isn't available or the
     /// user chose not to save them.
     memory_secrets: HashMap<String, String>,
+    /// The latest error saving something to disk, until the app shows it.
+    error: std::cell::RefCell<Option<String>>,
 }
 
 impl Store {
@@ -100,11 +102,15 @@ impl Store {
                 None => (PathBuf::from(".databug/config"), PathBuf::from(".databug/data")),
             },
         };
-        let _ = std::fs::create_dir_all(&config_dir);
-        let _ = std::fs::create_dir_all(data_dir.join("catalogs"));
         // engine libraries downloaded on demand (DuckDB)
         databug_drivers::set_runtime_dir(data_dir.join("runtimes"));
-        Store { config_dir, data_dir, memory_secrets: HashMap::new() }
+        let store = Store { config_dir: config_dir.clone(), data_dir: data_dir.clone(), memory_secrets: HashMap::new(), error: Default::default() };
+        for dir in [&config_dir, &data_dir.join("catalogs")] {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                store.report(&format!("Couldn't create {}", dir.display()), &e);
+            }
+        }
+        store
     }
 
     pub fn data_dir(&self) -> &PathBuf {
@@ -116,12 +122,27 @@ impl Store {
         serde_json::from_str(&text).ok()
     }
 
+    /// Remember a failed save so the app can tell the user.
+    fn report(&self, what: &str, e: &dyn std::fmt::Display) {
+        *self.error.borrow_mut() = Some(format!("{what}: {e}"));
+    }
+
+    /// The latest save error, if any (cleared once taken).
+    pub fn take_error(&self) -> Option<String> {
+        self.error.borrow_mut().take()
+    }
+
+    /// Write JSON atomically: to a temporary file, then rename over the old one.
     fn write_json<T: Serialize>(&self, path: PathBuf, value: &T) {
-        if let Ok(text) = serde_json::to_string_pretty(value) {
-            let tmp = path.with_extension("tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(tmp, path);
-            }
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = match serde_json::to_string_pretty(value) {
+            Ok(t) => t,
+            Err(e) => return self.report(&format!("Couldn't save {name}"), &e),
+        };
+        let tmp = path.with_extension("tmp");
+        if let Err(e) = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &path)) {
+            let _ = std::fs::remove_file(&tmp);
+            self.report(&format!("Couldn't save {name} (your change is only in memory)"), &e);
         }
     }
 
@@ -155,13 +176,22 @@ impl Store {
 
     pub fn save_catalog(&self, id: &str, cat: &Catalog) {
         let path = self.data_dir.join("catalogs").join(format!("{id}.json"));
-        if let Ok(text) = serde_json::to_string(cat) {
-            let _ = std::fs::write(path, text);
+        match serde_json::to_string(cat) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    self.report("Couldn't save the schema cache", &e);
+                }
+            }
+            Err(e) => self.report("Couldn't save the schema cache", &e),
         }
     }
 
     pub fn delete_catalog(&self, id: &str) {
-        let _ = std::fs::remove_file(self.data_dir.join("catalogs").join(format!("{id}.json")));
+        match std::fs::remove_file(self.data_dir.join("catalogs").join(format!("{id}.json"))) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => self.report("Couldn't delete the schema cache", &e),
+        }
     }
 
     pub fn load_history(&self, max: usize) -> Vec<HistoryEntry> {
@@ -173,11 +203,15 @@ impl Store {
         v
     }
 
+    /// Add a statement to the history file, with passwords masked.
     pub fn append_history(&self, e: &HistoryEntry) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.data_dir.join("history.jsonl")) {
-            if let Ok(line) = serde_json::to_string(e) {
-                let _ = writeln!(f, "{line}");
-            }
+        let e = HistoryEntry { sql: redact_secrets(&e.sql), ..e.clone() };
+        let res = serde_json::to_string(&e).map_err(std::io::Error::other).and_then(|line| {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.data_dir.join("history.jsonl"))?;
+            writeln!(f, "{line}")
+        });
+        if let Err(err) = res {
+            self.report("Couldn't save query history", &err);
         }
     }
 
@@ -221,4 +255,63 @@ fn yes() -> bool {
 
 fn one() -> f32 {
     1.0
+}
+
+/// Mask passwords and secrets inside SQL before it's written to disk:
+/// `PASSWORD 'x'`, `PASSWORD = 'x'`, `IDENTIFIED BY x`, `SECRET = 'x'`,
+/// and MongoDB's `pwd: "x"`.
+pub fn redact_secrets(sql: &str) -> String {
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    let pats = PATTERNS.get_or_init(|| {
+        let quoted = r#"'(?:[^']|'')*'|"(?:[^"]|"")*"|N'(?:[^']|'')*'"#;
+        [
+            format!(r"(?i)(\b(?:PASSWORD|SECRET)\s*(?:=|\s)\s*)(?:{quoted})"),
+            format!(r"(?i)(\bIDENTIFIED\s+(?:WITH\s+\S+\s+)?BY\s+(?:PASSWORD\s+)?)(?:{quoted}|[^\s;]+)"),
+            format!(r#"(?i)(\bpwd\s*:\s*)(?:{quoted})"#),
+        ]
+        .iter()
+        .filter_map(|p| regex::Regex::new(p).ok())
+        .collect()
+    });
+    let mut out = sql.to_string();
+    for re in pats {
+        out = re.replace_all(&out, "${1}'***'").into_owned();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passwords_are_masked_in_history() {
+        assert_eq!(redact_secrets("ALTER USER app WITH PASSWORD 'hunter2';"), "ALTER USER app WITH PASSWORD '***';");
+        assert_eq!(redact_secrets("CREATE LOGIN app WITH PASSWORD = N'p''w', CHECK_POLICY = OFF"), "CREATE LOGIN app WITH PASSWORD = '***', CHECK_POLICY = OFF");
+        assert_eq!(redact_secrets("create user 'a'@'%' identified by 'pw1'"), "create user 'a'@'%' identified by '***'");
+        assert_eq!(redact_secrets("ALTER USER a IDENTIFIED WITH caching_sha2_password BY 'x'"), "ALTER USER a IDENTIFIED WITH caching_sha2_password BY '***'");
+        assert_eq!(redact_secrets("CREATE USER scott IDENTIFIED BY tiger"), "CREATE USER scott IDENTIFIED BY '***'");
+        assert_eq!(redact_secrets("CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'abc'"), "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = '***'");
+        assert_eq!(redact_secrets(r#"db.createUser({user: "a", pwd: "s3cret", roles: []})"#), r#"db.createUser({user: "a", pwd: '***', roles: []})"#);
+        // ordinary SQL is untouched
+        let q = "SELECT password_hash FROM users WHERE name = 'password'";
+        assert_eq!(redact_secrets(q), q);
+    }
+
+    #[test]
+    fn failed_saves_are_reported() {
+        let dir = std::env::temp_dir().join(format!("databug-store-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // a file where the config directory should be makes every save fail
+        let blocker = dir.join("config");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let store = Store { config_dir: blocker, data_dir: dir.join("data"), memory_secrets: HashMap::new(), error: Default::default() };
+        store.save_settings(&Settings::default());
+        let err = store.take_error().expect("the failed save is reported");
+        assert!(err.contains("settings.json"), "{err}");
+        assert!(store.take_error().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

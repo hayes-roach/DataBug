@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-18
+
 ### Changed
 
 - Oracle, IBM Db2 and Spark SQL are now in every download instead of being opt-in build features, so they no longer show "not in this build". The ODBC driver manager is built in (unixODBC compiled in on macOS and Linux, Windows' own ODBC), so DataBug still starts without any vendor software; connecting needs Oracle Instant Client or the engine's ODBC driver, as before

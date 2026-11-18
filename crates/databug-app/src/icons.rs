@@ -172,12 +172,6 @@ impl Logos {
         Logos { uris }
     }
 
-    /// Draw the engine's logo (or badge) in a `size`×`size` square.
-    pub fn show(&self, ui: &mut egui::Ui, kind: DbKind, size: f32) {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-        self.paint(ui, rect, kind);
-    }
-
     /// The logo faded out, for engines this build can't connect to.
     pub fn paint_dimmed(&self, ui: &egui::Ui, rect: Rect, kind: DbKind) {
         match self.uris.get(&kind) {

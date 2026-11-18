@@ -2631,6 +2631,7 @@ impl DataBugApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
         }
+        use crate::toolbar::{self as tb, Icon, Kind};
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             // logo: a small bug with a split shell
@@ -2645,22 +2646,14 @@ impl DataBugApp {
             ui.painter().rect_filled(egui::Rect::from_center_size(c, egui::vec2(11.0, 13.0)), CornerRadius::same(5), p.accent);
             ui.painter().line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], Stroke::new(1.2_f32, p.canvas));
             ui.label(RichText::new("DataBug").font(bold(14.0)));
-            ui.add_space(12.0);
 
             let active = self.tabs.get(self.active).filter(|t| t.tool.is_none());
             let running = active.map(|t| t.running.is_some()).unwrap_or(false);
             if let Some(t) = active {
                 if let Some(cfg) = self.conn(&t.conn_id) {
-                    egui::Frame::new().fill(p.island).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(8, 3)).show(ui, |ui| {
-                        self.logos.show(ui, cfg.kind, 15.0);
-                        if self.liveness(ConnectionConfig::base_id(&cfg.id)).0 {
-                            crate::grid::painted_dot(ui, connection_color(cfg.color), 4.0);
-                        } else {
-                            crate::grid::painted_ring(ui, connection_color(cfg.color), 4.0);
-                        }
-                        ui.label(RichText::new(&cfg.name).color(p.text));
-                        ui.label(RichText::new(cfg.kind.label()).size(11.5).color(p.muted));
-                    });
+                    tb::divider(ui, p);
+                    let live = self.liveness(ConnectionConfig::base_id(&cfg.id)).0;
+                    tb::connection_chip(ui, p, &self.logos, cfg, live);
                     // the console's database and schema, switchable
                     let entry = self.catalogs.get(&t.conn_id);
                     let schemas: Vec<String> = entry.map(|e| e.catalog.schemas.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
@@ -2682,14 +2675,14 @@ impl DataBugApp {
                             _ => current.clone(),
                         };
                         let label = if label.is_empty() { "schema".to_string() } else { label };
-                        let r = ui.menu_button(RichText::new(format!("{label}  ⏷")).size(12.5).color(p.text), |ui| {
-                            ui.set_min_width(200.0);
+                        let r = tb::button(ui, p, Kind::Normal, Some(Icon::Database), &label, true, true).on_hover_text("Database and schema this console uses for unqualified names, completion and go to definition");
+                        tb::dropdown(ui, &r, 220.0, |ui| {
                             if show_db {
                                 ui.label(RichText::new("Database").size(11.5).color(p.muted));
                                 for (id, db) in &dbs {
                                     if ui.selectable_label(*id == t.conn_id, db).clicked() {
                                         pick_db = Some(id.clone());
-                                        ui.close_menu();
+                                        tb::close(ui);
                                     }
                                 }
                                 ui.separator();
@@ -2700,7 +2693,7 @@ impl DataBugApp {
                                     let text = if *sname == default { format!("{sname}   (default)") } else { sname.clone() };
                                     if ui.selectable_label(sname.eq_ignore_ascii_case(&current), text).clicked() {
                                         pick_schema = Some(sname.clone());
-                                        ui.close_menu();
+                                        tb::close(ui);
                                     }
                                 }
                             });
@@ -2708,105 +2701,87 @@ impl DataBugApp {
                                 ui.label(RichText::new("Loading the schema…").size(12.0).color(p.faint));
                             }
                         });
-                        r.response.on_hover_text("Database and schema this console uses for unqualified names, completion and go to definition");
                     }
                     // the connection's consoles, while it's signed in
                     if self.liveness(&base).0 {
                         console_pick = self.consoles_menu(ui, p, &base);
                     }
                     if cfg.production {
-                        egui::Frame::new().fill(p.danger.gamma_multiply(0.2)).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(7, 3)).show(ui, |ui| {
-                            ui.label(RichText::new("PRODUCTION").size(11.0).font(bold(11.0)).color(p.danger));
-                        });
+                        tb::badge(ui, p.danger, "PRODUCTION").on_hover_text("Changes ask for confirmation on this connection");
                     }
                     if cfg.read_only {
-                        egui::Frame::new().fill(p.raised).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(7, 3)).show(ui, |ui| {
-                            ui.label(RichText::new("read-only").size(11.0).color(p.muted));
-                        });
+                        tb::badge(ui, p.muted, "Read-only").on_hover_text("Statements that change data or schema are blocked");
                     }
                 }
-                ui.add_space(8.0);
-                let run_btn = egui::Button::new(RichText::new("▶  Run").color(if running { p.faint } else { p.success })).min_size(egui::vec2(0.0, 26.0));
+                tb::divider(ui, p);
                 // Run: the selection, or everything when nothing is selected
-                if ui.add_enabled(!running, run_btn).on_hover_text("Run the selected code, or the whole console when nothing is selected  (Ctrl/⌘ + Shift + Enter)\nCtrl/⌘ + Enter runs only the statement at the cursor").clicked() {
+                let run_tip = "Run the selected code, or the whole console when nothing is selected  (Ctrl/⌘ + Shift + Enter)\nCtrl/⌘ + Enter runs only the statement at the cursor";
+                if tb::button(ui, p, Kind::Primary, Some(Icon::Play), "Run", false, !running).on_hover_text(run_tip).clicked() {
                     actions.push(2);
                 }
-                ui.add_enabled_ui(!running, |ui| {
-                    ui.menu_button("Explain", |ui| {
-                        if ui.button("Explain plan").on_hover_text("Ctrl/⌘ + Shift + E").clicked() {
-                            actions.push(3);
-                            ui.close_menu();
-                        }
-                        if ui.button("Explain analyze").on_hover_text("Runs the statement; changes are rolled back").clicked() {
-                            actions.push(4);
-                            ui.close_menu();
-                        }
-                    });
+                let ex = tb::button(ui, p, Kind::Normal, Some(Icon::Plan), "Explain", true, !running);
+                tb::dropdown(ui, &ex, 200.0, |ui| {
+                    if ui.button("Explain plan").on_hover_text("Ctrl/⌘ + Shift + E").clicked() {
+                        actions.push(3);
+                        tb::close(ui);
+                    }
+                    if ui.button("Explain analyze").on_hover_text("Runs the statement; changes are rolled back").clicked() {
+                        actions.push(4);
+                        tb::close(ui);
+                    }
                 });
-                let stop = egui::Button::new(RichText::new("■  Cancel").color(if running { p.danger } else { p.faint })).min_size(egui::vec2(0.0, 26.0));
-                if ui.add_enabled(running, stop).on_hover_text("Cancel on the server; press again to drop the connection").clicked() {
+                if tb::button(ui, p, if running { Kind::Danger } else { Kind::Normal }, Some(Icon::Stop), "Cancel", false, running).on_hover_text("Cancel on the server; press again to drop the connection").clicked() {
                     actions.push(5);
                 }
-                ui.separator();
+                tb::divider(ui, p);
                 let t = &self.tabs[self.active];
                 let manual = t.manual_tx;
                 let in_tx = t.in_tx;
-                ui.label(RichText::new("Tx").color(p.muted));
-                if ui.selectable_label(!manual, "Auto").on_hover_text("Each statement commits on its own").clicked() {
-                    actions.push(6);
-                }
-                if ui.selectable_label(manual, "Manual").on_hover_text("Changes stay in an open transaction until you commit").clicked() {
-                    actions.push(7);
+                ui.label(RichText::new("Transactions").size(12.0).color(p.muted));
+                match tb::segmented(ui, p, &["Auto", "Manual"], usize::from(manual), &["Each statement commits on its own", "Changes stay in an open transaction until you commit"]) {
+                    Some(0) => actions.push(6),
+                    Some(_) => actions.push(7),
+                    None => {}
                 }
                 if in_tx {
-                    egui::Frame::new().fill(p.warning.gamma_multiply(0.2)).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(7, 3)).show(ui, |ui| {
-                        ui.label(RichText::new("transaction open").size(11.5).color(p.warning));
-                    });
-                    if ui.button(RichText::new("Commit").color(p.success)).clicked() {
+                    tb::badge(ui, p.warning, "Transaction open");
+                    if tb::button(ui, p, Kind::Success, Some(Icon::Check), "Commit", false, true).clicked() {
                         actions.push(8);
                     }
-                    if ui.button("Rollback").clicked() {
+                    if tb::button(ui, p, Kind::Normal, Some(Icon::Undo), "Rollback", false, true).clicked() {
                         actions.push(9);
                     }
                 }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
                 if custom_frame {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     window_buttons(ui, p, ctx);
                     ui.add_space(6.0);
-                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.spacing_mut().item_spacing.x = 4.0;
                 }
-                if let Some(r) = self.updates.available.as_ref() {
-                    let text = RichText::new(format!("Update to {}", r.version_string())).size(12.5).color(Color32::WHITE);
-                    let b = egui::Button::new(text).fill(p.accent).corner_radius(CornerRadius::same(13)).min_size(egui::vec2(0.0, 26.0));
-                    if ui.add(b).on_hover_text("A new version of DataBug is available").clicked() {
-                        self.updates.window = true;
-                    }
-                }
-                let icon = if self.settings.theme.is_dark() { "🌙" } else { "☀" };
-                ui.menu_button(icon, |ui| {
-                    ui.set_min_width(180.0);
+                let dark = self.settings.theme.is_dark();
+                let theme_btn = tb::button(ui, p, Kind::Ghost, Some(if dark { Icon::Moon } else { Icon::Sun }), "", false, true).on_hover_text("Theme and colors");
+                tb::dropdown(ui, &theme_btn, 180.0, |ui| {
                     ui.label(RichText::new("Theme").font(bold(13.0)));
                     for k in ThemeKind::ALL {
                         if ui.selectable_label(self.settings.theme == k, k.label()).clicked() {
                             self.settings.theme = k;
                             self.store.save_settings(&self.settings);
-                            ui.close_menu();
+                            tb::close(ui);
                         }
                     }
                     ui.separator();
                     if ui.button("Customize colors…").clicked() {
                         self.theme_editor = true;
-                        ui.close_menu();
+                        tb::close(ui);
                     }
-                })
-                .response
-                .on_hover_text("Theme and colors");
+                });
                 let mut check_now = false;
-                ui.menu_button("⚙", |ui| {
-                    ui.set_min_width(240.0);
+                let gear = tb::button(ui, p, Kind::Ghost, Some(Icon::Gear), "", false, true).on_hover_text("Settings");
+                tb::dropdown(ui, &gear, 260.0, |ui| {
                     ui.label(RichText::new("Settings").font(bold(13.0)));
                     ui.add_space(4.0);
                     let mut changed = false;
@@ -2838,7 +2813,7 @@ impl DataBugApp {
                         ui.label("Editor font size");
                         changed |= ui.add(egui::DragValue::new(&mut self.settings.code_font_size).range(10.0..=22.0).speed(0.25)).changed();
                     });
-                    changed |= ui.checkbox(&mut self.settings.auto_complete, "Show completion while typing").changed();
+                    changed |= crate::theme::checkbox(ui, p, &mut self.settings.auto_complete, "Show completion while typing").changed();
                     ui.separator();
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("DataBug {}", crate::update::current_version())).color(p.muted));
@@ -2853,7 +2828,7 @@ impl DataBugApp {
                             crate::update::open_page(&format!("https://github.com/{}/blob/main/LICENSE", crate::update::REPO));
                         }
                     });
-                    changed |= ui.checkbox(&mut self.settings.check_updates, "Check for updates automatically").on_hover_text("Asks GitHub for the latest release at startup and once a day. Nothing installs without your click.").changed();
+                    changed |= crate::theme::checkbox(ui, p, &mut self.settings.check_updates, "Check for updates automatically").on_hover_text("Asks GitHub for the latest release at startup and once a day. Nothing installs without your click.").changed();
                     if changed {
                         self.store.save_settings(&self.settings);
                     }
@@ -2862,8 +2837,14 @@ impl DataBugApp {
                     self.settings.skipped_version = None;
                     self.check_updates(true);
                 }
-                if !self.tabs.is_empty() && ui.button("Format").on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
+                if !self.tabs.is_empty() && tb::button(ui, p, Kind::Normal, Some(Icon::Format), "Format", false, true).on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
                     actions.push(10);
+                }
+                if let Some(r) = self.updates.available.as_ref() {
+                    let label = format!("Update to {}", r.version_string());
+                    if tb::button(ui, p, Kind::Accent, None, &label, false, true).on_hover_text("A new version of DataBug is available").clicked() {
+                        self.updates.window = true;
+                    }
                 }
             });
         });
@@ -3003,27 +2984,7 @@ impl DataBugApp {
         let consoles = self.consoles_for(base);
         let open: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
         let popup_id = ui.make_persistent_id(("consoles", base));
-        let showing = ui.memory(|m| m.is_popup_open(popup_id));
-        let label = consoles.len().to_string();
-        let label_g = ui.painter().layout_no_wrap(label.clone(), FontId::proportional(12.0), p.text);
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0 + label_g.size().x, 26.0), Sense::click());
-        let w = &ui.visuals().widgets;
-        let fill = if resp.hovered() || showing { w.hovered.weak_bg_fill } else { w.inactive.weak_bg_fill };
-        ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
-        // two stacked sheets
-        let color = if resp.hovered() || showing { p.text } else { p.muted };
-        let st = Stroke::new(1.3_f32, color);
-        let ic = egui::pos2(rect.left() + 15.0, rect.center().y);
-        let back = egui::Rect::from_center_size(ic + egui::vec2(2.0, -2.0), egui::vec2(10.0, 12.0));
-        let front = egui::Rect::from_center_size(ic + egui::vec2(-1.5, 1.5), egui::vec2(10.0, 12.0));
-        ui.painter().line_segment([back.left_top(), back.right_top()], st);
-        ui.painter().line_segment([back.right_top(), back.right_bottom()], st);
-        ui.painter().rect_filled(front, CornerRadius::same(2), fill);
-        ui.painter().rect_stroke(front, CornerRadius::same(2), st, egui::StrokeKind::Middle);
-        for dy in [-2.0_f32, 1.0] {
-            ui.painter().line_segment([egui::pos2(front.left() + 2.5, front.center().y + dy), egui::pos2(front.right() - 2.5, front.center().y + dy)], Stroke::new(1.0_f32, color));
-        }
-        ui.painter().galley(egui::pos2(rect.left() + 27.0, rect.center().y - label_g.size().y / 2.0), label_g, color);
+        let resp = crate::toolbar::button(ui, p, crate::toolbar::Kind::Normal, Some(crate::toolbar::Icon::Consoles), &consoles.len().to_string(), false, true);
         let resp = resp.on_hover_text("Consoles on this connection: open ones and ones still open when DataBug last quit");
         // screenshot scenes open the list with a flag in egui's memory
         let forced = ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false);

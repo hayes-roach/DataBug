@@ -10,8 +10,15 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 - Putting the cursor on a name softly highlights its other uses in the console (by token, so matching text in strings, comments and keywords isn't highlighted)
 
+### Changed
+
+- **Run** runs the selected code, or the whole console when nothing is selected (the separate *Run script* button is gone). `Ctrl/⌘ + Enter` still runs just the statement at the cursor; `Ctrl/⌘ + Shift + Enter` does what Run does
+- On SQL Server, Run sends each batch between `GO` lines as one request, as SQL Server Management Studio does, instead of one statement at a time, so a script with `DECLARE`, temp tables or `SET` options runs as a whole
+
 ### Fixed
 
+- A script starting with an invisible byte-order mark (common in files saved on Windows) hid its leading `DECLARE`, so SQL Server ran it one statement at a time
+- Oracle and Db2 blocks were run one `;` at a time: `DECLARE … BEGIN … END;` and `BEGIN … END;` blocks, procedures, functions and triggers now run whole, and packages up to a `/` line. A PL/SQL `BEGIN … END` block (or T-SQL `BEGIN TRY`) is no longer mistaken for the start of a transaction
 - Selecting a single letter (or a few) by dragging in the editor works; before, a drag shorter than about 6 px counted as a click and selected nothing
 
 ## [0.6.1] - 2026-11-18

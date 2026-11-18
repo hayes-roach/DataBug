@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use databug_core::{Capabilities, Catalog, ConnectionConfig, DbKind, DbObject, Dialect, ObjectKind, QueryEvent, TableInfo};
 use databug_drivers::{ExecOptions, SourceRef};
 use databug_sql::rename::{rename_references, target_at, RenameTarget};
-use databug_sql::{classify, dangers, name_at, single_table_source, split_statements, statement_at, statement_parts, StatementKind};
+use databug_sql::{classify, dangers, name_at, single_table_source, split_batches, split_statements, statement_at, statement_parts, StatementKind};
 
 const META_BIT: u64 = 1 << 62;
 
@@ -919,10 +919,10 @@ impl DataBugApp {
         let text = &tab.editor.text;
         if let Some(sel) = tab.editor.selection.clone().filter(|_| tab.editor.selected_text().is_some()) {
             let part = &text[sel.clone()];
-            return split_statements(part, d).into_iter().map(|r| (part[r.clone()].to_string(), sel.start + r.start..sel.start + r.end)).collect();
+            return split_batches(part, d).into_iter().map(|r| (part[r.clone()].to_string(), sel.start + r.start..sel.start + r.end)).collect();
         }
         if script {
-            return split_statements(text, d).into_iter().map(|r| (text[r.clone()].to_string(), r)).collect();
+            return split_batches(text, d).into_iter().map(|r| (text[r.clone()].to_string(), r)).collect();
         }
         statement_at(text, tab.editor.cursor, d).map(|r| vec![(text[r.clone()].to_string(), r)]).unwrap_or_default()
     }
@@ -2727,10 +2727,8 @@ impl DataBugApp {
                 }
                 ui.add_space(8.0);
                 let run_btn = egui::Button::new(RichText::new("▶  Run").color(if running { p.faint } else { p.success })).min_size(egui::vec2(0.0, 26.0));
-                if ui.add_enabled(!running, run_btn).on_hover_text("Run the statement at the cursor or the selection  (Ctrl/⌘ + Enter)").clicked() {
-                    actions.push(1);
-                }
-                if ui.add_enabled(!running, egui::Button::new("Run script").min_size(egui::vec2(0.0, 26.0))).on_hover_text("Run every statement in this console  (Ctrl/⌘ + Shift + Enter)").clicked() {
+                // Run: the selection, or everything when nothing is selected
+                if ui.add_enabled(!running, run_btn).on_hover_text("Run the selected code, or the whole console when nothing is selected  (Ctrl/⌘ + Shift + Enter)\nCtrl/⌘ + Enter runs only the statement at the cursor").clicked() {
                     actions.push(2);
                 }
                 ui.add_enabled_ui(!running, |ui| {
@@ -3117,7 +3115,7 @@ impl DataBugApp {
                 actions.push(Action::NewConnection);
             }
             ui.add_space(28.0);
-            let shortcuts = [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run script"), ("Ctrl + Space", "Completion"), ("Ctrl/⌘ + B", "Open the definition under the cursor"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")];
+            let shortcuts = [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run the selection, or everything"), ("Ctrl + Space", "Completion"), ("Ctrl/⌘ + B", "Open the definition under the cursor"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")];
             for (k, v) in shortcuts {
                 ui.horizontal(|ui| {
                     ui.add_space((ui.available_width() - 360.0).max(0.0) / 2.0);

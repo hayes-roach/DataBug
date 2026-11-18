@@ -98,8 +98,10 @@ pub fn tokenize(src: &str, dialect: Dialect) -> Vec<Token> {
         let next = if i + c.len_utf8() < n { char_at(i + c.len_utf8()) } else { '\0' };
         let kind;
 
-        if c.is_whitespace() {
-            while i < n && char_at(i).is_whitespace() {
+        // a byte-order mark (from files saved by Windows editors) counts as whitespace
+        let ws = |c: char| c.is_whitespace() || c == '\u{feff}';
+        if ws(c) {
+            while i < n && ws(char_at(i)) {
                 i += char_at(i).len_utf8();
             }
             kind = TokKind::Whitespace;

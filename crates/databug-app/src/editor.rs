@@ -1029,8 +1029,8 @@ impl Editor {
                 item(ui, true, "Paste", key("V"), MenuPick::Paste);
                 item(ui, true, "Select all", key("A"), MenuPick::SelectAll);
                 ui.separator();
-                item(ui, true, if has_sel { "Run selection" } else { "Run statement" }, key("Enter"), MenuPick::Run);
-                item(ui, true, "Run script", key("Shift+Enter"), MenuPick::RunScript);
+                item(ui, true, if has_sel { "Run selection" } else { "Run all" }, key("Shift+Enter"), MenuPick::RunScript);
+                item(ui, !has_sel, "Run statement at cursor", key("Enter"), MenuPick::Run);
                 ui.separator();
                 item(ui, true, "Go to definition", key("B"), MenuPick::GoTo);
                 item(ui, true, "Find…", key("F"), MenuPick::Find);

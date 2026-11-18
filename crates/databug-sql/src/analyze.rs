@@ -279,7 +279,13 @@ pub fn classify(stmt: &str, dialect: Dialect) -> StatementKind {
         }
         "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT" | "COPY" | "CALL" | "EXEC" | "EXECUTE" => StatementKind::Write,
         "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "GRANT" | "REVOKE" | "RENAME" | "COMMENT" => StatementKind::Ddl,
-        "BEGIN" | "COMMIT" | "ROLLBACK" | "START" | "SAVEPOINT" | "RELEASE" | "END" => StatementKind::Transaction,
+        // `BEGIN … END` blocks (PL/SQL, T-SQL `BEGIN TRY`) aren't transactions
+        "BEGIN" => match toks.get(1).map(|t| t.text(stmt).to_ascii_uppercase()) {
+            None => StatementKind::Transaction,
+            Some(w) if matches!(w.as_str(), ";" | "TRAN" | "TRANSACTION" | "WORK" | "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE" | "ISOLATION" | "READ" | "DEFERRABLE" | "NOT" | "DISTRIBUTED") => StatementKind::Transaction,
+            Some(_) => StatementKind::Other,
+        },
+        "COMMIT" | "ROLLBACK" | "START" | "SAVEPOINT" | "RELEASE" | "END" => StatementKind::Transaction,
         _ => StatementKind::Other,
     }
 }
@@ -476,6 +482,10 @@ mod tests {
         assert_eq!(dangers("update t set a = (select 1 where true)", Dialect::Postgres), vec![Danger::UpdateWithoutWhere]);
         assert_eq!(classify("with x as (select 1) delete from t", Dialect::Postgres), StatementKind::Write);
         assert_eq!(classify("select 1", Dialect::Postgres), StatementKind::Read);
+        assert_eq!(classify("BEGIN", Dialect::Postgres), StatementKind::Transaction);
+        assert_eq!(classify("BEGIN TRANSACTION", Dialect::MsSql), StatementKind::Transaction);
+        assert_eq!(classify("BEGIN\n  UPDATE t SET a = 1;\nEND", Dialect::Postgres), StatementKind::Other);
+        assert_eq!(classify("BEGIN TRY SELECT 1; END TRY BEGIN CATCH END CATCH", Dialect::MsSql), StatementKind::Other);
     }
 
     #[test]

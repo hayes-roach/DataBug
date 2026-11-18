@@ -18,7 +18,7 @@ pub use analyze::{classify, dangers, inspect, name_at, single_table_source, tabl
 pub use complete::{complete, Completion, CompletionItem, ItemKind};
 pub use format::format_sql;
 pub use lexer::{tokenize, TokKind, Token};
-pub use split::{split_statements, statement_at, statement_parts};
+pub use split::{split_batches, split_statements, statement_at, statement_parts};
 
 #[cfg(test)]
 mod tests {

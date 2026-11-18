@@ -38,14 +38,14 @@ pub enum Icon {
     Play,
     Stop,
     Plan,
-    Database,
-    Consoles,
     Format,
     Gear,
     Moon,
     Sun,
     Check,
     Undo,
+    /// a dot on a line: when changes are committed
+    Commit,
 }
 
 /// White or near-black text, whichever reads better on `fill`.
@@ -140,39 +140,6 @@ pub fn close(ui: &Ui) {
     ui.memory_mut(|m| m.close_popup());
 }
 
-/// A segmented switch (Auto | Manual). Returns the option clicked.
-pub fn segmented(ui: &mut Ui, p: &Palette, options: &[&str], selected: usize, tips: &[&str]) -> Option<usize> {
-    let widths: Vec<f32> = options.iter().map(|o| ui.painter().layout_no_wrap(o.to_string(), font(), Color32::WHITE).size().x + 22.0).collect();
-    let total = widths.iter().sum::<f32>() + 4.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(total, H), Sense::hover());
-    ui.painter().rect(rect, CornerRadius::same(RADIUS), p.island, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
-    let mut x = rect.left() + 2.0;
-    let mut picked = None;
-    for (i, (o, w)) in options.iter().zip(&widths).enumerate() {
-        let seg = Rect::from_min_size(egui::pos2(x, rect.top() + 2.0), egui::vec2(*w, H - 4.0));
-        let resp = ui.interact(seg, ui.id().with(("seg", o)), Sense::click());
-        let on_it = i == selected;
-        if on_it {
-            ui.painter().rect(seg, CornerRadius::same(RADIUS - 2), p.accent.gamma_multiply(0.22), Stroke::new(1.0_f32, p.accent.gamma_multiply(0.55)), egui::StrokeKind::Inside);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(seg, CornerRadius::same(RADIUS - 2), p.hover);
-        }
-        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, *o, font(), if on_it { p.text } else { p.muted });
-        let resp = match tips.get(i) {
-            Some(t) => resp.on_hover_text(*t),
-            None => resp,
-        };
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.clicked() && !on_it {
-            picked = Some(i);
-        }
-        x += w;
-    }
-    picked
-}
-
 /// A status pill (PRODUCTION, read-only, transaction open).
 pub fn badge(ui: &mut Ui, color: Color32, text: &str) -> Response {
     let f = FontId::proportional(11.5);
@@ -191,18 +158,21 @@ pub fn divider(ui: &mut Ui, p: &Palette) {
     ui.add_space(4.0);
 }
 
-/// The active connection: engine logo, live dot (filled) or ring, name and engine.
-pub fn connection_chip(ui: &mut Ui, p: &Palette, logos: &crate::icons::Logos, cfg: &databug_core::ConnectionConfig, live: bool) -> Response {
-    let (kind, color, name, engine) = (cfg.kind, crate::theme::connection_color(cfg.color), cfg.name.as_str(), cfg.kind.label());
-    let small = FontId::proportional(11.5);
-    let nw = ui.painter().layout_no_wrap(name.to_string(), font(), p.text).size().x;
-    let ew = ui.painter().layout_no_wrap(engine.to_string(), small.clone(), p.muted).size().x;
-    let w = 8.0 + 16.0 + 8.0 + 8.0 + 6.0 + nw + 6.0 + ew + 10.0;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, H), Sense::hover());
-    ui.painter().rect(rect, CornerRadius::same(RADIUS), p.island, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+/// The active connection as a dropdown button: engine logo, live dot (filled)
+/// or ring, name, then `detail` (database · schema) in grey and a chevron.
+pub fn connection_button(ui: &mut Ui, p: &Palette, logos: &crate::icons::Logos, cfg: &databug_core::ConnectionConfig, live: bool, detail: &str) -> Response {
+    let color = crate::theme::connection_color(cfg.color);
+    let nw = ui.painter().layout_no_wrap(cfg.name.clone(), font(), p.text).size().x;
+    let dw = if detail.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(detail.to_string(), font(), p.muted).size().x + 8.0 };
+    let w = 8.0 + 16.0 + 8.0 + 8.0 + 6.0 + nw + dw + 8.0 + 14.0 + PAD;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, H), Sense::click());
+    let open = ui.memory(|m| m.is_popup_open(resp.id.with("menu")));
+    let hot = resp.hovered() || open;
+    let fill = if resp.is_pointer_button_down_on() { p.selection } else if hot { p.hover } else { p.raised };
+    ui.painter().rect(rect, CornerRadius::same(RADIUS), fill, Stroke::new(1.0_f32, if hot { p.muted.gamma_multiply(0.5) } else { p.border }), egui::StrokeKind::Inside);
     let cy = rect.center().y;
     let mut x = rect.left() + 8.0;
-    logos.paint(ui, Rect::from_min_size(egui::pos2(x, cy - 8.0), egui::vec2(16.0, 16.0)), kind);
+    logos.paint(ui, Rect::from_min_size(egui::pos2(x, cy - 8.0), egui::vec2(16.0, 16.0)), cfg.kind);
     x += 16.0 + 8.0;
     let dot = egui::pos2(x + 4.0, cy);
     if live {
@@ -211,97 +181,95 @@ pub fn connection_chip(ui: &mut Ui, p: &Palette, logos: &crate::icons::Logos, cf
         ui.painter().circle_stroke(dot, 3.4, Stroke::new(1.4_f32, color));
     }
     x += 8.0 + 6.0;
-    ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, name, font(), p.text);
-    x += nw + 6.0;
-    ui.painter().text(egui::pos2(x, cy + 0.5), egui::Align2::LEFT_CENTER, engine, small, p.muted);
+    ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, &cfg.name, font(), p.text);
+    x += nw + 8.0;
+    if !detail.is_empty() {
+        ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, detail, font(), p.muted);
+    }
+    let c = egui::pos2(rect.right() - PAD - 3.0, cy + 1.0);
+    ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-3.5, -2.0), c + egui::vec2(3.5, -2.0), c + egui::vec2(0.0, 2.2)], p.muted, Stroke::NONE));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     resp
 }
 
-/// Paint `icon` in a 14×14 `r`. `bg` is the button fill (for cut-outs).
+/// Paint `icon` in a 14×14 `r`, on a grid centred in it, with one stroke
+/// width throughout. `bg` is the color behind the icon (for cut-outs).
 pub fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color32, bg: Color32) {
+    let o = r.center();
+    let at = |x: f32, y: f32| o + egui::vec2(x, y);
     let st = Stroke::new(1.5_f32, c);
-    let ctr = r.center();
+    let line = |a: egui::Pos2, b: egui::Pos2| painter.line_segment([a, b], st);
+    let arc = |cx: f32, cy: f32, rad: f32, from: f32, to: f32| -> Vec<egui::Pos2> {
+        (0..=24).map(|i| {
+            let a = (from + (to - from) * i as f32 / 24.0).to_radians();
+            at(cx + a.cos() * rad, cy + a.sin() * rad)
+        }).collect()
+    };
     match icon {
         Icon::Play => {
-            let pts = vec![ctr + egui::vec2(-4.0, -5.5), ctr + egui::vec2(5.5, 0.0), ctr + egui::vec2(-4.0, 5.5)];
-            painter.add(egui::Shape::convex_polygon(pts, c, Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(vec![at(-3.5, -5.0), at(5.0, 0.0), at(-3.5, 5.0)], c, Stroke::NONE));
         }
         Icon::Stop => {
-            painter.rect_filled(Rect::from_center_size(ctr, egui::vec2(9.0, 9.0)), CornerRadius::same(2), c);
+            painter.rect_filled(Rect::from_center_size(o, egui::vec2(9.0, 9.0)), CornerRadius::same(2), c);
         }
         Icon::Plan => {
-            // a small tree: root, then two children
-            painter.circle_filled(ctr + egui::vec2(-4.5, -4.5), 1.8, c);
-            painter.line_segment([ctr + egui::vec2(-4.5, -3.0), ctr + egui::vec2(-4.5, 4.5)], st);
-            painter.line_segment([ctr + egui::vec2(-4.5, 0.0), ctr + egui::vec2(1.0, 0.0)], st);
-            painter.line_segment([ctr + egui::vec2(-4.5, 4.5), ctr + egui::vec2(1.0, 4.5)], st);
-            painter.circle_filled(ctr + egui::vec2(3.5, 0.0), 1.8, c);
-            painter.circle_filled(ctr + egui::vec2(3.5, 4.5), 1.8, c);
-        }
-        Icon::Database => {
-            let w = 10.0;
-            let top = ctr.y - 4.5;
-            let bot = ctr.y + 4.5;
-            painter.add(egui::Shape::ellipse_stroke(egui::pos2(ctr.x, top), egui::vec2(w / 2.0, 2.0), st));
-            painter.line_segment([egui::pos2(ctr.x - w / 2.0, top), egui::pos2(ctr.x - w / 2.0, bot)], st);
-            painter.line_segment([egui::pos2(ctr.x + w / 2.0, top), egui::pos2(ctr.x + w / 2.0, bot)], st);
-            let arc: Vec<egui::Pos2> = (0..=12).map(|i| {
-                let a = std::f32::consts::PI * i as f32 / 12.0;
-                egui::pos2(ctr.x + a.cos() * w / 2.0, bot + a.sin() * 2.0)
-            }).collect();
-            painter.add(egui::Shape::line(arc, st));
-        }
-        Icon::Consoles => {
-            let back = Rect::from_center_size(ctr + egui::vec2(2.0, -2.0), egui::vec2(9.0, 11.0));
-            let front = Rect::from_center_size(ctr + egui::vec2(-1.5, 1.5), egui::vec2(9.0, 11.0));
-            painter.line_segment([back.left_top(), back.right_top()], st);
-            painter.line_segment([back.right_top(), back.right_bottom()], st);
-            painter.rect_filled(front, CornerRadius::same(2), bg);
-            painter.rect_stroke(front, CornerRadius::same(2), st, egui::StrokeKind::Middle);
-            for dy in [-1.5_f32, 1.5] {
-                painter.line_segment([egui::pos2(front.left() + 2.5, front.center().y + dy), egui::pos2(front.right() - 2.5, front.center().y + dy)], Stroke::new(1.0_f32, c));
+            // an outline: three rows, each indented under the one above
+            for (x, y) in [(-5.0_f32, -4.0_f32), (-2.0, 0.0), (1.0, 4.0)] {
+                painter.circle_filled(at(x, y), 1.5, c);
+                line(at(x + 3.0, y), at(5.5, y));
             }
         }
         Icon::Format => {
-            for (dy, w) in [(-4.5_f32, 11.0_f32), (-1.5, 7.0), (1.5, 11.0), (4.5, 7.0)] {
-                let x0 = ctr.x - 5.5;
-                painter.line_segment([egui::pos2(x0, ctr.y + dy), egui::pos2(x0 + w, ctr.y + dy)], st);
+            for (y, w) in [(-4.5_f32, 11.0_f32), (-1.5, 7.0), (1.5, 11.0), (4.5, 7.0)] {
+                line(at(-5.5, y), at(-5.5 + w, y));
             }
         }
         Icon::Gear => {
+            // outline with eight teeth, and a hole in the middle
             let teeth = 8;
+            let mut pts = Vec::new();
             for i in 0..teeth {
-                let a = std::f32::consts::TAU * i as f32 / teeth as f32;
-                let d = egui::vec2(a.cos(), a.sin());
-                painter.line_segment([ctr + d * 4.5, ctr + d * 6.8], Stroke::new(2.4_f32, c));
+                let base = std::f32::consts::TAU * i as f32 / teeth as f32;
+                for (da, rad) in [(-0.38_f32, 4.6_f32), (-0.2, 6.3), (0.2, 6.3), (0.38, 4.6)] {
+                    let a = base + da;
+                    pts.push(at(a.cos() * rad, a.sin() * rad));
+                }
             }
-            painter.circle_stroke(ctr, 4.6, Stroke::new(1.6_f32, c));
-            painter.circle_filled(ctr, 1.6, c);
+            painter.add(egui::Shape::closed_line(pts, Stroke::new(1.3_f32, c)));
+            painter.circle_stroke(o, 1.9, Stroke::new(1.3_f32, c));
         }
         Icon::Moon => {
-            painter.circle_filled(ctr, 5.5, c);
-            painter.circle_filled(ctr + egui::vec2(3.0, -2.2), 4.8, bg);
+            painter.circle_filled(o, 5.5, c);
+            painter.circle_filled(at(2.8, -2.4), 4.6, bg);
         }
         Icon::Sun => {
-            painter.circle_filled(ctr, 3.2, c);
+            painter.circle_filled(o, 3.0, c);
             for i in 0..8 {
                 let a = std::f32::consts::TAU * i as f32 / 8.0;
                 let d = egui::vec2(a.cos(), a.sin());
-                painter.line_segment([ctr + d * 5.0, ctr + d * 6.8], Stroke::new(1.4_f32, c));
+                line(o + d * 4.8, o + d * 6.6);
             }
         }
         Icon::Check => {
-            painter.line_segment([ctr + egui::vec2(-5.0, 0.5), ctr + egui::vec2(-1.5, 4.0)], Stroke::new(1.8_f32, c));
-            painter.line_segment([ctr + egui::vec2(-1.5, 4.0), ctr + egui::vec2(5.0, -4.0)], Stroke::new(1.8_f32, c));
+            painter.add(egui::Shape::line(vec![at(-5.0, 0.0), at(-1.5, 3.5), at(5.0, -3.5)], Stroke::new(1.8_f32, c)));
+        }
+        Icon::Commit => {
+            painter.circle_stroke(o, 3.0, st);
+            line(at(-6.5, 0.0), at(-3.0, 0.0));
+            line(at(3.0, 0.0), at(6.5, 0.0));
         }
         Icon::Undo => {
-            let pts: Vec<egui::Pos2> = (0..=14).map(|i| {
-                let a = std::f32::consts::PI * (1.1 + 1.2 * i as f32 / 14.0);
-                ctr + egui::vec2(1.0 + a.cos() * -4.5, 1.0 + a.sin() * -4.5)
-            }).collect();
-            let start = pts[0];
-            painter.add(egui::Shape::line(pts, st));
-            painter.add(egui::Shape::convex_polygon(vec![start + egui::vec2(-3.5, -1.0), start + egui::vec2(2.0, -3.0), start + egui::vec2(1.0, 2.5)], c, Stroke::NONE));
+            // an arrow curving back over the top: from the right, ending at the
+            // left and pointing down
+            let pts = arc(0.0, 1.5, 4.5, 360.0, 180.0);
+            let tip = pts[pts.len() - 1];
+            let prev = pts[pts.len() - 2];
+            painter.add(egui::Shape::line(pts.clone(), st));
+            let d = (tip - prev).normalized();
+            let n = egui::vec2(-d.y, d.x);
+            painter.add(egui::Shape::convex_polygon(vec![tip + d * 2.8, tip + n * 2.8 - d * 0.8, tip - n * 2.8 - d * 0.8], c, Stroke::NONE));
         }
     }
 }

@@ -12,7 +12,7 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ### Changed
 
-- Redesigned toolbar: every control is the same height with the same corners and border; Run is the one filled button, Explain and the schema picker are dropdowns, the transaction mode is a single Auto | Manual switch, *PRODUCTION*, *Read-only* and *Transaction open* are pills, and the icons (run, stop, plan, format, settings, theme, commit, rollback) are drawn instead of emoji so they look the same on every platform
+- New layout for the toolbar. The top bar holds the connection button, which shows the console's database and schema and opens a menu with the database and schema pickers and the connection's consoles, plus settings and theme. Run, Explain, Cancel, the commit mode (*Auto-commit* / *Manual commit*), Commit, Rollback and Format sit in a bar above the editor. Every control is the same height with the same corners and border, Run is the one filled button, *PRODUCTION*, *Read-only* and *Transaction open* are pills, and the icons are drawn instead of emoji so they look the same on every platform
 - **Run** runs the selected code, or the whole console when nothing is selected (the separate *Run script* button is gone). `Ctrl/⌘ + Enter` still runs just the statement at the cursor; `Ctrl/⌘ + Shift + Enter` does what Run does
 - On SQL Server, Run sends each batch between `GO` lines as one request, as SQL Server Management Studio does, instead of one statement at a time, so a script with `DECLARE`, temp tables or `SET` options runs as a whole
 

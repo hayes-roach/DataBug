@@ -2614,8 +2614,101 @@ impl DataBugApp {
         }
     }
 
+    /// The bar above the editor: Run, Explain, Cancel, the transaction mode
+    /// (Commit and Rollback while a transaction is open) and Format.
+    fn editor_bar(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
+        use crate::toolbar::{self as tb, Icon, Kind};
+        let Some(t) = self.tabs.get(self.active).filter(|t| t.tool.is_none()) else { return };
+        let running = t.running.is_some();
+        let (manual, in_tx) = (t.manual_tx, t.in_tx);
+        let mut actions: Vec<u8> = Vec::new();
+        ui.horizontal(|ui| {
+            ui.set_height(tb::H);
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Run: the selection, or everything when nothing is selected
+            let run_tip = "Run the selected code, or the whole console when nothing is selected  (Ctrl/⌘ + Shift + Enter)\nCtrl/⌘ + Enter runs only the statement at the cursor";
+            if tb::button(ui, p, Kind::Primary, Some(Icon::Play), "Run", false, !running).on_hover_text(run_tip).clicked() {
+                actions.push(2);
+            }
+            let ex = tb::button(ui, p, Kind::Normal, Some(Icon::Plan), "Explain", true, !running);
+            tb::dropdown(ui, &ex, 200.0, |ui| {
+                if ui.button("Explain plan").on_hover_text("Ctrl/⌘ + Shift + E").clicked() {
+                    actions.push(3);
+                    tb::close(ui);
+                }
+                if ui.button("Explain analyze").on_hover_text("Runs the statement; changes are rolled back").clicked() {
+                    actions.push(4);
+                    tb::close(ui);
+                }
+            });
+            if tb::button(ui, p, if running { Kind::Danger } else { Kind::Normal }, Some(Icon::Stop), "Cancel", false, running).on_hover_text("Cancel on the server; press again to drop the connection").clicked() {
+                actions.push(5);
+            }
+            tb::divider(ui, p);
+            let tx_label = if manual { "Manual commit" } else { "Auto-commit" };
+            let tx = tb::button(ui, p, Kind::Normal, Some(Icon::Commit), tx_label, true, true).on_hover_text("When changes are committed");
+            tb::dropdown(ui, &tx, 260.0, |ui| {
+                if ui.selectable_label(!manual, "Auto-commit").on_hover_text("Each statement commits on its own").clicked() {
+                    actions.push(6);
+                    tb::close(ui);
+                }
+                if ui.selectable_label(manual, "Manual commit").on_hover_text("Changes stay in an open transaction until you commit").clicked() {
+                    actions.push(7);
+                    tb::close(ui);
+                }
+            });
+            if in_tx {
+                tb::badge(ui, p.warning, "Transaction open");
+                if tb::button(ui, p, Kind::Success, Some(Icon::Check), "Commit", false, true).clicked() {
+                    actions.push(8);
+                }
+                if tb::button(ui, p, Kind::Normal, Some(Icon::Undo), "Rollback", false, true).clicked() {
+                    actions.push(9);
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if tb::button(ui, p, Kind::Normal, Some(Icon::Format), "Format", false, true).on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
+                    actions.push(10);
+                }
+            });
+        });
+        self.run_actions(actions, ctx);
+    }
+
+    fn run_actions(&mut self, actions: Vec<u8>, ctx: &egui::Context) {
+        for a in actions {
+            match a {
+                2 => self.request_run(true, None, ctx),
+                3 => self.request_run(false, Some(false), ctx),
+                4 => self.request_run(false, Some(true), ctx),
+                5 => {
+                    if let Some(s) = self.tabs.get_mut(self.active).and_then(|t| t.session.as_mut()) {
+                        s.cancel();
+                    }
+                }
+                6 => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        if t.in_tx {
+                            self.toast("Commit or roll back the open transaction first");
+                        } else {
+                            t.manual_tx = false;
+                        }
+                    }
+                }
+                7 => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.manual_tx = true;
+                    }
+                }
+                8 => self.tx_command("COMMIT", ctx),
+                9 => self.tx_command("ROLLBACK", ctx),
+                10 => self.format_active(),
+                _ => {}
+            }
+        }
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
-        let mut actions = Vec::new();
         let mut pick_schema: Option<String> = None;
         let mut pick_db: Option<String> = None;
         let mut console_pick: Option<ConsolePick> = None;
@@ -2648,13 +2741,11 @@ impl DataBugApp {
             ui.label(RichText::new("DataBug").font(bold(14.0)));
 
             let active = self.tabs.get(self.active).filter(|t| t.tool.is_none());
-            let running = active.map(|t| t.running.is_some()).unwrap_or(false);
             if let Some(t) = active {
                 if let Some(cfg) = self.conn(&t.conn_id) {
                     tb::divider(ui, p);
-                    let live = self.liveness(ConnectionConfig::base_id(&cfg.id)).0;
-                    tb::connection_chip(ui, p, &self.logos, cfg, live);
-                    // the console's database and schema, switchable
+                    // the connection button: its menu holds the console's database
+                    // and schema, and the connection's consoles
                     let entry = self.catalogs.get(&t.conn_id);
                     let schemas: Vec<String> = entry.map(|e| e.catalog.schemas.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
                     let default = entry.map(|e| e.catalog.default_schema.clone()).unwrap_or_default();
@@ -2668,27 +2759,36 @@ impl DataBugApp {
                     dbs.extend(self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == base).filter_map(|v| v.id.split_once('@').map(|(_, db)| (v.id.clone(), db.to_string()))));
                     let db_now = dbs.iter().find(|(id, _)| *id == t.conn_id).map(|(_, d)| d.clone());
                     let show_db = dbs.len() > 1;
-                    if cfg.kind.dialect() != Dialect::Mongo && (!schemas.is_empty() || show_db) {
-                        let label = match (&db_now, show_db) {
-                            (Some(db), true) if !current.is_empty() => format!("{db} · {current}"),
-                            (Some(db), true) => db.clone(),
-                            _ => current.clone(),
+                    let pickable = cfg.kind.dialect() != Dialect::Mongo && (!schemas.is_empty() || show_db);
+                    let detail = match (&db_now, show_db) {
+                        (Some(db), true) if !current.is_empty() => format!("{db} · {current}"),
+                        (Some(db), true) => db.clone(),
+                        _ if pickable => current.clone(),
+                        _ => String::new(),
+                    };
+                    let live = self.liveness(&base).0;
+                    let conn_btn = tb::connection_button(ui, p, &self.logos, cfg, live, &detail).on_hover_text(format!("{} · {}\nDatabase, schema and consoles", cfg.name, cfg.kind.label()));
+                    // screenshot scenes open the menu with a flag in egui's memory
+                    if ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false) {
+                        ui.memory_mut(|m| m.open_popup(conn_btn.id.with("menu")));
+                    }
+                    tb::dropdown(ui, &conn_btn, 420.0, |ui| {
+                        let section = |ui: &mut egui::Ui, t: &str| {
+                            ui.label(RichText::new(t).size(11.5).color(p.muted));
                         };
-                        let label = if label.is_empty() { "schema".to_string() } else { label };
-                        let r = tb::button(ui, p, Kind::Normal, Some(Icon::Database), &label, true, true).on_hover_text("Database and schema this console uses for unqualified names, completion and go to definition");
-                        tb::dropdown(ui, &r, 220.0, |ui| {
-                            if show_db {
-                                ui.label(RichText::new("Database").size(11.5).color(p.muted));
-                                for (id, db) in &dbs {
-                                    if ui.selectable_label(*id == t.conn_id, db).clicked() {
-                                        pick_db = Some(id.clone());
-                                        tb::close(ui);
-                                    }
+                        if show_db {
+                            section(ui, "Database");
+                            for (id, db) in &dbs {
+                                if ui.selectable_label(*id == t.conn_id, db).clicked() {
+                                    pick_db = Some(id.clone());
+                                    tb::close(ui);
                                 }
-                                ui.separator();
                             }
-                            ui.label(RichText::new("Schema").size(11.5).color(p.muted));
-                            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                            ui.separator();
+                        }
+                        if pickable {
+                            section(ui, "Schema");
+                            egui::ScrollArea::vertical().id_salt("schemas").max_height(200.0).show(ui, |ui| {
                                 for sname in &schemas {
                                     let text = if *sname == default { format!("{sname}   (default)") } else { sname.clone() };
                                     if ui.selectable_label(sname.eq_ignore_ascii_case(&current), text).clicked() {
@@ -2700,56 +2800,23 @@ impl DataBugApp {
                             if schemas.is_empty() {
                                 ui.label(RichText::new("Loading the schema…").size(12.0).color(p.faint));
                             }
-                        });
-                    }
-                    // the connection's consoles, while it's signed in
-                    if self.liveness(&base).0 {
-                        console_pick = self.consoles_menu(ui, p, &base);
-                    }
+                            ui.separator();
+                        }
+                        section(ui, "Consoles");
+                        if live {
+                            console_pick = self.consoles_list(ui, p, &base);
+                            if matches!(console_pick, Some(ConsolePick::Open(_))) {
+                                tb::close(ui);
+                            }
+                        } else {
+                            ui.label(RichText::new("Connect to see this connection's consoles.").size(12.0).color(p.faint));
+                        }
+                    });
                     if cfg.production {
                         tb::badge(ui, p.danger, "PRODUCTION").on_hover_text("Changes ask for confirmation on this connection");
                     }
                     if cfg.read_only {
                         tb::badge(ui, p.muted, "Read-only").on_hover_text("Statements that change data or schema are blocked");
-                    }
-                }
-                tb::divider(ui, p);
-                // Run: the selection, or everything when nothing is selected
-                let run_tip = "Run the selected code, or the whole console when nothing is selected  (Ctrl/⌘ + Shift + Enter)\nCtrl/⌘ + Enter runs only the statement at the cursor";
-                if tb::button(ui, p, Kind::Primary, Some(Icon::Play), "Run", false, !running).on_hover_text(run_tip).clicked() {
-                    actions.push(2);
-                }
-                let ex = tb::button(ui, p, Kind::Normal, Some(Icon::Plan), "Explain", true, !running);
-                tb::dropdown(ui, &ex, 200.0, |ui| {
-                    if ui.button("Explain plan").on_hover_text("Ctrl/⌘ + Shift + E").clicked() {
-                        actions.push(3);
-                        tb::close(ui);
-                    }
-                    if ui.button("Explain analyze").on_hover_text("Runs the statement; changes are rolled back").clicked() {
-                        actions.push(4);
-                        tb::close(ui);
-                    }
-                });
-                if tb::button(ui, p, if running { Kind::Danger } else { Kind::Normal }, Some(Icon::Stop), "Cancel", false, running).on_hover_text("Cancel on the server; press again to drop the connection").clicked() {
-                    actions.push(5);
-                }
-                tb::divider(ui, p);
-                let t = &self.tabs[self.active];
-                let manual = t.manual_tx;
-                let in_tx = t.in_tx;
-                ui.label(RichText::new("Transactions").size(12.0).color(p.muted));
-                match tb::segmented(ui, p, &["Auto", "Manual"], usize::from(manual), &["Each statement commits on its own", "Changes stay in an open transaction until you commit"]) {
-                    Some(0) => actions.push(6),
-                    Some(_) => actions.push(7),
-                    None => {}
-                }
-                if in_tx {
-                    tb::badge(ui, p.warning, "Transaction open");
-                    if tb::button(ui, p, Kind::Success, Some(Icon::Check), "Commit", false, true).clicked() {
-                        actions.push(8);
-                    }
-                    if tb::button(ui, p, Kind::Normal, Some(Icon::Undo), "Rollback", false, true).clicked() {
-                        actions.push(9);
                     }
                 }
             }
@@ -2837,9 +2904,6 @@ impl DataBugApp {
                     self.settings.skipped_version = None;
                     self.check_updates(true);
                 }
-                if !self.tabs.is_empty() && tb::button(ui, p, Kind::Normal, Some(Icon::Format), "Format", false, true).on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
-                    actions.push(10);
-                }
                 if let Some(r) = self.updates.available.as_ref() {
                     let label = format!("Update to {}", r.version_string());
                     if tb::button(ui, p, Kind::Accent, None, &label, false, true).on_hover_text("A new version of DataBug is available").clicked() {
@@ -2848,37 +2912,6 @@ impl DataBugApp {
                 }
             });
         });
-        for a in actions {
-            match a {
-                1 => self.request_run(false, None, ctx),
-                2 => self.request_run(true, None, ctx),
-                3 => self.request_run(false, Some(false), ctx),
-                4 => self.request_run(false, Some(true), ctx),
-                5 => {
-                    if let Some(s) = self.tabs.get_mut(self.active).and_then(|t| t.session.as_mut()) {
-                        s.cancel();
-                    }
-                }
-                6 => {
-                    if let Some(t) = self.tabs.get_mut(self.active) {
-                        if t.in_tx {
-                            self.toast("Commit or roll back the open transaction first");
-                        } else {
-                            t.manual_tx = false;
-                        }
-                    }
-                }
-                7 => {
-                    if let Some(t) = self.tabs.get_mut(self.active) {
-                        t.manual_tx = true;
-                    }
-                }
-                8 => self.tx_command("COMMIT", ctx),
-                9 => self.tx_command("ROLLBACK", ctx),
-                10 => self.format_active(),
-                _ => {}
-            }
-        }
         let ti = self.active;
         if let Some(id) = pick_db {
             self.set_tab_database(ti, id, ctx);
@@ -2978,25 +3011,13 @@ impl DataBugApp {
         (select, close, new_tab)
     }
 
-    /// Toolbar button listing the connection's consoles (open ones and ones
-    /// left open when DataBug quit). Returns what the user picked.
-    fn consoles_menu(&self, ui: &mut egui::Ui, p: &Palette, base: &str) -> Option<ConsolePick> {
+    /// The connection's consoles (open ones and ones left open when DataBug
+    /// quit), for the connection menu. Returns what the user picked.
+    fn consoles_list(&self, ui: &mut egui::Ui, p: &Palette, base: &str) -> Option<ConsolePick> {
         let consoles = self.consoles_for(base);
         let open: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
-        let popup_id = ui.make_persistent_id(("consoles", base));
-        let resp = crate::toolbar::button(ui, p, crate::toolbar::Kind::Normal, Some(crate::toolbar::Icon::Consoles), &consoles.len().to_string(), false, true);
-        let resp = resp.on_hover_text("Consoles on this connection: open ones and ones still open when DataBug last quit");
-        // screenshot scenes open the list with a flag in egui's memory
-        let forced = ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false);
-        if resp.clicked() || forced {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
-        }
         let mut pick = None;
-        egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            ui.set_width(420.0);
-            let name = self.conn(base).map(|c| c.name.clone()).unwrap_or_default();
-            ui.label(RichText::new(format!("Consoles · {name}")).font(bold(13.0)));
-            ui.add_space(4.0);
+        {
             let fid = ui.make_persistent_id("consoles-filter");
             let mut filter: String = ui.data_mut(|d| d.get_temp(fid)).unwrap_or_default();
             crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut filter).hint_text("Filter by name or text"), f32::INFINITY, crate::theme::FIELD_H_COMPACT);
@@ -3009,7 +3030,7 @@ impl DataBugApp {
                 ui.add_space(4.0);
                 ui.label(RichText::new(msg).size(12.0).color(p.muted));
                 ui.add_space(4.0);
-                return;
+                return None;
             }
             let row_h = 44.0;
             egui::ScrollArea::vertical().max_height(row_h * 8.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -3057,9 +3078,6 @@ impl DataBugApp {
                     }
                 }
             });
-        });
-        if matches!(pick, Some(ConsolePick::Open(_))) {
-            ui.memory_mut(|m| m.close_popup());
         }
         pick
     }
@@ -4263,6 +4281,8 @@ impl DataBugApp {
                     if !close.is_empty() {
                         self.close_tabs(close);
                     }
+                    self.editor_bar(ui, &p, ctx);
+                    ui.add_space(4.0);
                     let mut goto = None;
                     let mut editor_request = None;
                     if let Some(tab) = self.tabs.get_mut(self.active) {

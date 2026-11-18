@@ -51,7 +51,7 @@ impl RenameDialog {
             .fixed_size([460.0, 0.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, -60.0])
             .show(ctx, |ui| {
-                let resp = ui.add(egui::TextEdit::singleline(&mut self.new_name).desired_width(f32::INFINITY));
+                let resp = crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut self.new_name), f32::INFINITY, crate::theme::FIELD_H);
                 if !self.focused {
                     resp.request_focus();
                     self.focused = true;

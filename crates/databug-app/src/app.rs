@@ -252,11 +252,11 @@ pub struct DataBugApp {
     editors_dirty: Option<Instant>,
     /// Off for screenshots, which must not touch the user's saved consoles.
     persist_editors: bool,
-    /// Saved consoles closed in this run, most recent last (Ctrl/⌘ + Shift + T).
-    closed_stack: Vec<u64>,
+    /// Consoles closed in this run, most recent last, for Ctrl/⌘ + Shift + T.
+    /// Closing removes a console from the saved list; this keeps it in memory only.
+    closed_stack: Vec<SavedEditor>,
     /// A saved console to reopen at the end of the frame.
     reopen_request: Option<u64>,
-    editors_filter: String,
 }
 
 fn now_hms() -> String {
@@ -396,6 +396,12 @@ fn edge_resize(ctx: &egui::Context) {
     }
 }
 
+/// What the user picked in the toolbar's consoles list.
+enum ConsolePick {
+    Open(u64),
+    Delete(u64),
+}
+
 /// Closed consoles kept for reopening; the oldest go first.
 const MAX_SAVED_EDITORS: usize = 300;
 
@@ -464,7 +470,6 @@ impl DataBugApp {
             persist_editors,
             closed_stack: Vec::new(),
             reopen_request: None,
-            editors_filter: String::new(),
         };
         if app.settings.current_project.as_ref().map(|id| !app.projects.iter().any(|p| &p.id == id)).unwrap_or(false) {
             app.settings.current_project = None;
@@ -674,10 +679,17 @@ impl DataBugApp {
     fn close_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.sync_editor(idx);
+            // a closed console leaves the list of consoles; Ctrl/⌘ + Shift + T
+            // can still bring it back during this run
             let doc = self.tabs[idx].doc;
-            if self.editors.iter().any(|e| e.id == doc) {
-                self.closed_stack.retain(|d| *d != doc);
-                self.closed_stack.push(doc);
+            if let Some(i) = self.editors.iter().position(|e| e.id == doc) {
+                let e = self.editors.remove(i);
+                self.closed_stack.retain(|c| c.id != doc);
+                self.closed_stack.push(e);
+                if self.closed_stack.len() > 50 {
+                    self.closed_stack.remove(0);
+                }
+                self.editors_dirty.get_or_insert_with(Instant::now);
             }
             if self.tabs[idx].in_tx {
                 self.toast("The open transaction was rolled back when the console closed");
@@ -763,10 +775,10 @@ impl DataBugApp {
         }
     }
 
-    /// Saved consoles that aren't open, newest first.
-    fn closed_editors(&self) -> Vec<&SavedEditor> {
-        let open: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
-        let mut v: Vec<&SavedEditor> = self.editors.iter().filter(|e| !open.contains(&e.id) && self.conn(&e.conn_id).is_some()).collect();
+    /// A connection's consoles that weren't closed (open now, or still open
+    /// when DataBug last quit), newest first.
+    fn consoles_for(&self, base: &str) -> Vec<&SavedEditor> {
+        let mut v: Vec<&SavedEditor> = self.editors.iter().filter(|e| ConnectionConfig::base_id(&e.conn_id) == base && self.conn(&e.conn_id).is_some()).collect();
         v.sort_by(|a, b| b.updated.cmp(&a.updated).then(b.id.cmp(&a.id)));
         v
     }
@@ -781,7 +793,6 @@ impl DataBugApp {
             self.toast("That console's connection no longer exists");
             return;
         }
-        self.closed_stack.retain(|d| *d != id);
         let ti = self.open_console(&e.conn_id, Some(e.text.clone()), ctx);
         let t = &mut self.tabs[ti];
         t.doc = e.id;
@@ -792,17 +803,20 @@ impl DataBugApp {
     }
 
     fn reopen_last_closed(&mut self, ctx: &egui::Context) {
-        let open: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
-        let id = self.closed_stack.iter().rev().find(|d| !open.contains(d) && self.editors.iter().any(|e| e.id == **d)).copied().or_else(|| self.closed_editors().first().map(|e| e.id));
-        match id {
-            Some(id) => self.reopen_editor(id, ctx),
-            None => self.toast("No closed consoles to reopen"),
+        let Some(e) = self.closed_stack.pop() else {
+            self.toast("No closed consoles to reopen");
+            return;
+        };
+        let id = e.id;
+        if !self.editors.iter().any(|x| x.id == id) {
+            self.editors.push(e);
+            self.editors_dirty.get_or_insert_with(Instant::now);
         }
+        self.reopen_editor(id, ctx);
     }
 
     fn delete_saved_editor(&mut self, id: u64) {
         self.editors.retain(|e| e.id != id);
-        self.closed_stack.retain(|d| *d != id);
         self.editors_dirty.get_or_insert_with(Instant::now);
     }
 
@@ -2127,7 +2141,8 @@ impl DataBugApp {
             .default_pos(ctx.screen_rect().center() - egui::vec2(280.0, 260.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let r = ui.add(egui::TextEdit::singleline(&mut ds.query).hint_text("Table, column, procedure or text in definitions").desired_width(ui.available_width() - 80.0));
+                    let w = ui.available_width() - 80.0;
+                    let r = crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut ds.query).hint_text("Table, column, procedure or text in definitions"), w, crate::theme::FIELD_H);
                     if ds.focus {
                         r.request_focus();
                         ds.focus = false;
@@ -2603,6 +2618,7 @@ impl DataBugApp {
         let mut actions = Vec::new();
         let mut pick_schema: Option<String> = None;
         let mut pick_db: Option<String> = None;
+        let mut console_pick: Option<ConsolePick> = None;
         let custom_frame = custom_window_frame();
         if custom_frame {
             // the empty parts of the toolbar act as the title bar; widgets added
@@ -2693,6 +2709,10 @@ impl DataBugApp {
                             }
                         });
                         r.response.on_hover_text("Database and schema this console uses for unqualified names, completion and go to definition");
+                    }
+                    // the connection's consoles, while it's signed in
+                    if self.liveness(&base).0 {
+                        console_pick = self.consoles_menu(ui, p, &base);
                     }
                     if cfg.production {
                         egui::Frame::new().fill(p.danger.gamma_multiply(0.2)).corner_radius(CornerRadius::same(6)).inner_margin(Margin::symmetric(7, 3)).show(ui, |ui| {
@@ -2887,6 +2907,11 @@ impl DataBugApp {
         if let Some(schema) = pick_schema {
             self.set_tab_schema(ti, schema);
         }
+        match console_pick {
+            Some(ConsolePick::Open(id)) => self.reopen_request = Some(id),
+            Some(ConsolePick::Delete(id)) => self.delete_saved_editor(id),
+            None => {}
+        }
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui, p: &Palette) -> (Option<usize>, Vec<usize>, bool) {
@@ -2897,7 +2922,7 @@ impl DataBugApp {
         let live_tabs: HashSet<u64> = self.tabs.iter().filter(|t| self.liveness(ConnectionConfig::base_id(&t.conn_id)).0).map(|t| t.id).collect();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 62.0).show(ui, |ui| {
+            egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 34.0).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (i, t) in self.tabs.iter().enumerate() {
                         let active = i == self.active;
@@ -2970,125 +2995,120 @@ impl DataBugApp {
             if ui.add(egui::Button::new(RichText::new("+").size(16.0).color(p.muted)).frame(false)).on_hover_text("New console  (Ctrl/⌘ + T)").clicked() {
                 new_tab = true;
             }
-            self.editors_button(ui, p);
         });
         (select, close, new_tab)
     }
 
-    /// Clock button next to the tabs: the list of closed consoles.
-    fn editors_button(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), Sense::click());
-        let popup_id = ui.make_persistent_id("closed-editors");
-        let open = ui.memory(|m| m.is_popup_open(popup_id));
-        if resp.hovered() || open {
-            ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+    /// Toolbar button listing the connection's consoles (open ones and ones
+    /// left open when DataBug quit). Returns what the user picked.
+    fn consoles_menu(&self, ui: &mut egui::Ui, p: &Palette, base: &str) -> Option<ConsolePick> {
+        let consoles = self.consoles_for(base);
+        let open: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
+        let popup_id = ui.make_persistent_id(("consoles", base));
+        let showing = ui.memory(|m| m.is_popup_open(popup_id));
+        let label = consoles.len().to_string();
+        let label_g = ui.painter().layout_no_wrap(label.clone(), FontId::proportional(12.0), p.text);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0 + label_g.size().x, 26.0), Sense::click());
+        let w = &ui.visuals().widgets;
+        let fill = if resp.hovered() || showing { w.hovered.weak_bg_fill } else { w.inactive.weak_bg_fill };
+        ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+        // two stacked sheets
+        let color = if resp.hovered() || showing { p.text } else { p.muted };
+        let st = Stroke::new(1.3_f32, color);
+        let ic = egui::pos2(rect.left() + 15.0, rect.center().y);
+        let back = egui::Rect::from_center_size(ic + egui::vec2(2.0, -2.0), egui::vec2(10.0, 12.0));
+        let front = egui::Rect::from_center_size(ic + egui::vec2(-1.5, 1.5), egui::vec2(10.0, 12.0));
+        ui.painter().line_segment([back.left_top(), back.right_top()], st);
+        ui.painter().line_segment([back.right_top(), back.right_bottom()], st);
+        ui.painter().rect_filled(front, CornerRadius::same(2), fill);
+        ui.painter().rect_stroke(front, CornerRadius::same(2), st, egui::StrokeKind::Middle);
+        for dy in [-2.0_f32, 1.0] {
+            ui.painter().line_segment([egui::pos2(front.left() + 2.5, front.center().y + dy), egui::pos2(front.right() - 2.5, front.center().y + dy)], Stroke::new(1.0_f32, color));
         }
-        // clock face
-        let c = rect.center();
-        let color = if resp.hovered() || open { p.text } else { p.muted };
-        ui.painter().circle_stroke(c, 6.5, Stroke::new(1.3_f32, color));
-        ui.painter().line_segment([c, c + egui::vec2(0.0, -4.0)], Stroke::new(1.3_f32, color));
-        ui.painter().line_segment([c, c + egui::vec2(3.0, 1.5)], Stroke::new(1.3_f32, color));
-        let resp = resp.on_hover_text("Closed consoles  (Ctrl/⌘ + Shift + T reopens the last one)");
-        if resp.clicked() {
+        ui.painter().galley(egui::pos2(rect.left() + 27.0, rect.center().y - label_g.size().y / 2.0), label_g, color);
+        let resp = resp.on_hover_text("Consoles on this connection: open ones and ones still open when DataBug last quit");
+        // screenshot scenes open the list with a flag in egui's memory
+        let forced = ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false);
+        if resp.clicked() || forced {
             ui.memory_mut(|m| m.toggle_popup(popup_id));
         }
+        let mut pick = None;
         egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            ui.set_width(440.0);
-            if let Some(id) = self.editors_list(ui, p, 14) {
-                self.reopen_request = Some(id);
-                ui.memory_mut(|m| m.close_popup());
+            ui.set_width(420.0);
+            let name = self.conn(base).map(|c| c.name.clone()).unwrap_or_default();
+            ui.label(RichText::new(format!("Consoles · {name}")).font(bold(13.0)));
+            ui.add_space(4.0);
+            let fid = ui.make_persistent_id("consoles-filter");
+            let mut filter: String = ui.data_mut(|d| d.get_temp(fid)).unwrap_or_default();
+            crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut filter).hint_text("Filter by name or text"), f32::INFINITY, crate::theme::FIELD_H_COMPACT);
+            ui.data_mut(|d| d.insert_temp(fid, filter.clone()));
+            ui.add_space(4.0);
+            let f = filter.to_lowercase();
+            let rows: Vec<&&SavedEditor> = consoles.iter().filter(|e| f.is_empty() || e.title.to_lowercase().contains(&f) || e.text.to_lowercase().contains(&f)).collect();
+            if rows.is_empty() {
+                let msg = if f.is_empty() { "No consoles with text yet. Consoles you don't close show up here, including after DataBug restarts." } else { "No consoles match." };
+                ui.add_space(4.0);
+                ui.label(RichText::new(msg).size(12.0).color(p.muted));
+                ui.add_space(4.0);
+                return;
             }
-        });
-    }
-
-    /// Searchable list of closed consoles. Returns the one to reopen.
-    fn editors_list(&mut self, ui: &mut egui::Ui, p: &Palette, rows: usize) -> Option<u64> {
-        let mut reopen = None;
-        let mut delete = None;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Closed consoles").font(bold(13.0)));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("kept until you delete them").size(11.0).color(p.faint));
+            let row_h = 44.0;
+            egui::ScrollArea::vertical().max_height(row_h * 8.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for e in rows {
+                    let is_open = open.contains(&e.id);
+                    let (rect, row) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
+                    let del_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(20.0, 20.0));
+                    let del = (!is_open).then(|| ui.interact(del_rect, ui.id().with(("del-console", e.id)), Sense::click()));
+                    let del_hovered = del.as_ref().map(|d| d.hovered()).unwrap_or(false);
+                    let hot = row.hovered() || del_hovered;
+                    if hot {
+                        ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+                    }
+                    let painter = ui.painter();
+                    let right = if hot && !is_open { del_rect.left() - 6.0 } else { rect.right() - 8.0 };
+                    let (tag, tag_color) = if is_open { ("open".to_string(), p.accent) } else { (ago(e.updated), p.faint) };
+                    let tag_g = painter.layout_no_wrap(tag, FontId::proportional(11.0), tag_color);
+                    let tag_w = tag_g.size().x;
+                    painter.galley(egui::pos2(right - tag_w, rect.top() + 7.0), tag_g, tag_color);
+                    let head = painter.layout_no_wrap(format!("{}   ", e.title), bold(12.5), p.text);
+                    let head_w = head.size().x;
+                    painter.galley(egui::pos2(rect.left() + 8.0, rect.top() + 5.0), head, p.text);
+                    if let Some(schema) = &e.schema {
+                        let max = ((right - tag_w - 10.0 - (rect.left() + 8.0 + head_w)) / 6.2).max(0.0) as usize;
+                        painter.text(egui::pos2(rect.left() + 8.0 + head_w, rect.top() + 6.0), egui::Align2::LEFT_TOP, schema.chars().take(max).collect::<String>(), FontId::proportional(11.5), p.muted);
+                    }
+                    let preview = e.text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| one_line(l, 120)).unwrap_or_default();
+                    let max_prev = ((right - rect.left() - 8.0) / 6.6) as usize;
+                    painter.text(egui::pos2(rect.left() + 8.0, rect.top() + 25.0), egui::Align2::LEFT_TOP, preview.chars().take(max_prev).collect::<String>(), FontId::monospace(11.0), p.muted);
+                    if let Some(del) = del {
+                        if hot {
+                            if del.hovered() {
+                                painter.rect_filled(del_rect, CornerRadius::same(4), p.danger.gamma_multiply(0.2));
+                            }
+                            painter.text(del_rect.center(), egui::Align2::CENTER_CENTER, "×", FontId::proportional(15.0), if del.hovered() { p.danger } else { p.muted });
+                        }
+                        if del.on_hover_text("Delete this console").clicked() {
+                            pick = Some(ConsolePick::Delete(e.id));
+                            continue;
+                        }
+                    }
+                    if row.clicked() {
+                        pick = Some(ConsolePick::Open(e.id));
+                    }
+                }
             });
         });
-        ui.add_space(4.0);
-        ui.add(egui::TextEdit::singleline(&mut self.editors_filter).hint_text("Filter by name, connection or text").desired_width(f32::INFINITY));
-        ui.add_space(4.0);
-        let filter = self.editors_filter.to_lowercase();
-        let list: Vec<(u64, String, String, Color32, String, String)> = self
-            .closed_editors()
-            .into_iter()
-            .filter_map(|e| {
-                let cfg = self.conn(&e.conn_id)?;
-                let conn = match &e.schema {
-                    Some(s) => format!("{} · {s}", cfg.name),
-                    None => cfg.name.clone(),
-                };
-                let matches = filter.is_empty() || e.title.to_lowercase().contains(&filter) || conn.to_lowercase().contains(&filter) || e.text.to_lowercase().contains(&filter);
-                if !matches {
-                    return None;
-                }
-                let preview = e.text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| one_line(l, 90)).unwrap_or_default();
-                Some((e.id, e.title.clone(), conn, connection_color(cfg.color), preview, ago(e.updated)))
-            })
-            .collect();
-        if list.is_empty() {
-            ui.add_space(6.0);
-            let msg = if filter.is_empty() { "No closed consoles yet. When you close a console that has text in it, it shows up here." } else { "No closed consoles match." };
-            ui.label(RichText::new(msg).size(12.0).color(p.muted));
-            ui.add_space(6.0);
-            return None;
+        if matches!(pick, Some(ConsolePick::Open(_))) {
+            ui.memory_mut(|m| m.close_popup());
         }
-        let row_h = 44.0;
-        egui::ScrollArea::vertical().max_height(row_h * rows.min(list.len()) as f32 + 4.0).auto_shrink([false, true]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (id, title, conn, color, preview, when) in &list {
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
-                let del_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(20.0, 20.0));
-                let del = ui.interact(del_rect, ui.id().with(("del-editor", id)), Sense::click());
-                if resp.hovered() || del.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
-                }
-                let painter = ui.painter();
-                painter.circle_filled(egui::pos2(rect.left() + 10.0, rect.top() + 14.0), 3.5, *color);
-                let right = if resp.hovered() || del.hovered() { del_rect.left() - 6.0 } else { rect.right() - 8.0 };
-                let when_g = painter.layout_no_wrap(when.clone(), FontId::proportional(11.0), p.faint);
-                let when_w = when_g.size().x;
-                painter.galley(egui::pos2(right - when_w, rect.top() + 7.0), when_g, p.faint);
-                let head = painter.layout_no_wrap(format!("{title}   "), bold(12.5), p.text);
-                let head_w = head.size().x;
-                painter.galley(egui::pos2(rect.left() + 20.0, rect.top() + 5.0), head, p.text);
-                let max_conn = (right - when_w - 10.0 - (rect.left() + 20.0 + head_w)).max(0.0);
-                let conn_txt: String = conn.chars().take((max_conn / 6.2) as usize).collect();
-                painter.text(egui::pos2(rect.left() + 20.0 + head_w, rect.top() + 6.0), egui::Align2::LEFT_TOP, conn_txt, FontId::proportional(11.5), p.muted);
-                let max_prev = ((right - rect.left() - 20.0) / 6.6) as usize;
-                let prev: String = preview.chars().take(max_prev).collect();
-                painter.text(egui::pos2(rect.left() + 20.0, rect.top() + 25.0), egui::Align2::LEFT_TOP, prev, FontId::monospace(11.0), p.muted);
-                if resp.hovered() || del.hovered() {
-                    if del.hovered() {
-                        painter.rect_filled(del_rect, CornerRadius::same(4), p.danger.gamma_multiply(0.2));
-                    }
-                    painter.text(del_rect.center(), egui::Align2::CENTER_CENTER, "×", FontId::proportional(15.0), if del.hovered() { p.danger } else { p.muted });
-                }
-                if del.on_hover_text("Delete this console").clicked() {
-                    delete = Some(*id);
-                } else if resp.clicked() {
-                    reopen = Some(*id);
-                }
-            }
-        });
-        if let Some(id) = delete {
-            self.delete_saved_editor(id);
-        }
-        reopen
+        pick
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui, p: &Palette) -> Vec<Action> {
         let mut actions = Vec::new();
         ui.vertical_centered(|ui| {
-            let recents = !self.closed_editors().is_empty();
-            ui.add_space((ui.available_height() * if recents { 0.1 } else { 0.25 }).max(20.0));
+            ui.add_space((ui.available_height() * 0.25).max(20.0));
             ui.label(RichText::new("DataBug").font(bold(30.0)));
             ui.label(RichText::new("A fast, memory-light database client").size(14.0).color(p.muted));
             ui.add_space(22.0);
@@ -3096,20 +3116,8 @@ impl DataBugApp {
             if ui.add(big("New connection")).clicked() {
                 actions.push(Action::NewConnection);
             }
-            if recents {
-                ui.add_space(22.0);
-                let w = 440.0_f32.min(ui.available_width());
-                ui.allocate_ui(egui::vec2(w, 300.0), |ui| {
-                    egui::Frame::new().fill(p.raised).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(10)).show(ui, |ui| {
-                        ui.set_width(w - 20.0);
-                        if let Some(id) = self.editors_list(ui, p, 5) {
-                            self.reopen_request = Some(id);
-                        }
-                    });
-                });
-            }
             ui.add_space(28.0);
-            let shortcuts = [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run script"), ("Ctrl + Space", "Completion"), ("Ctrl/⌘ + B", "Open the definition under the cursor"), ("Ctrl/⌘ + Shift + T", "Reopen the last closed console"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")];
+            let shortcuts = [("Ctrl/⌘ + Enter", "Run statement at cursor"), ("Ctrl/⌘ + Shift + Enter", "Run script"), ("Ctrl + Space", "Completion"), ("Ctrl/⌘ + B", "Open the definition under the cursor"), ("Ctrl + Alt + L", "Format"), ("Ctrl/⌘ + /", "Toggle comment")];
             for (k, v) in shortcuts {
                 ui.horizontal(|ui| {
                     ui.add_space((ui.available_width() - 360.0).max(0.0) / 2.0);
@@ -3179,7 +3187,7 @@ impl DataBugApp {
             }
             BottomTab::History => {
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.history_filter).hint_text("Search history…").desired_width(260.0));
+                    crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut self.history_filter).hint_text("Search history…"), 260.0, crate::theme::FIELD_H_COMPACT);
                     ui.label(RichText::new("Double-click to insert into the console").size(11.5).color(p.faint));
                 });
                 let f = self.history_filter.to_lowercase();
@@ -3207,9 +3215,16 @@ impl DataBugApp {
                     if tab.output.is_empty() {
                         ui.label(RichText::new("Run a statement with Ctrl/⌘ + Enter. Messages, timings and errors show up here.").color(p.faint));
                     }
+                    // messages are selectable text (drag to select, Ctrl/⌘ + C), and
+                    // right-click copies a message, its SQL or the whole output
+                    let line_text = |l: &LogLine| match &l.sql {
+                        Some(sql) => format!("{}  {}  {}", l.at, l.text, sql),
+                        None => format!("{}  {}", l.at, l.text),
+                    };
+                    let mut copy: Option<String> = None;
                     for l in &tab.output {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(&l.at).font(FontId::monospace(11.5)).color(p.faint));
+                        let row = ui.horizontal_wrapped(|ui| {
+                            ui.add(egui::Label::new(RichText::new(&l.at).font(FontId::monospace(11.5)).color(p.faint)).selectable(true));
                             let (icon, color) = match l.kind {
                                 LogKind::Info => ("›", p.muted),
                                 LogKind::Ok => ("✔", p.success),
@@ -3217,11 +3232,38 @@ impl DataBugApp {
                                 LogKind::Error => ("✖", p.danger),
                             };
                             ui.label(RichText::new(icon).color(color));
-                            ui.label(RichText::new(&l.text).color(if l.kind == LogKind::Error { p.danger } else { p.text }));
+                            ui.add(egui::Label::new(RichText::new(&l.text).color(if l.kind == LogKind::Error { p.danger } else { p.text })).selectable(true));
                             if let Some(sql) = &l.sql {
-                                ui.label(RichText::new(sql).font(FontId::monospace(12.0)).color(p.muted));
+                                ui.add(egui::Label::new(RichText::new(sql).font(FontId::monospace(12.0)).color(p.muted)).selectable(true));
                             }
                         });
+                        let resp = ui.interact(row.response.rect, ui.id().with(("out-line", l as *const LogLine as usize)), Sense::click());
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(180.0);
+                            if ui.button("Copy message").clicked() {
+                                copy = Some(l.text.clone());
+                                ui.close_menu();
+                            }
+                            if let Some(sql) = &l.sql {
+                                if ui.button("Copy SQL").clicked() {
+                                    copy = Some(sql.clone());
+                                    ui.close_menu();
+                                }
+                            }
+                            if ui.button("Copy line").clicked() {
+                                copy = Some(line_text(l));
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("Copy all output").clicked() {
+                                copy = Some(tab.output.iter().map(line_text).collect::<Vec<_>>().join("\n"));
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    if let Some(t) = copy {
+                        ui.ctx().copy_text(t);
+                        toast = Some("Copied".into());
                     }
                 });
             }
@@ -3717,16 +3759,19 @@ impl DataBugApp {
                             self.apply(Action::Disconnect(id), ctx);
                         }
                         "editors" => {
-                            // consoles with text are kept after closing and listed on the welcome screen
+                            // two open consoles, one left open when DataBug last quit, one closed
                             let id = self.tabs[self.active].conn_id.clone();
-                            for (title, sql) in [("Monthly revenue", "SELECT strftime('%Y-%m', ordered_at) AS month, SUM(total) AS revenue\nFROM orders GROUP BY 1 ORDER BY 1;"), ("Low stock", "SELECT name, stock FROM products WHERE stock < 10;"), ("", "")] {
+                            for (title, sql) in [("Monthly revenue", "SELECT strftime('%Y-%m', ordered_at) AS month, SUM(total) AS revenue\nFROM orders GROUP BY 1 ORDER BY 1;"), ("Scratch", "SELECT * FROM products WHERE price > 100;")] {
                                 let ti = self.open_console(&id, Some(sql.into()), ctx);
-                                if !title.is_empty() {
-                                    self.tabs[ti].title = title.into();
-                                }
+                                self.tabs[ti].title = title.into();
                             }
-                            let all: Vec<usize> = (0..self.tabs.len()).collect();
-                            self.close_tabs(all);
+                            let ti = self.open_console(&id, Some("SELECT 1;".into()), ctx);
+                            self.flush_editors(false);
+                            self.close_tab(ti);
+                            let next = self.editors.iter().map(|e| e.id).max().unwrap_or(0) + 100;
+                            self.editors.push(SavedEditor { id: next, conn_id: id, title: "Low stock".into(), text: "SELECT name, stock FROM products WHERE stock < 10;".into(), schema: None, updated: now_secs().saturating_sub(3 * 3600) });
+                            self.active = 0;
+                            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open-consoles-menu"), true));
                         }
                         "goto" => {
                             let t = &mut self.tabs[self.active];
@@ -4253,6 +4298,7 @@ impl DataBugApp {
                         self.close_tabs(close);
                     }
                     let mut goto = None;
+                    let mut editor_request = None;
                     if let Some(tab) = self.tabs.get_mut(self.active) {
                         let entry = self.catalogs.get(&tab.conn_id);
                         let gen = entry.map(|e| e.generation).unwrap_or(0);
@@ -4262,10 +4308,17 @@ impl DataBugApp {
                             self.pending_search = Some(q);
                         }
                         goto = tab.editor.goto.take();
+                        editor_request = tab.editor.request.take();
                     }
                     if let Some(at) = goto {
                         let ti = self.active;
                         actions.extend(self.goto_definition(ti, at));
+                    }
+                    match editor_request {
+                        Some(crate::editor::EditorRequest::Run) => self.request_run(false, None, ctx),
+                        Some(crate::editor::EditorRequest::RunScript) => self.request_run(true, None, ctx),
+                        Some(crate::editor::EditorRequest::Format) => self.format_active(),
+                        None => {}
                     }
                 });
             });

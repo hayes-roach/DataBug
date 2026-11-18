@@ -112,6 +112,36 @@ pub struct Editor {
     schema: Option<String>,
     /// The catalog with `schema` as its default, rebuilt when either changes.
     scoped: Option<(u64, String, Arc<Catalog>)>,
+    /// Something the app does for the editor's right-click menu.
+    pub request: Option<EditorRequest>,
+    /// *Paste* was chosen in the right-click menu: insert the clipboard text
+    /// when the window delivers it.
+    pending_paste: bool,
+    /// Where the right-click menu was opened (byte offset), for *Go to definition*.
+    menu_at: Option<usize>,
+}
+
+/// Right-click menu items the app carries out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditorRequest {
+    Run,
+    RunScript,
+    Format,
+}
+
+/// What was picked in the editor's right-click menu.
+#[derive(Clone, Copy)]
+enum MenuPick {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Run,
+    RunScript,
+    GoTo,
+    Find,
+    Format,
+    Comment,
 }
 
 fn char_to_byte(s: &str, ci: usize) -> usize {
@@ -149,6 +179,9 @@ impl Editor {
             goto: None,
             schema: None,
             scoped: None,
+            request: None,
+            pending_paste: false,
+            menu_at: None,
         }
     }
 
@@ -356,7 +389,7 @@ impl Editor {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 3.0;
                         let te = egui::TextEdit::singleline(&mut self.find.query).id(qid).hint_text("Find").desired_width(220.0).font(FontId::monospace(12.0));
-                        let r = ui.add(te);
+                        let r = crate::theme::text_field(ui, p, te, 220.0, crate::theme::FIELD_H_COMPACT);
                         if self.find.focus_query {
                             r.request_focus();
                             let mut st = egui::TextEdit::load_state(&ctx, qid).unwrap_or_default();
@@ -407,7 +440,7 @@ impl Editor {
                     if self.find.show_replace {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
-                            ui.add(egui::TextEdit::singleline(&mut self.find.replace).id(rid).hint_text(if self.find.regex { "Replace ($1 for groups)" } else { "Replace" }).desired_width(220.0).font(FontId::monospace(12.0)));
+                            crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut self.find.replace).id(rid).hint_text(if self.find.regex { "Replace ($1 for groups)" } else { "Replace" }).font(FontId::monospace(12.0)), 220.0, crate::theme::FIELD_H_COMPACT);
                             let n = self.find.matches.len();
                             if ui.add_enabled(n > 0, egui::Button::new("Replace")).on_hover_text("Replace this match  (Enter in the replace field)").clicked() {
                                 replace_one = true;
@@ -588,6 +621,23 @@ impl Editor {
     pub fn show(&mut self, ui: &mut egui::Ui, p: &Palette, catalog: Option<&Catalog>, catalog_gen: u64, auto_complete: bool, font_size: f32) {
         let scoped = self.scoped_catalog(catalog, catalog_gen);
         let catalog = scoped.as_deref().or(catalog);
+        if self.pending_paste {
+            let pasted = ui.input_mut(|i| {
+                let mut got = None;
+                i.events.retain(|e| match e {
+                    egui::Event::Paste(t) if got.is_none() => {
+                        got = Some(t.clone());
+                        false
+                    }
+                    _ => true,
+                });
+                got
+            });
+            if let Some(t) = pasted {
+                self.pending_paste = false;
+                self.insert(&t);
+            }
+        }
         // ---- inspections (recomputed when text or catalog change) ----
         if self.diag_key != (self.version, catalog_gen) && self.text.len() < 300_000 {
             self.diagnostics = inspect(&self.text, catalog, self.dialect);
@@ -846,6 +896,76 @@ impl Editor {
             if self.wants_focus {
                 out.response.request_focus();
                 self.wants_focus = false;
+            }
+            // dragging a selection near or past the top or bottom edge keeps
+            // scrolling, so the selection follows the pointer
+            if out.response.dragged() {
+                if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                    let clip = ui.clip_rect();
+                    let edge = 18.0;
+                    let speed = |d: f32| (d * 0.5).clamp(1.0, 40.0);
+                    let dy = if pos.y < clip.top() + edge { speed(clip.top() + edge - pos.y) } else if pos.y > clip.bottom() - edge { -speed(pos.y - (clip.bottom() - edge)) } else { 0.0 };
+                    let dx = if pos.x < clip.left() + gutter_w { 0.0 } else if pos.x > clip.right() - edge { -speed(pos.x - (clip.right() - edge)) } else { 0.0 };
+                    if dy != 0.0 || dx != 0.0 {
+                        ui.scroll_with_delta(egui::vec2(dx, dy));
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
+
+            // right-click menu
+            if out.response.secondary_clicked() {
+                self.menu_at = out.response.interact_pointer_pos().map(|pos| char_to_byte(&self.text, g.cursor_from_pos(pos - origin).ccursor.index));
+            }
+            let mut pick = None;
+            let has_sel = self.selected_text().is_some() || self.selection.is_some();
+            out.response.context_menu(|ui| {
+                ui.set_min_width(230.0);
+                let key = |k: &str| if cfg!(target_os = "macos") { format!("⌘{k}") } else { format!("Ctrl+{k}") };
+                let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, keys: String, what: MenuPick| {
+                    if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
+                        pick = Some(what);
+                        ui.close_menu();
+                    }
+                };
+                item(ui, has_sel, "Cut", key("X"), MenuPick::Cut);
+                item(ui, has_sel, "Copy", key("C"), MenuPick::Copy);
+                item(ui, true, "Paste", key("V"), MenuPick::Paste);
+                item(ui, true, "Select all", key("A"), MenuPick::SelectAll);
+                ui.separator();
+                item(ui, true, if has_sel { "Run selection" } else { "Run statement" }, key("Enter"), MenuPick::Run);
+                item(ui, true, "Run script", key("Shift+Enter"), MenuPick::RunScript);
+                ui.separator();
+                item(ui, true, "Go to definition", key("B"), MenuPick::GoTo);
+                item(ui, true, "Find…", key("F"), MenuPick::Find);
+                item(ui, true, "Format", "Ctrl+Alt+L".into(), MenuPick::Format);
+                item(ui, true, "Toggle comment", key("/"), MenuPick::Comment);
+            });
+            if let Some(pick) = pick {
+                match pick {
+                    MenuPick::Cut | MenuPick::Copy => {
+                        if let Some(t) = self.selection.clone().and_then(|r| self.text.get(r).map(str::to_string)) {
+                            ui.ctx().copy_text(t);
+                            if matches!(pick, MenuPick::Cut) {
+                                self.insert("");
+                            }
+                        }
+                    }
+                    MenuPick::Paste => {
+                        self.pending_paste = true;
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                    }
+                    MenuPick::SelectAll => self.select(0..self.text.len()),
+                    MenuPick::Run => self.request = Some(EditorRequest::Run),
+                    MenuPick::RunScript => self.request = Some(EditorRequest::RunScript),
+                    MenuPick::GoTo => self.goto = self.menu_at.or(Some(self.cursor)),
+                    MenuPick::Find => self.open_find(false),
+                    MenuPick::Format => self.request = Some(EditorRequest::Format),
+                    MenuPick::Comment => self.toggle_comment(),
+                }
+                if !matches!(pick, MenuPick::Find) {
+                    self.wants_focus = true;
+                }
             }
             self.last_galley = Some((out.galley.clone(), origin));
         });

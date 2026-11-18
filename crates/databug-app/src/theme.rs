@@ -415,3 +415,28 @@ pub const SWATCHES: [[u8; 3]; 8] = [
     [140, 143, 150],
     [247, 84, 100],
 ];
+
+/// Height of single-line text fields in forms.
+pub const FIELD_H: f32 = 30.0;
+/// Height of text fields in rows of fields (table editor, CSV column mapping).
+pub const FIELD_H_COMPACT: f32 = 26.0;
+
+/// The one text-field style used everywhere: panel fill, thin border, 6 px
+/// corners, accent border while focused, text centred vertically. `width`
+/// is the outer width (`f32::INFINITY` fills the row).
+pub fn text_field(ui: &mut egui::Ui, p: &Palette, edit: egui::TextEdit<'_>, width: f32, height: f32) -> egui::Response {
+    let width = if width.is_finite() { width } else { ui.available_width() };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let inner = rect.shrink2(egui::vec2(9.0, 1.0));
+    let r = ui.put(inner, edit.frame(false).margin(Margin::ZERO).vertical_align(egui::Align::Center).desired_width(inner.width()));
+    let stroke = if r.has_focus() {
+        Stroke::new(1.0_f32, p.accent)
+    } else if ui.rect_contains_pointer(rect) && ui.is_enabled() {
+        Stroke::new(1.0_f32, p.muted.gamma_multiply(0.6))
+    } else {
+        Stroke::new(1.0_f32, p.border)
+    };
+    ui.painter().set(bg, egui::epaint::RectShape::new(rect, CornerRadius::same(6), p.island, stroke, egui::StrokeKind::Inside));
+    r
+}

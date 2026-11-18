@@ -331,7 +331,7 @@ impl ResultView {
                     ui.label(RichText::new("limit reached").color(p.warning)).on_hover_text("DataBug stopped fetching at the row limit. Change it in settings, or add a LIMIT/WHERE.");
                 }
             }
-            let filter = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter rows…").desired_width(180.0));
+            let filter = crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut self.filter).hint_text("Filter rows…"), 180.0, crate::theme::FIELD_H_COMPACT);
             if filter.changed() {
                 self.order_dirty = true;
             }

@@ -886,8 +886,8 @@ fn text_field(ui: &mut egui::Ui, p: &Palette, text: &mut String, hint: &str, id:
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), Sense::hover());
     let focused = ui.memory(|m| m.has_focus(id));
     let hovered = ui.rect_contains_pointer(rect);
-    let stroke = if focused { Stroke::new(1.5_f32, p.accent) } else if hovered { Stroke::new(1.0_f32, p.border) } else { Stroke::new(1.0_f32, p.border.gamma_multiply(0.6)) };
-    ui.painter().rect(rect, CornerRadius::same(7), if focused { p.island } else { p.raised }, stroke, egui::StrokeKind::Inside);
+    let stroke = if focused { Stroke::new(1.0_f32, p.accent) } else if hovered { Stroke::new(1.0_f32, p.muted.gamma_multiply(0.6)) } else { Stroke::new(1.0_f32, p.border) };
+    ui.painter().rect(rect, CornerRadius::same(6), p.island, stroke, egui::StrokeKind::Inside);
     let c = egui::pos2(rect.left() + 15.0, rect.center().y);
     let ic = if focused { p.accent } else { p.muted };
     match icon {
@@ -980,7 +980,7 @@ fn db_picker_row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
         });
         ui.add_space(2.0);
         if total > 8 {
-            ui.add(egui::TextEdit::singleline(&mut st.db_picker_search).hint_text("Filter").desired_width(f32::INFINITY));
+            crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut st.db_picker_search).hint_text("Filter"), f32::INFINITY, crate::theme::FIELD_H_COMPACT);
         }
         ui.horizontal(|ui| {
             if ui.small_button("All").clicked() {
@@ -1130,7 +1130,7 @@ fn schema_picker(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
         });
         ui.add_space(2.0);
         if total > 8 {
-            ui.add(egui::TextEdit::singleline(&mut st.picker_search).hint_text("Filter").desired_width(f32::INFINITY));
+            crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut st.picker_search).hint_text("Filter"), f32::INFINITY, crate::theme::FIELD_H_COMPACT);
         }
         ui.horizontal(|ui| {
             if ui.small_button("All").clicked() {

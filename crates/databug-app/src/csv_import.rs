@@ -301,7 +301,7 @@ impl CsvImport {
                     });
                     if self.target.is_none() {
                         ui.label("named");
-                        ui.add(egui::TextEdit::singleline(&mut self.new_name).desired_width(200.0));
+                        crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut self.new_name), 200.0, crate::theme::FIELD_H);
                     }
                 });
                 ui.add_space(6.0);
@@ -333,8 +333,8 @@ impl CsvImport {
                                     if let Some(nc) = self.new_cols.get_mut(i) {
                                         ui.horizontal(|ui| {
                                             ui.checkbox(&mut nc.0, "");
-                                            ui.add_enabled_ui(nc.0, |ui| ui.add_sized([150.0, 22.0], egui::TextEdit::singleline(&mut nc.1)));
-                                            ui.add_enabled_ui(nc.0, |ui| ui.add_sized([130.0, 22.0], egui::TextEdit::singleline(&mut nc.2).font(FontId::monospace(12.0))));
+                                            ui.add_enabled_ui(nc.0, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut nc.1), 150.0, crate::theme::FIELD_H_COMPACT));
+                                            ui.add_enabled_ui(nc.0, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut nc.2).font(FontId::monospace(12.0)), 130.0, crate::theme::FIELD_H_COMPACT));
                                         });
                                     }
                                 }

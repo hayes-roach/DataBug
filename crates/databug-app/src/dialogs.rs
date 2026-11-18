@@ -574,19 +574,7 @@ fn engine_dropdown(ui: &mut egui::Ui, p: &Palette, logos: &crate::icons::Logos, 
 /// A text field drawn like the engine dropdown: `FIELD_H` tall, same fill,
 /// border and corners, accent border while focused. `width` is the outer width.
 fn input(ui: &mut egui::Ui, p: &Palette, edit: egui::TextEdit<'_>, width: f32) -> egui::Response {
-    let out = egui::Frame::new()
-        .fill(p.island)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::symmetric(10, 5))
-        .show(ui, |ui| ui.add(edit.frame(false).margin(Margin::ZERO).font(egui::FontId::proportional(13.5)).desired_width(width - 22.0)));
-    let rect = out.response.rect;
-    if out.inner.has_focus() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, p.accent), egui::StrokeKind::Inside);
-    } else if ui.rect_contains_pointer(rect) {
-        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, p.muted.gamma_multiply(0.6)), egui::StrokeKind::Inside);
-    }
-    out.inner
+    crate::theme::text_field(ui, p, edit.font(egui::FontId::proportional(13.5)), width, FIELD_H)
 }
 
 /// A form row holding a field and its extras, exactly as tall as a field so
@@ -596,7 +584,7 @@ fn field_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 }
 
 /// Height of the dialog's fields, the engine dropdown and their labels.
-const FIELD_H: f32 = 30.0;
+use crate::theme::FIELD_H;
 
 /// The port number: a small text field like the others, digits only, centred.
 /// An empty or out-of-range entry keeps the previous port (outlined in red).

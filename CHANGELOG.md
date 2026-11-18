@@ -6,10 +6,22 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Added
+
+- Right-click menu in the editor: Cut, Copy, Paste, Select all, Run statement or selection, Run script, Go to definition, Find, Format and Toggle comment
+- Output messages can be selected and copied, and right-clicking one copies the message, its SQL, the line or the whole output
+
+### Changed
+
+- The consoles list now holds only consoles you haven't closed: the ones open now and the ones still open when DataBug last quit. It moved from the welcome screen and the tab bar to a consoles button in the toolbar (next to the schema picker), shown while the connection is signed in. Closing a tab removes its console; `Ctrl/⌘ + Shift + T` still brings back the last one closed during this run
+- Every text field (table editor, CSV import, rename, find and replace, Find in database, result and history filters, schema and database pickers) uses the same style as the new-connection dialog instead of a black box
+- README: dropped the comparisons to DataGrip
+
 ### Fixed
 
+- Dragging a selection in the editor past its top or bottom edge now keeps scrolling, so the cursor follows the pointer instead of stopping at the edge
 - Schema compare's difference count ("6 differences") no longer splits across two lines when the toolbar is narrow
-- README screenshots updated for the new connection dialog, logos, explorer refresh button and tab bar, with new ones for the engine list, closed consoles and go to definition
+- README screenshots updated for the new connection dialog, logos, explorer refresh button, consoles button and text fields, with new ones for the engine list, the consoles list and go to definition
 
 ## [0.5.0] - 2026-11-18
 

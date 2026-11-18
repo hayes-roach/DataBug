@@ -202,7 +202,7 @@ impl TableEditor {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Name").color(p.muted));
-                    ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(280.0));
+                    crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut self.name), 280.0, crate::theme::FIELD_H);
                     ui.add_space(16.0);
                     let live = self.cols.iter().filter(|c| !c.dropped).count();
                     for (s, label) in [(Section::Columns, format!("Columns {live}")), (Section::Indexes, format!("Indexes {}", self.idx.iter().filter(|i| !i.dropped).count())), (Section::Keys, format!("Foreign keys {}", self.fks.iter().filter(|f| !f.dropped).count()))] {
@@ -258,9 +258,9 @@ impl TableEditor {
             let mut remove: Option<usize> = None;
             for (i, c) in self.cols.iter_mut().enumerate() {
                 let color = if c.dropped { p.danger } else if c.original.is_none() { p.success } else { p.text };
-                ui.add_enabled_ui(!c.dropped, |ui| ui.add_sized([170.0, 22.0], egui::TextEdit::singleline(&mut c.name).text_color(color)));
+                ui.add_enabled_ui(!c.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut c.name).text_color(color), 170.0, crate::theme::FIELD_H_COMPACT));
                 ui.horizontal(|ui| {
-                    ui.add_enabled_ui(!c.dropped, |ui| ui.add_sized([150.0, 22.0], egui::TextEdit::singleline(&mut c.ty).font(FontId::monospace(12.0))));
+                    ui.add_enabled_ui(!c.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut c.ty).font(FontId::monospace(12.0)), 150.0, crate::theme::FIELD_H_COMPACT));
                     ui.menu_button("…", |ui| {
                         for t in types(d) {
                             if ui.button(*t).clicked() {
@@ -275,7 +275,7 @@ impl TableEditor {
                     c.nullable = !not_null;
                 }
                 ui.add_enabled(!c.dropped, egui::Checkbox::without_text(&mut c.pk));
-                ui.add_enabled_ui(!c.dropped, |ui| ui.add_sized([140.0, 22.0], egui::TextEdit::singleline(&mut c.default).hint_text("none").font(FontId::monospace(12.0))));
+                ui.add_enabled_ui(!c.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut c.default).hint_text("none").font(FontId::monospace(12.0)), 140.0, crate::theme::FIELD_H_COMPACT));
                 let label = if c.dropped { "Undo" } else { "Drop" };
                 if ui.small_button(label).clicked() {
                     if c.original.is_none() {
@@ -309,8 +309,8 @@ impl TableEditor {
             ui.end_row();
             let mut remove = None;
             for (i, ix) in self.idx.iter_mut().enumerate() {
-                ui.add_enabled_ui(!ix.dropped, |ui| ui.add_sized([200.0, 22.0], egui::TextEdit::singleline(&mut ix.name)));
-                ui.add_enabled_ui(!ix.dropped, |ui| ui.add_sized([260.0, 22.0], egui::TextEdit::singleline(&mut ix.columns)));
+                ui.add_enabled_ui(!ix.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut ix.name), 200.0, crate::theme::FIELD_H_COMPACT));
+                ui.add_enabled_ui(!ix.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut ix.columns), 260.0, crate::theme::FIELD_H_COMPACT));
                 ui.add_enabled(!ix.dropped, egui::Checkbox::without_text(&mut ix.unique));
                 if ui.small_button(if ix.dropped { "Undo" } else { "Drop" }).clicked() {
                     ix.dropped = !ix.dropped;
@@ -342,14 +342,14 @@ impl TableEditor {
             }
             ui.end_row();
             for (i, f) in self.fks.iter_mut().enumerate() {
-                ui.add_enabled_ui(!f.dropped, |ui| ui.add_sized([150.0, 22.0], egui::TextEdit::singleline(&mut f.name)));
-                ui.add_enabled_ui(!f.dropped, |ui| ui.add_sized([120.0, 22.0], egui::TextEdit::singleline(&mut f.columns)));
+                ui.add_enabled_ui(!f.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut f.name), 150.0, crate::theme::FIELD_H_COMPACT));
+                ui.add_enabled_ui(!f.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut f.columns), 120.0, crate::theme::FIELD_H_COMPACT));
                 egui::ComboBox::from_id_salt(("fk-ref", i)).selected_text(if f.ref_table.is_empty() { "choose…" } else { &f.ref_table }).width(150.0).show_ui(ui, |ui| {
                     for t in &tables {
                         ui.selectable_value(&mut f.ref_table, t.clone(), t);
                     }
                 });
-                ui.add_enabled_ui(!f.dropped, |ui| ui.add_sized([120.0, 22.0], egui::TextEdit::singleline(&mut f.ref_columns)));
+                ui.add_enabled_ui(!f.dropped, |ui| crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut f.ref_columns), 120.0, crate::theme::FIELD_H_COMPACT));
                 egui::ComboBox::from_id_salt(("fk-del", i)).selected_text(if f.on_delete.is_empty() { "NO ACTION" } else { &f.on_delete }).width(110.0).show_ui(ui, |ui| {
                     for o in ["NO ACTION", "CASCADE", "SET NULL", "RESTRICT"] {
                         let v = if o == "NO ACTION" { String::new() } else { o.to_string() };

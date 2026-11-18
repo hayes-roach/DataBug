@@ -1,6 +1,6 @@
 # DataBug
 
-A fast, memory-light, free and open source database client written in Rust for macOS, Windows and Linux, with a DataGrip-style workflow (DataBug isn't affiliated with JetBrains; see [Disclaimer](#disclaimer)): a schema explorer that shows every kind of object, a SQL editor that understands your schema, a virtualized results grid, query plans, table and routine editing, schema compare, ER diagrams, CSV import, rename refactoring, and guard rails for production.
+A fast, memory-light, free and open source database client written in Rust for macOS, Windows and Linux: a schema explorer that shows every kind of object, a SQL editor that understands your schema, a virtualized results grid, query plans, table and routine editing, schema compare, ER diagrams, CSV import, rename refactoring, and guard rails for production.
 
 ![DataBug editor with schema-aware completion](docs/screenshot-editor.png)
 
@@ -20,9 +20,9 @@ A fast, memory-light, free and open source database client written in Rust for m
 |---|---|---|
 | ![connection](docs/screenshot-connection.png) | ![engine dropdown](docs/screenshot-engines.png) | ![light](docs/screenshot-light.png) |
 
-| Closed consoles, kept and reopenable | Go to definition (`Ctrl/⌘ + B`) | |
+| Your consoles on a connection | Go to definition (`Ctrl/⌘ + B`) | |
 |---|---|---|
-| ![closed consoles](docs/screenshot-closed-consoles.png) | ![go to definition](docs/screenshot-go-to-definition.png) | |
+| ![consoles](docs/screenshot-consoles.png) | ![go to definition](docs/screenshot-go-to-definition.png) | |
 
 ## Install
 
@@ -129,7 +129,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 
 ## Features
 
-**Schema visibility** (like DataGrip's schema selection)
+**Schema visibility**
 - Under each connection, a **"3 of 12 schemas"** chip opens a checklist with **All**, **Default only** and **Non-empty** shortcuts and a filter for long lists. Also in the connection's right-click menu (**Choose schemas…**) and in the connection dialog.
 - The choice is saved per connection. Ticking every schema switches back to "All", which also picks up schemas created later. MySQL calls them databases.
 - Hidden schemas are only hidden in the explorer; completion, compare and the ER diagram still see everything.
@@ -161,17 +161,19 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - Schema-aware completion that works on half-typed SQL: columns resolved through aliases (including aliases defined *after* the cursor), tables after `FROM`/`JOIN`, `schema.` drill-down, fuzzy matching (`cid` → `customer_id`), and join conditions after `ON` inferred from `<table>_id` naming.
 - Inspections as you type: unknown tables, unknown `alias.column` references, `DELETE`/`UPDATE` without `WHERE`, `DROP`/`TRUNCATE`.
 - Runs the statement under the cursor, the selection, or the whole script. The running statement is highlighted, and a failing statement is tinted red.
+- Right-click in the editor for *Cut*, *Copy*, *Paste*, *Select all*, *Run statement* / *Run selection*, *Run script*, *Go to definition*, *Find…*, *Format* and *Toggle comment*. Dragging a selection to the top or bottom edge keeps scrolling, so long selections follow the pointer.
+- Output messages are selectable text (drag across them and press `Ctrl/⌘ + C`); right-click a line for *Copy message*, *Copy SQL*, *Copy line* or *Copy all output*.
 - **SQL Server batches**: a batch (the text between `GO` lines) that declares variables (`DECLARE @id int; SET @id = 5; EXEC dbo.load @id = @id;`) runs as one request, so the variables reach every statement; so does a `CREATE`/`ALTER PROCEDURE`, `FUNCTION`, `TRIGGER` or `VIEW` batch, whose body is the rest of the batch. Other scripts still run statement by statement, and read-only / production checks still look at each statement in the batch.
 - **Go to definition**: `Ctrl/⌘ + B`, `Ctrl/⌘ + click`, or `Control + F` on macOS (where Find is `⌘ + F`) on the name of a procedure, function, trigger or view opens its source in a new console; on a table it opens the table's DDL. Unqualified names are looked up in the console's schema first, then the others. If it's already open, DataBug switches to that tab.
 - **Each console has its own database and schema**: the picker next to the connection in the toolbar shows them (`warehouse · sales`). Picking a schema makes it the one unqualified names resolve to in completion, inspections and go to definition, and in the session: `SET search_path` on PostgreSQL, CockroachDB and TimescaleDB, `USE` on MySQL and Cassandra, `CURRENT_SCHEMA` on Oracle, `SET SCHEMA` on Db2, H2 and DuckDB. SQL Server keeps resolving names in queries with the login's default schema, so qualify them there. With several databases shown for a connection, the picker also moves the console to another database.
 
-**Tabs and closed consoles**
+**Tabs and consoles**
 - Right-click a tab: *Close*, *Close other tabs*, *Close tabs to the left*, *Close tabs to the right*, *Close all tabs*. Middle-click closes a tab.
-- Every console with text in it is kept, open or closed, with its connection and schema, and survives restarts (`editors.json` in the data folder). The clock button next to the tabs (and the welcome screen) lists closed consoles with a filter; click one to reopen it, or × to delete it. `Ctrl/⌘ + Shift + T` reopens the last one you closed. Empty consoles aren't kept, nor are consoles of a deleted connection; the 300 most recent are kept.
+- Consoles you don't close are kept, with their text, connection and schema, and survive restarts (`editors.json` in the data folder). While a connection is signed in, the consoles button next to the schema picker in the toolbar (with a count) lists its consoles: the open ones (click to switch to the tab) and the ones still open when DataBug last quit (click to reopen, × to delete), with a filter. Closing a tab removes its console from the list; `Ctrl/⌘ + Shift + T` brings back the last one closed during this run. Empty consoles aren't kept, nor are consoles of a deleted connection.
 
 **Results**
 - Virtualized grid (only visible rows are laid out), with column types in the header, click-to-sort (numeric and natural ordering), row filter, keyboard navigation, and copy cell/row.
-- Row editing like DataGrip for single-table queries that include the primary key: double-click a cell (or F2) to edit it, click row numbers to select whole rows (⌘/Ctrl-click and Shift-click for several), *− Delete* or the Delete key to remove them, *+ Row* (Alt + Insert) to add one, *Duplicate* to copy one. Added, changed and deleted rows are color-coded and nothing is saved until *Submit*, which runs `DELETE`, `UPDATE` and `INSERT` statements keyed on the primary key (*Preview SQL* copies them, *Revert* undoes everything). If the database refuses a change, the pending edits stay so you can fix them.
+- Row editing for single-table queries that include the primary key: double-click a cell (or F2) to edit it, click row numbers to select whole rows (⌘/Ctrl-click and Shift-click for several), *− Delete* or the Delete key to remove them, *+ Row* (Alt + Insert) to add one, *Duplicate* to copy one. Added, changed and deleted rows are color-coded and nothing is saved until *Submit*, which runs `DELETE`, `UPDATE` and `INSERT` statements keyed on the primary key (*Preview SQL* copies them, *Revert* undoes everything). If the database refuses a change, the pending edits stay so you can fix them.
 - Streams rows in batches with a configurable row limit (default 10,000). Postgres cancels the rest of an over-limit result on the server instead of draining it.
 - Export to CSV, JSON, SQL `INSERT`s or Markdown, or copy as TSV/CSV.
 - Multiple result tabs per run, an Output log with timings, messages (Postgres `NOTICE`, MySQL warnings) and errors, and a searchable query history.
@@ -299,7 +301,7 @@ The other engines have live tests that run when their variable is set; with Dock
 
 The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
 
-`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `dialog-engines` (engine list open), `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`, `editors` (closed consoles on the welcome screen), `goto` (go to definition) and `tabmenu`. `DATABUG_CUSTOM_FRAME=1` shows the Linux title bar on any platform. The README screenshots come from `main` (editor), `multidb`, `find`, `theme`, `compare`, `er`, `table`, `csv`, `rename`, `plan`, `dialog`, `dialog-engines`, `light`, `editors` and `goto`, run with `DATABUG_HOME` set to an empty folder (sample data only), captured at the default window size and scaled to 1440×900.
+`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `dialog-engines` (engine list open), `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`, `editors` (the toolbar's consoles list), `goto` (go to definition) and `tabmenu`. `DATABUG_CUSTOM_FRAME=1` shows the Linux title bar on any platform. The README screenshots come from `main` (editor), `multidb`, `find`, `theme`, `compare`, `er`, `table`, `csv`, `rename`, `plan`, `dialog`, `dialog-engines`, `light`, `editors` and `goto`, run with `DATABUG_HOME` set to an empty folder (sample data only), captured at the default window size and scaled to 1440×900.
 
 `DATABUG_TEST_KRB="user@REALM:password"` with `--features databug-drivers/kerberos` adds a test that signs in to a Kerberos realm through the SQL Server Windows-credentials path.
 

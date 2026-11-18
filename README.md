@@ -323,6 +323,10 @@ The live tests cover streaming, NULLs, row limits, affected-row counts, server m
 
 Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the branching strategy (GitHub flow: short-lived `feat/`, `fix/`, `docs/` … branches off `main`, squash-merged pull requests, Conventional Commit titles), testing and releases. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), report security problems privately as described in [SECURITY.md](SECURITY.md), and see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
+## Sponsor
+
+DataBug is free and built in spare time. If it saves you time and you'd like to help keep it going, you can [sponsor it on GitHub](https://github.com/sponsors/hayes-roach). Sponsoring is entirely optional; issues, pull requests and stars help too.
+
 ## Disclaimer
 
 **Use DataBug at your own risk.** It is provided **"as is", without warranty of any kind**, express or implied (sections 7 and 8 of the [Apache License 2.0](LICENSE)). To the fullest extent permitted by law, the authors and contributors are **not responsible for anything that happens as a result of using DataBug**, and are not liable for any damages of any kind, including lost, changed or corrupted data, security incidents, locked accounts, downtime, lost profits, or anything else, however it's caused. By using DataBug you accept this.

@@ -11,6 +11,7 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 ### Added
 
 - Go to definition: `Ctrl/⌘ + B`, `Ctrl/⌘ + click`, or `Control + F` on macOS on the name of a procedure, function, trigger or view opens its source in a new console (a table opens its DDL)
+- A *Sponsor* button on the GitHub repository and a Sponsor section in the README, for anyone who wants to support DataBug
 - A refresh button in the explorer header (left of Find) reloads the current database: the open console's, or the one selected in the explorer
 - Right-click a tab to close it, the other tabs, the tabs to its left or right, or all tabs
 - Closed consoles are kept (with their connection and schema, across restarts) and listed behind the clock button next to the tabs and on the welcome screen; click to reopen, × to delete. `Ctrl/⌘ + Shift + T` reopens the last one closed. Empty consoles aren't kept

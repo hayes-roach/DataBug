@@ -6,20 +6,72 @@ use databug_core::Dialect;
 
 /// Byte ranges of each non-empty statement, trimmed of surrounding trivia and
 /// the terminating `;`.
+///
+/// On SQL Server a batch (the text between `GO` lines) runs as one statement
+/// when it declares variables (`DECLARE @x …; SET @x = …; EXEC p @x`), since
+/// variables only live for their batch, or when it starts with
+/// `CREATE`/`ALTER` of a procedure, function, trigger or view, whose body is
+/// the rest of the batch.
 pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
     if dialect == Dialect::Mongo {
         return split_mongo(src);
     }
+    let parts = split_parts(src, dialect);
+    if dialect != Dialect::MsSql {
+        return parts.into_iter().map(|p| p.range).collect();
+    }
+    let mut out: Vec<Range<usize>> = Vec::new();
+    let mut i = 0;
+    while i < parts.len() {
+        let batch = parts[i].batch;
+        let end = parts[i..].iter().position(|p| p.batch != batch).map(|n| i + n).unwrap_or(parts.len());
+        let group = &parts[i..end];
+        let whole = group[0].starts == Start::Routine || group.iter().any(|p| p.starts == Start::Declare);
+        if whole {
+            out.push(group[0].range.start..group[group.len() - 1].range.end);
+        } else {
+            out.extend(group.iter().map(|p| p.range.clone()));
+        }
+        i = end;
+    }
+    out
+}
+
+/// Each statement on its own, split at every `;` even inside a SQL Server
+/// batch that runs as a whole. Used to check what a batch does.
+pub fn statement_parts(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
+    if dialect == Dialect::Mongo {
+        return split_mongo(src);
+    }
+    split_parts(src, dialect).into_iter().map(|p| p.range).collect()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Start {
+    Declare,
+    Routine,
+    Other,
+}
+
+struct Part {
+    range: Range<usize>,
+    batch: usize,
+    starts: Start,
+}
+
+fn split_parts(src: &str, dialect: Dialect) -> Vec<Part> {
     let toks = tokenize(src, dialect);
-    let mut out = Vec::new();
+    let mut out: Vec<Part> = Vec::new();
+    let mut batch = 0usize;
+    let mut starts = Start::Other;
     let mut first: Option<usize> = None;
     let mut last_end = 0usize;
     let mut block_depth = 0i32;
     let mut prev_sig: Option<Token> = None;
 
-    let flush = |out: &mut Vec<Range<usize>>, first: &mut Option<usize>, last_end: usize| {
+    let flush = |out: &mut Vec<Part>, first: &mut Option<usize>, last_end: usize, batch: usize, starts: Start| {
         if let Some(s) = first.take() {
-            out.push(s..last_end);
+            out.push(Part { range: s..last_end, batch, starts });
         }
     };
 
@@ -30,13 +82,14 @@ pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
         let text = t.text(src);
         // `GO` on its own line ends a batch in SQL Server.
         if dialect == Dialect::MsSql && t.kind == TokKind::Keyword && text.eq_ignore_ascii_case("GO") && alone_on_line(src, t) {
-            flush(&mut out, &mut first, last_end);
+            flush(&mut out, &mut first, last_end, batch, starts);
+            batch += 1;
             block_depth = 0;
             prev_sig = None;
             continue;
         }
         if t.kind == TokKind::Punct && text == ";" && block_depth <= 0 {
-            flush(&mut out, &mut first, last_end);
+            flush(&mut out, &mut first, last_end, batch, starts);
             prev_sig = None;
             continue;
         }
@@ -74,12 +127,33 @@ pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
         }
         if first.is_none() {
             first = Some(t.start);
+            starts = if dialect == Dialect::MsSql { statement_start(src, &toks[idx..]) } else { Start::Other };
         }
         last_end = t.end;
         prev_sig = Some(*t);
     }
-    flush(&mut out, &mut first, last_end);
+    flush(&mut out, &mut first, last_end, batch, starts);
     out
+}
+
+/// What a SQL Server statement starting at `toks[0]` is, for batch grouping.
+fn statement_start(src: &str, toks: &[Token]) -> Start {
+    let mut words = toks.iter().filter(|t| !t.is_trivia()).map(|t| t.text(src).to_ascii_uppercase());
+    match words.next().as_deref() {
+        Some("DECLARE") => Start::Declare,
+        Some("CREATE" | "ALTER") => {
+            let mut w = words.next();
+            if w.as_deref() == Some("OR") {
+                words.next(); // ALTER
+                w = words.next();
+            }
+            match w.as_deref() {
+                Some("PROC" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "VIEW") => Start::Routine,
+                _ => Start::Other,
+            }
+        }
+        _ => Start::Other,
+    }
 }
 
 fn alone_on_line(src: &str, t: &Token) -> bool {
@@ -177,6 +251,28 @@ mod tests {
         assert!(p[0].ends_with("END"));
         let p = parts("BEGIN TRAN; UPDATE t SET a=1; COMMIT", Dialect::MsSql);
         assert_eq!(p.len(), 3);
+    }
+
+    #[test]
+    fn mssql_batch_with_variables_runs_whole() {
+        let src = "DECLARE @id int;\nSET @id = 5;\nEXEC dbo.p @id = @id;\nSELECT @id;\nGO\nSELECT 1; SELECT 2";
+        let p = parts(src, Dialect::MsSql);
+        assert_eq!(p, vec!["DECLARE @id int;\nSET @id = 5;\nEXEC dbo.p @id = @id;\nSELECT @id", "SELECT 1", "SELECT 2"]);
+        assert_eq!(statement_parts(src, Dialect::MsSql).len(), 6);
+        // the statement under the cursor is the whole batch
+        let r = statement_at(src, src.find("EXEC").unwrap(), Dialect::MsSql).unwrap();
+        assert!(src[r].starts_with("DECLARE"));
+        // other dialects still split
+        assert_eq!(parts("SET a = 1; SELECT 2", Dialect::MySql).len(), 2);
+    }
+
+    #[test]
+    fn mssql_routine_body_is_the_rest_of_the_batch() {
+        let src = "CREATE OR ALTER PROCEDURE dbo.p AS\nSET NOCOUNT ON;\nSELECT 1;\nGO\nEXEC dbo.p;";
+        let p = parts(src, Dialect::MsSql);
+        assert_eq!(p, vec!["CREATE OR ALTER PROCEDURE dbo.p AS\nSET NOCOUNT ON;\nSELECT 1", "EXEC dbo.p"]);
+        // a CREATE TABLE batch still splits
+        assert_eq!(parts("CREATE TABLE t (a int); INSERT INTO t VALUES (1)", Dialect::MsSql).len(), 2);
     }
 
     #[test]

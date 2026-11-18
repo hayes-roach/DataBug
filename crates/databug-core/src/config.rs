@@ -167,6 +167,23 @@ impl DbKind {
         }
     }
 
+    /// Statement that makes `schema` the one unqualified names resolve to for
+    /// the rest of the session, or `None` when the engine has no such setting
+    /// (SQL Server uses the login's default schema).
+    pub fn use_schema_sql(self, schema: &str) -> Option<String> {
+        let q = self.dialect().quote_ident(schema);
+        match self {
+            DbKind::Postgres | DbKind::TimescaleDb | DbKind::CockroachDb => {
+                Some(if schema == "public" { "SET search_path TO public".to_string() } else { format!("SET search_path TO {q}, public") })
+            }
+            DbKind::MySql | DbKind::Spark | DbKind::Cassandra => Some(format!("USE {q}")),
+            DbKind::Oracle => Some(format!("ALTER SESSION SET CURRENT_SCHEMA = {q}")),
+            DbKind::Db2 | DbKind::H2 => Some(format!("SET SCHEMA {q}")),
+            DbKind::DuckDb => Some(format!("SET schema = {}", Dialect::Postgres.quote_literal(schema))),
+            DbKind::MsSql | DbKind::Sqlite | DbKind::MongoDb | DbKind::CouchDb | DbKind::QuestDb | DbKind::InfluxDb => None,
+        }
+    }
+
     /// Database used when the connection doesn't name one.
     pub fn default_database(self) -> &'static str {
         match self {

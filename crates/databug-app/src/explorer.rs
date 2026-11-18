@@ -16,6 +16,8 @@ pub enum Action {
     SelectTop(String, String, String),
     OpenDdl(String, String, String),
     Refresh(String),
+    /// Explorer header's refresh button: reload the database in use.
+    RefreshCurrent,
     /// Sign in again after a failed attempt (only ever from a click).
     Retry(String),
     EditConn(String),
@@ -377,6 +379,9 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             if icon_button(ui, p, HeaderIcon::Search, false).on_hover_text("Find in database: tables, columns, routines, definitions and data  (Ctrl/⌘ + F outside the editor)").clicked() {
                 actions.push(Action::SearchDatabase);
             }
+            if icon_button(ui, p, HeaderIcon::Refresh, false).on_hover_text("Refresh the current database: the open console's, or the one selected here").clicked() {
+                actions.push(Action::RefreshCurrent);
+            }
         });
     });
     ui.add_space(4.0);
@@ -671,6 +676,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
 
 #[derive(Clone, Copy)]
 enum HeaderIcon {
+    Refresh,
     Search,
     Plus,
 }
@@ -694,6 +700,17 @@ fn icon_button(ui: &mut egui::Ui, p: &Palette, icon: HeaderIcon, primary: bool) 
             let o = c + egui::vec2(-1.5, -1.5);
             painter.circle_stroke(o, 4.6, st);
             painter.line_segment([o + egui::vec2(3.4, 3.4), o + egui::vec2(7.0, 7.0)], Stroke::new(2.0_f32, fg));
+        }
+        HeaderIcon::Refresh => {
+            // circular arrow: an open ring with an arrowhead at its top-right end
+            let r = 5.0_f32;
+            let pts: Vec<egui::Pos2> = (0..=20).map(|i| {
+                let a = (-60.0_f32 + 300.0 * i as f32 / 20.0).to_radians();
+                c + egui::vec2(a.cos() * r, a.sin() * r)
+            }).collect();
+            painter.add(egui::Shape::line(pts, st));
+            let tip = c + egui::vec2((-60.0_f32).to_radians().cos() * r, (-60.0_f32).to_radians().sin() * r);
+            painter.add(egui::Shape::convex_polygon(vec![tip + egui::vec2(-3.2, -2.6), tip + egui::vec2(2.6, -1.0), tip + egui::vec2(-0.4, 3.4)], fg, Stroke::NONE));
         }
         HeaderIcon::Plus => {
             painter.line_segment([c + egui::vec2(-5.0, 0.0), c + egui::vec2(5.0, 0.0)], st);

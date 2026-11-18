@@ -37,6 +37,31 @@ pub fn unquote(s: &str) -> String {
     s.to_string()
 }
 
+/// The possibly qualified object name the byte offset `at` is on, as
+/// `(schema, name)` without quotes: `dbo.usp_load`, `[etl].[load]`,
+/// `public."Orders"`. A database prefix (`db.schema.name`) is dropped.
+pub fn name_at(src: &str, at: usize, dialect: Dialect) -> Option<(Option<String>, String)> {
+    let toks: Vec<Token> = tokenize(src, dialect).into_iter().filter(|t| t.kind != TokKind::Whitespace && t.kind != TokKind::Comment).collect();
+    let is_name = |t: &Token| matches!(t.kind, TokKind::Ident | TokKind::QuotedIdent | TokKind::Keyword);
+    let is_dot = |t: &Token| t.kind == TokKind::Punct && t.text(src) == ".";
+    // the name token under the cursor, or just before it (cursor at its end)
+    let i = toks.iter().position(|t| is_name(t) && t.start <= at && at < t.end).or_else(|| toks.iter().position(|t| is_name(t) && t.end == at))?;
+    // extend to the whole dotted chain
+    let mut a = i;
+    while a >= 2 && is_dot(&toks[a - 1]) && is_name(&toks[a - 2]) && toks[a - 1].start == toks[a - 2].end && toks[a].start == toks[a - 1].end {
+        a -= 2;
+    }
+    let mut b = i;
+    while b + 2 < toks.len() && is_dot(&toks[b + 1]) && is_name(&toks[b + 2]) && toks[b + 1].start == toks[b].end && toks[b + 2].start == toks[b + 1].end {
+        b += 2;
+    }
+    let parts: Vec<String> = (a..=b).step_by(2).map(|k| unquote(toks[k].text(src))).collect();
+    let n = parts.len();
+    let name = parts[n - 1].clone();
+    let schema = (n >= 2).then(|| parts[n - 2].clone());
+    Some((schema, name))
+}
+
 pub(crate) fn significant(toks: &[Token]) -> Vec<Token> {
     toks.iter().copied().filter(|t| !t.is_trivia()).collect()
 }
@@ -235,6 +260,16 @@ pub fn classify(stmt: &str, dialect: Dialect) -> StatementKind {
             }
         }
         "SHOW" | "EXPLAIN" | "DESCRIBE" | "DESC" => StatementKind::Read,
+        // T-SQL variables: declaring, assigning and printing them changes nothing
+        "DECLARE" | "PRINT" if dialect == Dialect::MsSql => StatementKind::Read,
+        "SET" if dialect == Dialect::MsSql && toks.get(1).map(|t| t.kind == TokKind::Param).unwrap_or(false) => {
+            let writes = toks.iter().any(|t| t.kind == TokKind::Keyword && ["INSERT", "UPDATE", "DELETE", "MERGE"].iter().any(|k| t.text(stmt).eq_ignore_ascii_case(k)));
+            if writes {
+                StatementKind::Write
+            } else {
+                StatementKind::Read
+            }
+        }
         "PRAGMA" => {
             if stmt.contains('=') {
                 StatementKind::Other
@@ -448,5 +483,16 @@ mod tests {
         assert!(single_table_source("select * from t where a = 1", Dialect::Postgres).is_some());
         assert!(single_table_source("select * from t join u on true", Dialect::Postgres).is_none());
         assert!(single_table_source("select count(*) from t group by a", Dialect::Postgres).is_none());
+    }
+
+    #[test]
+    fn names_under_the_cursor() {
+        let src = "EXEC [etl].[load] @id = 1; SELECT dbo.fn_total(3), x FROM db.public.\"Orders\"";
+        assert_eq!(name_at(src, 8, Dialect::MsSql), Some((Some("etl".into()), "load".into())));
+        assert_eq!(name_at(src, src.find("fn_total").unwrap() + 2, Dialect::MsSql), Some((Some("dbo".into()), "fn_total".into())));
+        assert_eq!(name_at(src, src.find("dbo").unwrap(), Dialect::MsSql), Some((Some("dbo".into()), "fn_total".into())));
+        assert_eq!(name_at(src, src.len() - 2, Dialect::Postgres), Some((Some("public".into()), "Orders".into())));
+        assert_eq!(name_at(src, src.find(", x").unwrap() + 2, Dialect::MsSql), Some((None, "x".into())));
+        assert_eq!(name_at(src, src.find("= 1").unwrap() + 2, Dialect::MsSql), None);
     }
 }

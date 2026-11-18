@@ -104,6 +104,14 @@ pub struct Editor {
     pub find: Find,
     /// Set when the user asks to search the whole database for the find text.
     pub search_database: Option<String>,
+    /// Byte offset of a name whose definition the user asked to open
+    /// (Ctrl/⌘ + B, Ctrl/⌘ + click, Control + F on macOS).
+    pub goto: Option<usize>,
+    /// Schema unqualified names resolve to in this console; `None` is the
+    /// connection's default.
+    schema: Option<String>,
+    /// The catalog with `schema` as its default, rebuilt when either changes.
+    scoped: Option<(u64, String, Arc<Catalog>)>,
 }
 
 fn char_to_byte(s: &str, ci: usize) -> usize {
@@ -138,7 +146,47 @@ impl Editor {
             wants_focus: true,
             find: Find::default(),
             search_database: None,
+            goto: None,
+            schema: None,
+            scoped: None,
         }
+    }
+
+    pub fn schema(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    /// Resolve unqualified names in `schema` (completion, inspections).
+    pub fn set_schema(&mut self, schema: Option<String>) {
+        if self.schema != schema {
+            self.schema = schema;
+            self.scoped = None;
+            self.diag_key = (u64::MAX, u64::MAX);
+            self.job_cache = None;
+        }
+    }
+
+    /// Increases whenever the text changes.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// `catalog` as seen from this console's schema.
+    fn scoped_catalog(&mut self, catalog: Option<&Catalog>, catalog_gen: u64) -> Option<Arc<Catalog>> {
+        let (cat, schema) = (catalog?, self.schema.as_deref()?);
+        if cat.default_schema.eq_ignore_ascii_case(schema) || cat.schema(schema).is_none() {
+            return None;
+        }
+        if let Some((g, s, c)) = &self.scoped {
+            if *g == catalog_gen && s == schema {
+                return Some(c.clone());
+            }
+        }
+        let mut c = cat.clone();
+        c.default_schema = cat.schema(schema).map(|s| s.name.clone()).unwrap_or_default();
+        let c = Arc::new(c);
+        self.scoped = Some((catalog_gen, schema.to_string(), c.clone()));
+        Some(c)
     }
 
     /// Open the find bar (or the find + replace bar), seeded with the
@@ -538,6 +586,8 @@ impl Editor {
 
     /// Draw the editor. `catalog_gen` changes whenever the catalog is refreshed.
     pub fn show(&mut self, ui: &mut egui::Ui, p: &Palette, catalog: Option<&Catalog>, catalog_gen: u64, auto_complete: bool, font_size: f32) {
+        let scoped = self.scoped_catalog(catalog, catalog_gen);
+        let catalog = scoped.as_deref().or(catalog);
         // ---- inspections (recomputed when text or catalog change) ----
         if self.diag_key != (self.version, catalog_gen) && self.text.len() < 300_000 {
             self.diagnostics = inspect(&self.text, catalog, self.dialect);
@@ -586,6 +636,11 @@ impl Editor {
                 }
                 if i.consume_key(Modifiers::COMMAND, Key::Slash) {
                     toggle_comment = true;
+                }
+                // open the definition of the name at the cursor; Control + F on
+                // macOS, where Find is ⌘ + F
+                if i.consume_key(Modifiers::COMMAND, Key::B) || (cfg!(target_os = "macos") && i.consume_key(Modifiers::CTRL, Key::F)) {
+                    self.goto = Some(self.cursor);
                 }
             });
         }
@@ -752,6 +807,22 @@ impl Editor {
                 new_line = row.ends_with_newline;
                 if new_line {
                     line += 1;
+                }
+            }
+
+            // Ctrl/⌘ + click opens the definition of the name under the pointer
+            let command = ui.input(|i| i.modifiers.command);
+            if command {
+                if let Some(pos) = out.response.hover_pos() {
+                    let c = g.cursor_from_pos(pos - origin);
+                    let b = char_to_byte(&self.text, c.ccursor.index);
+                    let on_word = self.text[b..].chars().next().map(|ch| ch.is_alphanumeric() || ch == '_').unwrap_or(false);
+                    if on_word {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if out.response.clicked() {
+                            self.goto = Some(b);
+                        }
+                    }
                 }
             }
 

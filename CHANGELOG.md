@@ -6,6 +6,23 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Added
+
+- Go to definition: `Ctrl/⌘ + B`, `Ctrl/⌘ + click`, or `Control + F` on macOS on the name of a procedure, function, trigger or view opens its source in a new console (a table opens its DDL)
+- A refresh button in the explorer header (left of Find) reloads the current database: the open console's, or the one selected in the explorer
+- Right-click a tab to close it, the other tabs, the tabs to its left or right, or all tabs
+- Closed consoles are kept (with their connection and schema, across restarts) and listed behind the clock button next to the tabs and on the welcome screen; click to reopen, × to delete. `Ctrl/⌘ + Shift + T` reopens the last one closed. Empty consoles aren't kept
+- Each console has its own schema (and database, when a connection shows several), shown and switched from the toolbar. It drives completion, inspections and go to definition, and the session's schema on engines that have one (`search_path`, `USE`, `CURRENT_SCHEMA`, `SET SCHEMA`)
+
+### Changed
+
+- The new-connection dialog picks the database type from a dropdown with each engine's logo and name, grouped by kind, instead of a grid of tiles, and its text fields are the same size and style as that dropdown, with their labels lined up
+- On Linux, DataBug draws its own title bar: minimize, maximize and close (an ×) match the app, the toolbar drags the window and double-clicking it maximizes, and the edges resize it
+
+### Fixed
+
+- SQL Server: a script that declares variables (`DECLARE` / `SET` / `EXEC … @x`) ran one statement at a time, so later statements lost the variables. A batch with `DECLARE`, or one that creates or alters a procedure, function, trigger or view, now runs as one request
+
 ## [0.3.7] - 2026-11-18
 
 ### Changed

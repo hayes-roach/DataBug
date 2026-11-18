@@ -44,7 +44,10 @@ fn main() -> eframe::Result<()> {
             .with_app_id("dev.databug.DataBug")
             .with_icon(app_icon())
             .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 560.0]),
+            .with_min_inner_size([900.0, 560.0])
+            // Linux: DataBug draws its own title bar (window toolkits' fallback
+            // decorations look out of place, especially on Wayland)
+            .with_decorations(!app::custom_window_frame()),
         // repaint only when something changes: idle CPU stays at zero
         run_and_return: false,
         vsync: true,

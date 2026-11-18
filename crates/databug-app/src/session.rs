@@ -17,6 +17,9 @@ pub enum Cmd {
     ListDatabases,
     /// Fetch definitions of views, routines and other objects.
     Sources { req: u64, schema: String, items: Vec<SourceRef> },
+    /// Statement that switches the session to the console's schema; applied
+    /// before the next query and again after every reconnect. Doesn't connect.
+    UseSchema(Option<String>),
 }
 
 pub enum Ev {
@@ -123,6 +126,7 @@ fn fail(send: &impl Fn(Ev), cmd: Cmd, msg: &str) {
         Cmd::Introspect => send(Ev::Catalog(Err(msg))),
         Cmd::ListDatabases => send(Ev::Databases(Err(msg))),
         Cmd::Sources { req, items, .. } => send(Ev::Sources { req, results: items.into_iter().map(|i| (i, Err(msg.clone()))).collect() }),
+        Cmd::UseSchema(_) => {}
     }
 }
 
@@ -146,8 +150,15 @@ async fn worker(
         }
     };
     let mut conn: Option<Box<dyn DbConnection>> = None;
+    let mut use_schema: Option<String> = None;
+    let mut schema_applied = true;
 
     while let Some(cmd) = rx.recv().await {
+        if let Cmd::UseSchema(sql) = cmd {
+            use_schema = sql;
+            schema_applied = use_schema.is_none();
+            continue;
+        }
         if conn.is_none() {
             send(Ev::Connecting);
             match databug_drivers::connect(&cfg, password.as_deref()).await {
@@ -155,6 +166,7 @@ async fn worker(
                     *canceller.lock().unwrap() = c.canceller();
                     send(Ev::Connected(c.capabilities()));
                     conn = Some(c);
+                    schema_applied = use_schema.is_none();
                 }
                 Err(e) => {
                     let msg = format!("{e:#}");
@@ -171,6 +183,19 @@ async fn worker(
             }
         }
         let c = conn.as_mut().unwrap();
+        if !schema_applied && matches!(cmd, Cmd::Execute { .. } | Cmd::Explain { .. }) {
+            schema_applied = true;
+            if let Some(sql) = use_schema.as_deref() {
+                let quiet: Sink = Arc::new(|_| {});
+                if let Err(e) = c.execute(sql, &ExecOptions { row_limit: 1 }, &quiet).await {
+                    let job = match &cmd {
+                        Cmd::Execute { job, .. } | Cmd::Explain { job, .. } => *job,
+                        _ => 0,
+                    };
+                    send(Ev::Query { job, idx: 0, ev: QueryEvent::Message(format!("Couldn't switch schema ({sql}): {e:#}")) });
+                }
+            }
+        }
         match cmd {
             Cmd::Execute { job, stmts, opts } => {
                 let mut dropped = false;
@@ -257,6 +282,7 @@ async fn worker(
                 }
                 send(Ev::Sources { req, results });
             }
+            Cmd::UseSchema(_) => {}
         }
     }
 }

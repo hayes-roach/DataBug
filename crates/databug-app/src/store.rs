@@ -9,6 +9,20 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use databug_core::{Catalog, ConnectionConfig};
 
+/// A console's text, kept so it can be reopened after its tab is closed
+/// (and after DataBug restarts). Empty consoles aren't kept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedEditor {
+    pub id: u64,
+    pub conn_id: String,
+    pub title: String,
+    pub text: String,
+    #[serde(default)]
+    pub schema: Option<String>,
+    /// Unix seconds of the last change.
+    pub updated: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -192,6 +206,14 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => self.report("Couldn't delete the schema cache", &e),
         }
+    }
+
+    pub fn load_editors(&self) -> Vec<SavedEditor> {
+        self.read_json(self.data_dir.join("editors.json")).unwrap_or_default()
+    }
+
+    pub fn save_editors(&self, editors: &[SavedEditor]) {
+        self.write_json(self.data_dir.join("editors.json"), &editors);
     }
 
     pub fn load_history(&self, max: usize) -> Vec<HistoryEntry> {

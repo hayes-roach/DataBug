@@ -141,6 +141,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 **Connections and projects**
 - *Disconnect* (right-click a connection) closes its sessions but keeps it in the explorer; *Connect*, a double-click, or running a query reconnects. A green dot at the right of a connection means it's signed in right now (amber while it signs in). The small dot at the bottom right of its icon is solid green while connected and a grey ring when it isn't; the dots in the toolbar and on its console tabs show the connection's color, filled while connected and a hollow ring when not. A connection the server drops (restart, network loss, timeout) shows as disconnected and signs in again on the next query.
 - Drag connections to reorder them.
+- The refresh button in the explorer header (left of Find) reloads the schema of the current database: the open console's, or the connection or database selected in the explorer. It counts as asking to sign in again, so it also retries a connection whose sign-in failed.
 - **No automatic retries after a failed sign-in.** When a connection can't sign in, DataBug shows the error and stops: no reconnecting in the background, no second attempt for queued work, so a wrong password can't lock the account. *Retry*, *Connect*, *Refresh schema*, running a query or editing the connection tries again.
 - **Projects**: the switcher above the tree picks *All connections* or a project. *New project…* and *Rename project…* open a small card with the name field ready to type in (Enter creates or saves, Esc or *Cancel* closes it). Each project keeps its own ordered list of connections; new connections join the current project; right-click → *Add to project* / *Remove from project*. Saved in `projects.json`.
 
@@ -160,6 +161,13 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - Schema-aware completion that works on half-typed SQL: columns resolved through aliases (including aliases defined *after* the cursor), tables after `FROM`/`JOIN`, `schema.` drill-down, fuzzy matching (`cid` → `customer_id`), and join conditions after `ON` inferred from `<table>_id` naming.
 - Inspections as you type: unknown tables, unknown `alias.column` references, `DELETE`/`UPDATE` without `WHERE`, `DROP`/`TRUNCATE`.
 - Runs the statement under the cursor, the selection, or the whole script. The running statement is highlighted, and a failing statement is tinted red.
+- **SQL Server batches**: a batch (the text between `GO` lines) that declares variables (`DECLARE @id int; SET @id = 5; EXEC dbo.load @id = @id;`) runs as one request, so the variables reach every statement; so does a `CREATE`/`ALTER PROCEDURE`, `FUNCTION`, `TRIGGER` or `VIEW` batch, whose body is the rest of the batch. Other scripts still run statement by statement, and read-only / production checks still look at each statement in the batch.
+- **Go to definition**: `Ctrl/⌘ + B`, `Ctrl/⌘ + click`, or `Control + F` on macOS (where Find is `⌘ + F`) on the name of a procedure, function, trigger or view opens its source in a new console; on a table it opens the table's DDL. Unqualified names are looked up in the console's schema first, then the others. If it's already open, DataBug switches to that tab.
+- **Each console has its own database and schema**: the picker next to the connection in the toolbar shows them (`warehouse · sales`). Picking a schema makes it the one unqualified names resolve to in completion, inspections and go to definition, and in the session: `SET search_path` on PostgreSQL, CockroachDB and TimescaleDB, `USE` on MySQL and Cassandra, `CURRENT_SCHEMA` on Oracle, `SET SCHEMA` on Db2, H2 and DuckDB. SQL Server keeps resolving names in queries with the login's default schema, so qualify them there. With several databases shown for a connection, the picker also moves the console to another database.
+
+**Tabs and closed consoles**
+- Right-click a tab: *Close*, *Close other tabs*, *Close tabs to the left*, *Close tabs to the right*, *Close all tabs*. Middle-click closes a tab.
+- Every console with text in it is kept, open or closed, with its connection and schema, and survives restarts (`editors.json` in the data folder). The clock button next to the tabs (and the welcome screen) lists closed consoles with a filter; click one to reopen it, or × to delete it. `Ctrl/⌘ + Shift + T` reopens the last one you closed. Empty consoles aren't kept, nor are consoles of a deleted connection; the 300 most recent are kept.
 
 **Results**
 - Virtualized grid (only visible rows are laid out), with column types in the header, click-to-sort (numeric and natural ordering), row filter, keyboard navigation, and copy cell/row.
@@ -240,6 +248,8 @@ Settings live in your platform's config directory (`~/.config/databug` on Linux,
 | `Enter` / `Shift + Enter`, `F3` / `Shift + F3` | Next / previous match |
 | `Shift + F6` | Rename the table, column or alias under the cursor |
 | `Ctrl/⌘ + T` / `Ctrl/⌘ + W` | New console / close console |
+| `Ctrl/⌘ + Shift + T` | Reopen the last closed console |
+| `Ctrl/⌘ + B`, `Ctrl/⌘ + click`, `Control + F` (macOS) | Open the definition of the procedure, function, view or table under the cursor |
 | Arrows, `F2`, `Ctrl/⌘ + C` in the grid | Move, edit, copy cell |
 | `Ctrl/⌘ + +` / `Ctrl/⌘ + −` / `Ctrl/⌘ + 0` | Larger / smaller / reset text size everywhere (also *Settings → Text size*, 70–200%, remembered) |
 

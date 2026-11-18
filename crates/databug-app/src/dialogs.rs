@@ -1,7 +1,7 @@
 //! The connection dialog.
 
 use crate::theme::{bold, connection_color, Palette, SWATCHES};
-use eframe::egui::{self, CornerRadius, RichText, Sense, Stroke};
+use eframe::egui::{self, CornerRadius, Margin, RichText, Sense, Stroke};
 use std::sync::mpsc;
 use std::time::Instant;
 use databug_core::{ConnectionConfig, DbCategory, DbKind, MsAuth, SslMode};
@@ -17,8 +17,8 @@ pub struct ConnDialog {
     /// Schemas from the last introspection, for the visibility list.
     pub known_schemas: Vec<String>,
     pub default_schema: String,
-    /// Engine group shown in the picker.
-    category: DbCategory,
+    /// Open the engine list on the next frame.
+    pub open_engines: bool,
 }
 
 pub enum DialogOutcome {
@@ -29,8 +29,23 @@ pub enum DialogOutcome {
 
 impl ConnDialog {
     pub fn new(cfg: ConnectionConfig, password: String, is_new: bool) -> Self {
-        let category = cfg.kind.category();
-        ConnDialog { cfg, password, save_password: true, is_new, test: None, test_rx: None, error: None, known_schemas: Vec::new(), default_schema: String::new(), category }
+        ConnDialog { cfg, password, save_password: true, is_new, test: None, test_rx: None, error: None, known_schemas: Vec::new(), default_schema: String::new(), open_engines: false }
+    }
+
+    fn select_kind(&mut self, kind: DbKind) {
+        if self.cfg.kind == kind {
+            return;
+        }
+        let old_default = self.cfg.kind.default_port();
+        self.cfg.kind = kind;
+        if self.cfg.port == old_default || self.cfg.port == 0 {
+            self.cfg.port = kind.default_port();
+        }
+        // these engines sign in once over either TLS or plain text, so there's no "prefer"
+        if tls_on_or_off(kind) && self.cfg.ssl == SslMode::Prefer {
+            self.cfg.ssl = SslMode::Disable;
+        }
+        self.test = None;
     }
 
     pub fn show(&mut self, ctx: &egui::Context, p: &Palette, rt: &tokio::runtime::Handle, logos: &crate::icons::Logos) -> DialogOutcome {
@@ -52,71 +67,33 @@ impl ConnDialog {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .fixed_size([560.0, 0.0])
             .show(ctx, |ui| {
-                // engine picker: one group of engines at a time
-                ui.horizontal_wrapped(|ui| {
-                    for cat in DbCategory::ALL {
-                        let current = cat == self.cfg.kind.category();
-                        let text = if current { RichText::new(cat.label()).strong() } else { RichText::new(cat.label()) };
-                        ui.selectable_value(&mut self.category, cat, text);
+                // engine: a dropdown with each engine's logo and name, grouped by kind
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(110.0, FIELD_H), Sense::hover());
+                    ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, "Type", egui::FontId::proportional(14.0), p.muted);
+                    ui.add_space(4.0);
+                    if let Some(kind) = engine_dropdown(ui, p, logos, self.cfg.kind, &available, std::mem::take(&mut self.open_engines)) {
+                        self.select_kind(kind);
                     }
                 });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    for kind in self.category.kinds() {
-                        let enabled = available.contains(&kind);
-                        let selected = self.cfg.kind == kind;
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(68.0, 56.0), if enabled { Sense::click() } else { Sense::hover() });
-                        let fill = if selected { p.selection } else if resp.hovered() { p.hover } else { p.island };
-                        ui.painter().rect(rect, CornerRadius::same(8), fill, Stroke::new(1.0_f32, if selected { p.accent } else { p.border }), egui::StrokeKind::Inside);
-                        let logo = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 20.0), egui::vec2(24.0, 24.0));
-                        if enabled {
-                            logos.paint(ui, logo, kind);
-                        } else {
-                            ui.painter().rect_filled(logo, CornerRadius::same(4), p.raised);
-                        }
-                        let name = match kind {
-                            DbKind::MySql => "MySQL",
-                            k => k.label(),
-                        };
-                        ui.painter().text(egui::pos2(rect.center().x, rect.bottom() - 10.0), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(10.5), if enabled { p.text } else { p.faint });
-                        if resp.clicked() && !selected {
-                            let old_default = self.cfg.kind.default_port();
-                            self.cfg.kind = kind;
-                            if self.cfg.port == old_default || self.cfg.port == 0 {
-                                self.cfg.port = kind.default_port();
-                            }
-                            // these engines sign in once over either TLS or plain text, so there's no "prefer"
-                            if tls_on_or_off(kind) && self.cfg.ssl == SslMode::Prefer {
-                                self.cfg.ssl = SslMode::Disable;
-                            }
-                            self.test = None;
-                        }
-                        if !enabled {
-                            resp.on_hover_text(match kind {
-                                DbKind::Oracle => "Not included in this build: build with the `oracle` feature (needs Oracle Instant Client to run)",
-                                DbKind::Db2 => "Not included in this build: build with the `db2` feature (needs ODBC and the IBM Db2 ODBC driver)",
-                                DbKind::Spark => "Not included in this build: build with the `spark` feature (needs ODBC and a Spark ODBC driver)",
-                                _ => "Not included in this build",
-                            });
-                        }
-                    }
-                });
-                ui.add_space(10.0);
+                ui.add_space(2.0);
                 egui::Grid::new("conn-form").striped(false).num_columns(2).spacing([12.0, 8.0]).min_col_width(110.0).show(ui, |ui| {
+                    // labels centred on the 34 px fields
                     let field = |ui: &mut egui::Ui, label: &str| {
-                        ui.label(RichText::new(label).color(p.muted));
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(110.0, FIELD_H), Sense::hover());
+                        ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), p.muted);
                     };
                     field(ui, "Name");
                     let hint = self.default_name();
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.name).hint_text(hint).desired_width(380.0));
+                    input(ui, p, egui::TextEdit::singleline(&mut self.cfg.name).hint_text(hint), 380.0);
                     ui.end_row();
                     match self.cfg.kind {
                         DbKind::Sqlite | DbKind::DuckDb => {
                             let duck = self.cfg.kind == DbKind::DuckDb;
                             field(ui, "Database file");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut self.cfg.path).hint_text(if duck { "/path/to/analytics.duckdb or :memory:" } else { "/path/to/database.db" }).desired_width(296.0));
-                                if ui.button("Browse…").clicked() {
+                            field_row(ui, |ui| {
+                                input(ui, p, egui::TextEdit::singleline(&mut self.cfg.path).hint_text(if duck { "/path/to/analytics.duckdb or :memory:" } else { "/path/to/database.db" }), 296.0);
+                                if ui.add(egui::Button::new("Browse…").min_size(egui::vec2(76.0, FIELD_H))).clicked() {
                                     let dialog = if duck { rfd::FileDialog::new().add_filter("DuckDB", &["duckdb", "ddb", "db"]) } else { rfd::FileDialog::new().add_filter("SQLite", &["db", "sqlite", "sqlite3", "db3"]) };
                                     if let Some(f) = dialog.add_filter("All files", &["*"]).pick_file() {
                                         self.cfg.path = f.display().to_string();
@@ -133,15 +110,15 @@ impl ConnDialog {
                         kind => {
                             if let Some(hint) = uri_hint(kind) {
                                 field(ui, if kind == DbKind::Oracle { "TNS / descriptor" } else { "URI" });
-                                ui.add(egui::TextEdit::singleline(&mut self.cfg.uri).hint_text(hint).desired_width(380.0));
+                                input(ui, p, egui::TextEdit::singleline(&mut self.cfg.uri).hint_text(hint), 380.0);
                                 ui.end_row();
                             }
                             if uri_hint(kind).is_none() || self.cfg.uri.is_empty() {
                                 field(ui, "Host");
-                                ui.horizontal(|ui| {
-                                    ui.add(egui::TextEdit::singleline(&mut self.cfg.host).hint_text("localhost").desired_width(260.0));
+                                field_row(ui, |ui| {
+                                    input(ui, p, egui::TextEdit::singleline(&mut self.cfg.host).hint_text("localhost"), 260.0);
                                     ui.label(RichText::new("Port").color(p.muted));
-                                    ui.add(egui::DragValue::new(&mut self.cfg.port).range(1..=65535).speed(0));
+                                    port_input(ui, p, &mut self.cfg.port);
                                 });
                                 ui.end_row();
                             }
@@ -202,11 +179,11 @@ impl ConnDialog {
                                     } else {
                                         ""
                                     };
-                                    ui.add(egui::TextEdit::singleline(&mut self.cfg.user).hint_text(user_hint).desired_width(380.0));
+                                    input(ui, p, egui::TextEdit::singleline(&mut self.cfg.user).hint_text(user_hint), 380.0);
                                     ui.end_row();
                                     field(ui, if influx && self.cfg.user.is_empty() { "API token" } else { "Password" });
-                                    ui.horizontal(|ui| {
-                                        ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(220.0));
+                                    field_row(ui, |ui| {
+                                        input(ui, p, egui::TextEdit::singleline(&mut self.password).password(true), 220.0);
                                         ui.checkbox(&mut self.save_password, "Save in system keychain");
                                     });
                                     ui.end_row();
@@ -237,20 +214,20 @@ impl ConnDialog {
                             if kind != DbKind::Oracle || self.cfg.uri.is_empty() {
                                 let (label, hint) = database_field(kind, self.cfg.oracle_sid);
                                 field(ui, label);
-                                ui.add(egui::TextEdit::singleline(&mut self.cfg.database).hint_text(hint).desired_width(380.0));
+                                input(ui, p, egui::TextEdit::singleline(&mut self.cfg.database).hint_text(hint), 380.0);
                                 ui.end_row();
                             }
                             if kind == DbKind::InfluxDb {
                                 field(ui, "Organization");
-                                ui.add(egui::TextEdit::singleline(&mut self.cfg.org).hint_text("InfluxDB 2.x, for Flux queries").desired_width(380.0));
+                                input(ui, p, egui::TextEdit::singleline(&mut self.cfg.org).hint_text("InfluxDB 2.x, for Flux queries"), 380.0);
                                 ui.end_row();
                             }
                             if matches!(kind, DbKind::Db2 | DbKind::Spark) {
                                 field(ui, "ODBC driver");
-                                ui.add(egui::TextEdit::singleline(&mut self.cfg.odbc_driver).hint_text(if kind == DbKind::Db2 { "IBM DB2 ODBC DRIVER" } else { "Simba Spark ODBC Driver" }).desired_width(380.0));
+                                input(ui, p, egui::TextEdit::singleline(&mut self.cfg.odbc_driver).hint_text(if kind == DbKind::Db2 { "IBM DB2 ODBC DRIVER" } else { "Simba Spark ODBC Driver" }), 380.0);
                                 ui.end_row();
                                 field(ui, "ODBC options");
-                                ui.add(egui::TextEdit::singleline(&mut self.cfg.odbc_options).hint_text(if kind == DbKind::Db2 { "e.g. CURRENTSCHEMA=STORE" } else { "e.g. ThriftTransport=2;HTTPPath=cliservice" }).desired_width(380.0))
+                                input(ui, p, egui::TextEdit::singleline(&mut self.cfg.odbc_options).hint_text(if kind == DbKind::Db2 { "e.g. CURRENTSCHEMA=STORE" } else { "e.g. ThriftTransport=2;HTTPPath=cliservice" }), 380.0)
                                     .on_hover_text("Extra key=value; pairs for the ODBC connection string. Don't put the password here.");
                                 ui.end_row();
                             }
@@ -517,4 +494,142 @@ fn duckdb_download_ui(ui: &mut egui::Ui, p: &Palette, rt: &tokio::runtime::Handl
     if let Some(e) = &d.state.error {
         ui.label(RichText::new(format!("✖ {e}")).size(11.5).color(p.danger));
     }
+}
+
+fn engine_name(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::MySql => "MySQL / MariaDB",
+        k => k.label(),
+    }
+}
+
+fn unavailable_reason(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::Oracle => "Not included in this build: build with the `oracle` feature (needs Oracle Instant Client to run)",
+        DbKind::Db2 => "Not included in this build: build with the `db2` feature (needs ODBC and the IBM Db2 ODBC driver)",
+        DbKind::Spark => "Not included in this build: build with the `spark` feature (needs ODBC and a Spark ODBC driver)",
+        _ => "Not included in this build",
+    }
+}
+
+/// The engine picker: shows the chosen engine's logo and name; opens a list of
+/// every engine, grouped by kind. Returns the engine picked this frame.
+fn engine_dropdown(ui: &mut egui::Ui, p: &Palette, logos: &crate::icons::Logos, current: DbKind, available: &[DbKind], force_open: bool) -> Option<DbKind> {
+    let mut picked = None;
+    let popup_id = ui.make_persistent_id("engine-dropdown");
+    let open = ui.memory(|m| m.is_popup_open(popup_id));
+    let width = 380.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, FIELD_H), Sense::click());
+    let fill = if resp.hovered() || open { p.hover } else { p.island };
+    ui.painter().rect(rect, CornerRadius::same(6), fill, Stroke::new(1.0_f32, if open { p.accent } else { p.border }), egui::StrokeKind::Inside);
+    logos.paint(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), egui::vec2(20.0, 20.0)), current);
+    ui.painter().text(egui::pos2(rect.left() + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, engine_name(current), egui::FontId::proportional(13.5), p.text);
+    ui.painter().text(egui::pos2(rect.right() - 60.0, rect.center().y), egui::Align2::RIGHT_CENTER, current.category().label(), egui::FontId::proportional(11.0), p.faint);
+    crate::icons::paint_arrow(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.right() - 18.0, rect.center().y), egui::vec2(10.0, 10.0)), true, p.muted);
+    if resp.clicked() || force_open {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_width(width - 12.0);
+        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for cat in DbCategory::ALL {
+                let kinds: Vec<DbKind> = cat.kinds().collect();
+                if kinds.is_empty() {
+                    continue;
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new(cat.label()).size(11.0).color(p.faint));
+                ui.add_space(2.0);
+                for kind in kinds {
+                    let enabled = available.contains(&kind);
+                    let (r, row) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), if enabled { Sense::click() } else { Sense::hover() });
+                    if kind == current {
+                        ui.painter().rect_filled(r, CornerRadius::same(5), p.selection);
+                    } else if row.hovered() && enabled {
+                        ui.painter().rect_filled(r, CornerRadius::same(5), p.hover);
+                    }
+                    let logo = egui::Rect::from_center_size(egui::pos2(r.left() + 18.0, r.center().y), egui::vec2(20.0, 20.0));
+                    if enabled {
+                        logos.paint(ui, logo, kind);
+                    } else {
+                        ui.painter().rect_filled(logo, CornerRadius::same(4), p.raised);
+                    }
+                    ui.painter().text(egui::pos2(r.left() + 38.0, r.center().y), egui::Align2::LEFT_CENTER, engine_name(kind), egui::FontId::proportional(13.0), if enabled { p.text } else { p.faint });
+                    if !enabled {
+                        ui.painter().text(egui::pos2(r.right() - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, "not in this build", egui::FontId::proportional(11.0), p.faint);
+                        row.on_hover_text(unavailable_reason(kind));
+                    } else if row.clicked() {
+                        picked = Some(kind);
+                        ui.memory_mut(|m| m.close_popup());
+                    }
+                }
+            }
+            ui.add_space(4.0);
+        });
+    });
+    picked
+}
+
+/// A text field drawn like the engine dropdown: `FIELD_H` tall, same fill,
+/// border and corners, accent border while focused. `width` is the outer width.
+fn input(ui: &mut egui::Ui, p: &Palette, edit: egui::TextEdit<'_>, width: f32) -> egui::Response {
+    let out = egui::Frame::new()
+        .fill(p.island)
+        .stroke(Stroke::new(1.0_f32, p.border))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(10, 5))
+        .show(ui, |ui| ui.add(edit.frame(false).margin(Margin::ZERO).font(egui::FontId::proportional(13.5)).desired_width(width - 22.0)));
+    let rect = out.response.rect;
+    if out.inner.has_focus() {
+        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, p.accent), egui::StrokeKind::Inside);
+    } else if ui.rect_contains_pointer(rect) {
+        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, p.muted.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+    }
+    out.inner
+}
+
+/// A form row holding a field and its extras, exactly as tall as a field so
+/// its label lines up.
+fn field_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), FIELD_H), egui::Layout::left_to_right(egui::Align::Center), add).inner
+}
+
+/// Height of the dialog's fields, the engine dropdown and their labels.
+const FIELD_H: f32 = 30.0;
+
+/// The port number: a small text field like the others, digits only, centred.
+/// An empty or out-of-range entry keeps the previous port (outlined in red).
+fn port_input(ui: &mut egui::Ui, p: &Palette, port: &mut u16) {
+    let id = ui.make_persistent_id("port-text");
+    // the text being typed, kept while it still matches the port it produced
+    let mut text = ui.data_mut(|d| d.get_temp::<(u16, String)>(id)).filter(|(v, _)| *v == *port).map(|(_, t)| t).unwrap_or_else(|| port.to_string());
+    let out = egui::Frame::new()
+        .fill(p.island)
+        .stroke(Stroke::new(1.0_f32, p.border))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(6, 5))
+        .show(ui, |ui| {
+            ui.add(egui::TextEdit::singleline(&mut text).frame(false).margin(Margin::ZERO).font(egui::FontId::proportional(13.5)).horizontal_align(egui::Align::Center).char_limit(5).desired_width(40.0))
+        });
+    text.retain(|c| c.is_ascii_digit());
+    let parsed = text.parse::<u16>().ok().filter(|v| *v > 0);
+    if let Some(v) = parsed {
+        *port = v;
+    }
+    ui.data_mut(|d| d.insert_temp(id, (*port, text)));
+    let rect = out.response.rect;
+    let stroke = if parsed.is_none() {
+        Some(p.danger)
+    } else if out.inner.has_focus() {
+        Some(p.accent)
+    } else if ui.rect_contains_pointer(rect) {
+        Some(p.muted.gamma_multiply(0.6))
+    } else {
+        None
+    };
+    if let Some(c) = stroke {
+        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, c), egui::StrokeKind::Inside);
+    }
+    out.inner.on_hover_text("Port (1–65535)");
 }

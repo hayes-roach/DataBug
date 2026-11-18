@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
 ### Changed
 
 - Releases are cut only on request (the *Cut release* workflow, run by hand); pushes to `main` no longer release on their own, and the release commit and tag are pushed together so a release can't be left half-made

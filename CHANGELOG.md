@@ -6,6 +6,12 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- Right-clicking a selection in the editor no longer clears it, so *Cut* and *Copy* in the menu act on what you selected
+- The connection dialog's checkboxes (*Save in system keychain*, *Trust server certificate*, *Production*, *Read-only*, schema list) match the rest of the dialog and sit apart from the fields next to them
+- More room around the *Port* label in the connection dialog
+
 ## [0.6.0] - 2026-11-18
 
 ### Added
@@ -21,8 +27,6 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ### Fixed
 
-- Right-clicking a selection in the editor no longer clears it, so *Cut* and *Copy* in the menu act on what you selected
-- The connection dialog's checkboxes (*Save in system keychain*, *Trust server certificate*, *Production*, *Read-only*, schema list) match the rest of the dialog and sit apart from the fields next to them
 - Dragging a selection in the editor past its top or bottom edge now keeps scrolling, so the cursor follows the pointer instead of stopping at the edge
 - Schema compare's difference count ("6 differences") no longer splits across two lines when the toolbar is narrow
 - README screenshots updated for the new connection dialog, logos, explorer refresh button, consoles button and text fields, with new ones for the engine list, the consoles list and go to definition

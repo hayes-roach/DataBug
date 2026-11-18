@@ -16,9 +16,13 @@ A fast, memory-light, free and open source database client written in Rust for m
 |---|---|---|
 | ![csv](docs/screenshot-csv.png) | ![rename](docs/screenshot-rename.png) | ![plan](docs/screenshot-plan.png) |
 
-| Connection dialog | Light theme | |
+| Connection dialog | Every engine, with its logo | Light theme |
 |---|---|---|
-| ![connection](docs/screenshot-connection.png) | ![light](docs/screenshot-light.png) | |
+| ![connection](docs/screenshot-connection.png) | ![engine dropdown](docs/screenshot-engines.png) | ![light](docs/screenshot-light.png) |
+
+| Closed consoles, kept and reopenable | Go to definition (`Ctrl/⌘ + B`) | |
+|---|---|---|
+| ![closed consoles](docs/screenshot-closed-consoles.png) | ![go to definition](docs/screenshot-go-to-definition.png) | |
 
 ## Install
 
@@ -76,7 +80,7 @@ The in-app updater reads the latest GitHub release, so every release must includ
 | IBM Db2 | `odbc-api` (driver manager built in; IBM Db2 ODBC driver when connecting) | ✔ | ✔ (SYSCAT) | — | drops connection | compiles, not yet run against a server |
 | Spark SQL | `odbc-api` (Thrift server through a Spark ODBC driver) | ✔ | ✔ (`SHOW` / `DESCRIBE`) | `EXPLAIN FORMATTED` text | drops connection | compiles, not yet run against a server |
 
-The new-connection dialog groups engines by type: **Relational / SQL** (PostgreSQL, MySQL, SQL Server, SQLite, Oracle, Db2, H2), **Analytical** (DuckDB), **NoSQL · Document** (MongoDB, CouchDB), **NoSQL · Wide-column** (Cassandra), **Time series** (TimescaleDB, QuestDB, InfluxDB) and **Big data / distributed** (CockroachDB, Spark SQL).
+The new-connection dialog picks the engine from a dropdown that shows each engine's logo and groups them by type: **Relational / SQL** (PostgreSQL, MySQL, SQL Server, SQLite, Oracle, Db2, H2), **Analytical** (DuckDB), **NoSQL · Document** (MongoDB, CouchDB), **NoSQL · Wide-column** (Cassandra), **Time series** (TimescaleDB, QuestDB, InfluxDB) and **Big data / distributed** (CockroachDB, Spark SQL).
 
 ### What the explorer shows
 
@@ -295,13 +299,13 @@ The other engines have live tests that run when their variable is set; with Dock
 
 The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
 
-`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`. The README screenshots come from `main` (editor), `multidb`, `find`, `theme`, `compare`, `er`, `table`, `csv`, `rename`, `plan`, `dialog` and `light`, captured at the default window size and scaled to 1440×900.
+`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `dialog-engines` (engine list open), `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`, `editors` (closed consoles on the welcome screen), `goto` (go to definition) and `tabmenu`. `DATABUG_CUSTOM_FRAME=1` shows the Linux title bar on any platform. The README screenshots come from `main` (editor), `multidb`, `find`, `theme`, `compare`, `er`, `table`, `csv`, `rename`, `plan`, `dialog`, `dialog-engines`, `light`, `editors` and `goto`, run with `DATABUG_HOME` set to an empty folder (sample data only), captured at the default window size and scaled to 1440×900.
 
 `DATABUG_TEST_KRB="user@REALM:password"` with `--features databug-drivers/kerberos` adds a test that signs in to a Kerberos realm through the SQL Server Windows-credentials path.
 
 ## Not done yet
 
-- **macOS and Windows builds haven't been run yet.** Dependency resolution checks out for both, and the wgpu renderer they use was exercised on Linux. CI (`ci.yml`) and the release workflow (`release.yml`) build and test on real macOS and Windows runners; push to GitHub to run them.
+- The Linux title bar (DataBug's own window buttons, dragging and edge resizing) has only been checked on macOS with `DATABUG_CUSTOM_FRAME=1`; reports from GNOME, KDE and other Wayland or X11 desktops are welcome.
 - MongoDB still hasn't run against a live server. SQL Server has been tested against a live server; its less common objects (CLR objects, sequences, synonyms) and `CREATE OR ALTER` editing have seen the least use, so reports are welcome.
 - SSH tunnels, client certificates, and cloud sign-in (AWS IAM, Microsoft Entra ID).
 - SQL Server Windows authentication hasn't been tried against a real domain. The macOS/Linux `kinit` step was tested against a local Kerberos realm (right and wrong passwords); the handshake with SQL Server itself is tiberius' and is untested here.
@@ -310,7 +314,7 @@ The live tests cover streaming, NULLs, row limits, affected-row counts, server m
 - Schema compare across different engines compares types textually, so Postgres `text` vs MySQL `TEXT` matches but `int8` vs `BIGINT` mapping across engines is basic.
 - Rename refactoring rewrites references it can resolve from SQL text; dynamic SQL inside routines isn't touched.
 - A `databug-lsp` crate and an MCP server for AI agents.
-- Oracle, IBM Db2 and Spark SQL compile but haven't been run against a server: they need Oracle Instant Client or an ODBC driver that couldn't be tested here. Reports are welcome.
+- Oracle, IBM Db2 and Spark SQL ship in every build but haven't been run against a server: they need Oracle Instant Client or an ODBC driver that couldn't be tested here. Reports are welcome.
 - CouchDB updates and deletes, InfluxDB 3 SQL (InfluxQL works through its v1 API), Cassandra materialized-view editing and TimescaleDB policies and jobs in the explorer.
 - More engines (Redis, ClickHouse) behind the same `DbConnection` trait.
 - The UI is pinned to egui 0.31; moving to the current egui release is a mechanical upgrade.

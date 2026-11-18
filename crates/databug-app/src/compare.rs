@@ -109,7 +109,7 @@ impl CompareView {
             if busy {
                 ui.spinner();
             }
-            ui.label(RichText::new(&self.status).color(p.muted));
+            ui.add(egui::Label::new(RichText::new(&self.status).color(p.muted)).extend());
         });
         ui.add_space(6.0);
         if self.phase != Phase::Done {

@@ -440,3 +440,33 @@ pub fn text_field(ui: &mut egui::Ui, p: &Palette, edit: egui::TextEdit<'_>, widt
     ui.painter().set(bg, egui::epaint::RectShape::new(rect, CornerRadius::same(6), p.island, stroke, egui::StrokeKind::Inside));
     r
 }
+
+/// A checkbox in the same style as the text fields: a 16 px rounded box
+/// (panel fill, thin border), filled with the accent color and a white tick
+/// when on, with room between the box and its label.
+pub fn checkbox(ui: &mut egui::Ui, p: &Palette, on: &mut bool, label: impl Into<egui::WidgetText>) -> egui::Response {
+    let galley = label.into().into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let size = egui::vec2(16.0 + 8.0 + galley.size().x, galley.size().y.max(20.0));
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let b = egui::Rect::from_center_size(egui::pos2(rect.left() + 8.0, rect.center().y), egui::vec2(16.0, 16.0));
+    let hovered = resp.hovered() && ui.is_enabled();
+    if *on {
+        ui.painter().rect_filled(b, CornerRadius::same(4), if hovered { p.accent.gamma_multiply(0.85) } else { p.accent });
+        let st = Stroke::new(1.8_f32, Color32::WHITE);
+        ui.painter().line_segment([b.center() + egui::vec2(-4.0, 0.3), b.center() + egui::vec2(-1.2, 3.0)], st);
+        ui.painter().line_segment([b.center() + egui::vec2(-1.2, 3.0), b.center() + egui::vec2(4.2, -3.2)], st);
+    } else {
+        let stroke = if hovered { Stroke::new(1.0_f32, p.muted) } else { Stroke::new(1.0_f32, p.border) };
+        ui.painter().rect(b, CornerRadius::same(4), p.island, stroke, egui::StrokeKind::Inside);
+    }
+    let color = if ui.is_enabled() { p.text } else { p.faint };
+    ui.painter().galley(egui::pos2(b.right() + 8.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}

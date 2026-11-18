@@ -117,7 +117,9 @@ impl ConnDialog {
                                 field(ui, "Host");
                                 field_row(ui, |ui| {
                                     input(ui, p, egui::TextEdit::singleline(&mut self.cfg.host).hint_text("localhost"), 260.0);
+                                    ui.add_space(16.0);
                                     ui.label(RichText::new("Port").color(p.muted));
+                                    ui.add_space(8.0);
                                     port_input(ui, p, &mut self.cfg.port);
                                 });
                                 ui.end_row();
@@ -184,7 +186,8 @@ impl ConnDialog {
                                     field(ui, if influx && self.cfg.user.is_empty() { "API token" } else { "Password" });
                                     field_row(ui, |ui| {
                                         input(ui, p, egui::TextEdit::singleline(&mut self.password).password(true), 220.0);
-                                        ui.checkbox(&mut self.save_password, "Save in system keychain");
+                                        ui.add_space(8.0);
+                                        crate::theme::checkbox(ui, p, &mut self.save_password, "Save in system keychain");
                                     });
                                     ui.end_row();
                                 }
@@ -239,7 +242,7 @@ impl ConnDialog {
                                 }
                                 ui.selectable_value(&mut self.cfg.ssl, SslMode::Require, "Require");
                                 if kind == DbKind::MsSql {
-                                    ui.checkbox(&mut self.cfg.trust_server_cert, "Trust server certificate");
+                                    crate::theme::checkbox(ui, p, &mut self.cfg.trust_server_cert, "Trust server certificate");
                                 }
                             });
                             ui.end_row();
@@ -274,10 +277,11 @@ impl ConnDialog {
                     ui.end_row();
                     field(ui, "Safety");
                     ui.horizontal(|ui| {
-                        if ui.checkbox(&mut self.cfg.production, "Production").on_hover_text("Ask before running anything that changes data, and show a red marker").changed() && self.cfg.production {
+                        ui.spacing_mut().item_spacing.x = 16.0;
+                        if crate::theme::checkbox(ui, p, &mut self.cfg.production, "Production").on_hover_text("Ask before running anything that changes data, and show a red marker").changed() && self.cfg.production {
                             self.cfg.color = [247, 84, 100];
                         }
-                        ui.checkbox(&mut self.cfg.read_only, "Read-only").on_hover_text("Block statements that modify data or schema");
+                        crate::theme::checkbox(ui, p, &mut self.cfg.read_only, "Read-only").on_hover_text("Block statements that modify data or schema");
                     });
                     ui.end_row();
                 });
@@ -365,7 +369,7 @@ impl ConnDialog {
                         for s in &self.known_schemas {
                             let mut on = list.contains(s);
                             let text = if *s == self.default_schema { format!("{s} (default)") } else { s.clone() };
-                            if ui.checkbox(&mut on, text).changed() {
+                            if crate::theme::checkbox(ui, p, &mut on, text).changed() {
                                 if on {
                                     list.push(s.clone());
                                 } else {

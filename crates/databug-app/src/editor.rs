@@ -119,6 +119,9 @@ pub struct Editor {
     pending_paste: bool,
     /// Where the right-click menu was opened (byte offset), for *Go to definition*.
     menu_at: Option<usize>,
+    /// Open the completion list on the next frame, as Ctrl + Space does
+    /// (screenshot scenes).
+    pub complete_now: bool,
 }
 
 /// Right-click menu items the app carries out.
@@ -182,6 +185,7 @@ impl Editor {
             request: None,
             pending_paste: false,
             menu_at: None,
+            complete_now: false,
         }
     }
 
@@ -649,7 +653,7 @@ impl Editor {
 
         // ---- keys we handle before the text edit sees them ----
         let mut accept: Option<usize> = None;
-        let mut explicit_complete = false;
+        let mut explicit_complete = std::mem::take(&mut self.complete_now);
         let mut toggle_comment = false;
         let mut insert_spaces = false;
         if has_focus {
@@ -800,6 +804,10 @@ impl Editor {
                     }
                 }
             }
+            // egui places the cursor on any mouse press, right button included;
+            // keep the selection a right-click is about to act on
+            let right_press = ui.input(|i| i.pointer.secondary_pressed());
+            let kept_range = if right_press { egui::TextEdit::load_state(ui.ctx(), self.id).and_then(|s| s.cursor.char_range()) } else { None };
             // The layouter borrows `self`, so the buffer is moved out while editing.
             let mut text = std::mem::take(&mut self.text);
             let id = self.id;
@@ -831,9 +839,16 @@ impl Editor {
             }
             text_rect = out.response.rect;
 
-            if let Some(cr) = out.cursor_range {
-                let a = char_to_byte(&self.text, cr.primary.ccursor.index);
-                let b = char_to_byte(&self.text, cr.secondary.ccursor.index);
+            let mut cursor_range = out.cursor_range.map(|c| c.as_ccursor_range());
+            if let Some(kept) = kept_range.filter(|r| r.primary != r.secondary && out.response.hovered()) {
+                let mut state = egui::TextEdit::load_state(ui.ctx(), self.id).unwrap_or_default();
+                state.cursor.set_char_range(Some(kept));
+                state.store(ui.ctx(), self.id);
+                cursor_range = Some(kept);
+            }
+            if let Some(cr) = cursor_range {
+                let a = char_to_byte(&self.text, cr.primary.index);
+                let b = char_to_byte(&self.text, cr.secondary.index);
                 self.cursor = a;
                 self.selection = if a != b { Some(a.min(b)..a.max(b)) } else { None };
             }

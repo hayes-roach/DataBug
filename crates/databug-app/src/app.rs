@@ -4018,10 +4018,11 @@ impl DataBugApp {
                 plan.wait_frames = plan.wait_frames.min(5);
             }
             2 if plan.wait_frames == 4 && (plan.scene == "main" || plan.scene == "light") => {
-                // open completion the way Ctrl+Space would
-                ctx.input_mut(|i| {
-                    i.events.push(egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL });
-                });
+                // open completion the way Ctrl+Space would (directly, so a stray
+                // key press while the window is up can't change the shot)
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.editor.complete_now = true;
+                }
             }
             2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, "perf" => 400, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
                 plan.step = 3;

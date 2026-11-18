@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-18
+
 ### Added
 
 - Go to definition: `Ctrl/⌘ + B`, `Ctrl/⌘ + click`, or `Control + F` on macOS on the name of a procedure, function, trigger or view opens its source in a new console (a table opens its DDL)

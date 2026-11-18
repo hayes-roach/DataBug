@@ -6,6 +6,14 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Added
+
+- Putting the cursor on a name softly highlights its other uses in the console (by token, so matching text in strings, comments and keywords isn't highlighted)
+
+### Fixed
+
+- Selecting a single letter (or a few) by dragging in the editor works; before, a drag shorter than about 6 px counted as a click and selected nothing
+
 ## [0.6.1] - 2026-11-18
 
 ### Changed

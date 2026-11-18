@@ -3773,6 +3773,12 @@ impl DataBugApp {
                             self.active = 0;
                             ctx.data_mut(|d| d.insert_temp(egui::Id::new("open-consoles-menu"), true));
                         }
+                        "usages" => {
+                            // cursor on the alias `c`: its other uses are softly highlighted
+                            let t = &mut self.tabs[self.active];
+                            let at = DEMO_SQL.find("FROM customers c").map(|i| i + "FROM customers ".len()).unwrap_or(0);
+                            t.editor.select(at..at);
+                        }
                         "goto" => {
                             let t = &mut self.tabs[self.active];
                             t.editor.set_text("SELECT * FROM order_items WHERE order_id = 1;".into());

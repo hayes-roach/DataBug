@@ -122,6 +122,13 @@ pub struct Editor {
     /// Open the completion list on the next frame, as Ctrl + Space does
     /// (screenshot scenes).
     pub complete_now: bool,
+    /// Character where the primary button went down, while it's held, so a
+    /// drag too short for egui to count (under one letter) still selects.
+    press_anchor: Option<usize>,
+    /// Other uses of the name at the cursor (soft-highlighted), and the
+    /// (text version, cursor) they were found for.
+    usages: Vec<Range<usize>>,
+    usages_key: (u64, usize),
 }
 
 /// Right-click menu items the app carries out.
@@ -186,6 +193,9 @@ impl Editor {
             pending_paste: false,
             menu_at: None,
             complete_now: false,
+            press_anchor: None,
+            usages: Vec::new(),
+            usages_key: (u64::MAX, usize::MAX),
         }
     }
 
@@ -621,6 +631,34 @@ impl Editor {
         job
     }
 
+    /// Find every use of the identifier the cursor is on (by token, so
+    /// strings, comments and keywords don't count; case-insensitive, quotes
+    /// ignored). Only kept when it appears more than once.
+    fn refresh_usages(&mut self, active: bool) {
+        if !active || self.text.len() > 300_000 {
+            self.usages.clear();
+            self.usages_key = (u64::MAX, usize::MAX);
+            return;
+        }
+        let key = (self.version, self.cursor);
+        if key == self.usages_key {
+            return;
+        }
+        self.usages_key = key;
+        self.usages.clear();
+        let toks = tokenize(&self.text, self.dialect);
+        let is_name = |k: TokKind| matches!(k, TokKind::Ident | TokKind::QuotedIdent);
+        let Some(at) = toks.iter().find(|t| is_name(t.kind) && t.start <= self.cursor && self.cursor <= t.end) else { return };
+        let name = databug_sql::analyze::unquote(at.text(&self.text));
+        if name.is_empty() {
+            return;
+        }
+        let found: Vec<Range<usize>> = toks.iter().filter(|t| is_name(t.kind) && databug_sql::analyze::unquote(t.text(&self.text)).eq_ignore_ascii_case(&name)).take(5000).map(|t| t.start..t.end).collect();
+        if found.len() > 1 {
+            self.usages = found;
+        }
+    }
+
     /// Draw the editor. `catalog_gen` changes whenever the catalog is refreshed.
     pub fn show(&mut self, ui: &mut egui::Ui, p: &Palette, catalog: Option<&Catalog>, catalog_gen: u64, auto_complete: bool, font_size: f32) {
         let scoped = self.scoped_catalog(catalog, catalog_gen);
@@ -760,6 +798,8 @@ impl Editor {
             ui.painter().rect_filled(full, CornerRadius::same(3), fill);
         };
 
+        self.refresh_usages(has_focus && self.selection.is_none() && !self.find.open);
+
         let mut changed = false;
         let mut text_rect = Rect::NOTHING;
         egui::ScrollArea::both().id_salt(self.id.with("scroll")).auto_shrink([false, false]).show(ui, |ui| {
@@ -802,11 +842,31 @@ impl Editor {
                         let line = Rect::from_min_max(egui::pos2(ui.max_rect().left(), origin.y + cr.min.y), egui::pos2(ui.max_rect().right(), origin.y + cr.max.y));
                         ui.painter().rect_filled(line, CornerRadius::ZERO, p.hover.gamma_multiply(0.7));
                     }
+                    // other uses of the name at the cursor, softly
+                    if !self.usages.is_empty() {
+                        let top = ui.clip_rect().top() - origin.y - 40.0;
+                        let bottom = ui.clip_rect().bottom() - origin.y + 40.0;
+                        for m in &self.usages {
+                            let a = pos_of(&g, byte_to_char(&self.text, m.start));
+                            if a.max.y < top {
+                                continue;
+                            }
+                            if a.min.y > bottom {
+                                break;
+                            }
+                            let b = pos_of(&g, byte_to_char(&self.text, m.end));
+                            let r = Rect::from_min_max(a.min, egui::pos2(b.max.x.max(a.min.x + 2.0), a.max.y)).translate(origin.to_vec2());
+                            // the use the cursor is on reads a little stronger (it sits on the current-line band)
+                            let here = m.start <= self.cursor && self.cursor <= m.end;
+                            ui.painter().rect_filled(r, CornerRadius::same(2), p.accent.gamma_multiply(if here { 0.32 } else { 0.2 }));
+                        }
+                    }
                 }
             }
             // egui places the cursor on any mouse press, right button included;
             // keep the selection a right-click is about to act on
             let right_press = ui.input(|i| i.pointer.secondary_pressed());
+            let (left_press, left_down, shift) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.modifiers.shift));
             let kept_range = if right_press { egui::TextEdit::load_state(ui.ctx(), self.id).and_then(|s| s.cursor.char_range()) } else { None };
             // The layouter borrows `self`, so the buffer is moved out while editing.
             let mut text = std::mem::take(&mut self.text);
@@ -840,6 +900,27 @@ impl Editor {
             text_rect = out.response.rect;
 
             let mut cursor_range = out.cursor_range.map(|c| c.as_ccursor_range());
+            // short drags: egui only starts a drag after a few pixels, which is
+            // more than a letter, so extend the selection as soon as the
+            // pointer reaches another character
+            if left_press && out.response.hovered() && !shift {
+                self.press_anchor = ui.ctx().pointer_interact_pos().map(|pos| out.galley.cursor_from_pos(pos - out.galley_pos).ccursor.index);
+            }
+            if !left_down {
+                self.press_anchor = None;
+            }
+            if let (Some(anchor), false) = (self.press_anchor, out.response.dragged()) {
+                if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                    let here = out.galley.cursor_from_pos(pos - out.galley_pos).ccursor.index;
+                    if here != anchor {
+                        let range = CCursorRange::two(CCursor::new(anchor), CCursor::new(here));
+                        let mut state = egui::TextEdit::load_state(ui.ctx(), self.id).unwrap_or_default();
+                        state.cursor.set_char_range(Some(range));
+                        state.store(ui.ctx(), self.id);
+                        cursor_range = Some(range);
+                    }
+                }
+            }
             if let Some(kept) = kept_range.filter(|r| r.primary != r.secondary && out.response.hovered()) {
                 let mut state = egui::TextEdit::load_state(ui.ctx(), self.id).unwrap_or_default();
                 state.cursor.set_char_range(Some(kept));

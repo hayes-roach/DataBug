@@ -6,6 +6,12 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-18
+
+### Changed
+
+- Bump mongodb from 3.10.0 to 3.10.1 in the compatible group (#16)
+
 ## [0.3.6] - 2026-11-13
 
 ### Changed

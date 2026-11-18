@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-18
+
 ### Added
 
 - Right-click menu in the editor: Cut, Copy, Paste, Select all, Run statement or selection, Run script, Go to definition, Find, Format and Toggle comment

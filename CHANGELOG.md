@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-18
+
 ### Added
 
 - Putting the cursor on a name softly highlights its other uses in the console (by token, so matching text in strings, comments and keywords isn't highlighted)

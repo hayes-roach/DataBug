@@ -87,7 +87,7 @@ DataBug uses **GitHub flow**: one long-lived branch, `main`, plus short-lived br
 ### Releases and hotfixes
 
 - Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor bump (`0.2.0`) may contain breaking changes to settings or behaviour; patch releases (`0.1.1`) only fix bugs.
-- **Every merge to `main` releases automatically.** `.github/workflows/auto-release.yml` reads the titles of the pull requests merged since the last tag and picks the next version:
+- **Releases are cut by hand.** Pushes and merges to `main` never release on their own. When it's time, run *Cut release* (`.github/workflows/auto-release.yml`) from the Actions tab or with `gh workflow run auto-release.yml`. It reads the titles of the pull requests (or commits) since the last tag and picks the next version:
 
   | Pull request title | Release |
   |---|---|
@@ -96,8 +96,8 @@ DataBug uses **GitHub flow**: one long-lived branch, `main`, plus short-lived br
   | `feat!: …` (any type with `!`) | major; minor before 1.0 |
   | `docs: …`, `ci: …`, `test: …`, `style: …`, other `chore: …` | none on its own; ships with the next release |
 
-  It bumps `version` in `Cargo.toml`, moves the *Unreleased* entries in [CHANGELOG.md](CHANGELOG.md) under the new version with today's date (listing the pull request titles when there are none, as for Dependabot updates), commits that to `main` as `chore(release): vX.Y.Z` and tags it; the tag starts `.github/workflows/release.yml`, which builds the installers and publishes the GitHub release. It pushes with the `RELEASE_TOKEN` secret, a maintainer's fine-grained token for this repository with *Contents: read and write*, because only admins can bypass the `main` ruleset. So pull request titles matter: they decide the version. Tags are never moved or deleted once a release is published.
-- To release by hand instead (for example a `release/X.Y` hotfix), move the *Unreleased* entries under the new version, bump `version` in `Cargo.toml`, commit that as `chore(release): vX.Y.Z` (a commit with that title never triggers an automatic release), then tag it and push the tag: `git tag -a vX.Y.Z -m "DataBug X.Y.Z" && git push origin vX.Y.Z`.
+  It bumps `version` in `Cargo.toml`, moves the *Unreleased* entries in [CHANGELOG.md](CHANGELOG.md) under the new version with today's date (listing the pull request titles when there are none, as for Dependabot updates), commits that to `main` as `chore(release): vX.Y.Z` and tags it, pushing both in one atomic push (if `main` moved meanwhile, nothing is pushed and you run it again); the tag starts `.github/workflows/release.yml`, which builds the installers and publishes the GitHub release. It pushes with the `RELEASE_TOKEN` secret, a maintainer's fine-grained token for this repository with *Contents: read and write*, because only admins can bypass the `main` ruleset. So pull request titles matter: they decide the version. Tags are never moved or deleted once a release is published.
+- To release by hand instead (for example a `release/X.Y` hotfix), move the *Unreleased* entries under the new version, bump `version` in `Cargo.toml`, commit that as `chore(release): vX.Y.Z`, then tag it and push the tag: `git tag -a vX.Y.Z -m "DataBug X.Y.Z" && git push origin vX.Y.Z`.
 - **Hotfixes** normally go to `main` like any fix, followed by a patch release. If `main` already holds unreleased work that shouldn't ship yet, a maintainer creates `release/X.Y` from the last tag, merges the fix there through a pull request, tags `vX.Y.Z+1` from that branch, and brings the fix back to `main` with a pull request.
 
 ## Dependency updates

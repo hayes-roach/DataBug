@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- Releases are cut only on request (the *Cut release* workflow, run by hand); pushes to `main` no longer release on their own, and the release commit and tag are pushed together so a release can't be left half-made
+
 ### Fixed
 
 - Right-clicking a selection in the editor no longer clears it, so *Cut* and *Copy* in the menu act on what you selected

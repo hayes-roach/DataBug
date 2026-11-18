@@ -50,7 +50,7 @@ DataBug checks GitHub for a newer release when it starts (at most every 6 hours)
 
 ### Making a release
 
-Push a tag like `v0.2.0`; `.github/workflows/release.yml` builds the DMG, setup .exe, portable Windows zip and Linux tarball, adds `SHA256SUMS.txt`, and publishes a GitHub release with install instructions. Every push to `main` also uploads the macOS and Windows installers as CI artifacts.
+Releases are made only on request: run *Cut release* in the Actions tab (`gh workflow run auto-release.yml`), which bumps the version and changelog and pushes a `vX.Y.Z` tag, or push a tag yourself (see [CONTRIBUTING.md](CONTRIBUTING.md)). The tag starts `.github/workflows/release.yml`, which builds the DMG, setup .exe, portable Windows zip and Linux tarball, adds `SHA256SUMS.txt`, and publishes a GitHub release with install instructions. Every push to `main` also uploads the macOS and Windows installers as CI artifacts.
 
 To build installers yourself:
 - macOS: `packaging/macos/bundle.sh` (this Mac's architecture) or `packaging/macos/bundle.sh universal` → `dist/DataBug-macos-*.dmg` and `.zip`

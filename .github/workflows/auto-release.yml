@@ -1,12 +1,15 @@
-name: Auto release
+name: Cut release
 
-# After every merge to main: work out the next version from the merged pull
-# request titles (Conventional Commits, see .github/scripts/release.py), bump
-# Cargo.toml, move the Unreleased changelog entries under the new version,
-# commit that to main as `chore(release): vX.Y.Z` and tag it. The tag starts
+# Run by hand (Actions → Cut release → Run workflow, or
+# `gh workflow run auto-release.yml`) when it's time to release; pushes to main
+# never release on their own. It works out the next version from the commits
+# and pull request titles since the last tag (Conventional Commits, see
+# .github/scripts/release.py), bumps Cargo.toml, moves the Unreleased
+# changelog entries under the new version, commits that to main as
+# `chore(release): vX.Y.Z` and tags it. The tag starts
 # the Release workflow, which builds the installers and publishes the release.
 #
-# Docs-, CI- and test-only merges don't make a release; they ship with the next one.
+# Docs-, CI- and test-only changes alone don't make a release; they ship with the next one.
 #
 # The release commit is pushed with the RELEASE_TOKEN secret: a fine-grained
 # personal access token of a repository admin, limited to this repository,
@@ -14,11 +17,9 @@ name: Auto release
 # (GitHub Actions itself can't be added to the bypass list of a personal
 # repository), and unlike GITHUB_TOKEN its tag push starts the Release workflow.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
-# one release at a time; a merge that lands meanwhile is picked up by the next run
+# one release at a time
 concurrency:
   group: auto-release
   cancel-in-progress: false
@@ -29,8 +30,6 @@ permissions:
 
 jobs:
   release:
-    # the release commit this workflow pushes (or one pushed by hand) doesn't release again
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     steps:
       - name: RELEASE_TOKEN is set
@@ -101,4 +100,9 @@ jobs:
           git config user.email "54288270+hayes-roach@users.noreply.github.com"
           git commit -am "chore(release): v$VERSION"
           git tag -a "v$VERSION" -m "DataBug $VERSION"
-          git push origin HEAD:main "v$VERSION"
+          # all or nothing: if main moved while this ran, neither the commit nor
+          # the tag is pushed (a plain push could land the tag without the commit)
+          if ! git push --atomic origin HEAD:main "v$VERSION"; then
+            echo "::error::main changed while the release was being prepared; nothing was pushed. Run the workflow again."
+            exit 1
+          fi

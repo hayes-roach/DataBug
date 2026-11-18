@@ -3965,7 +3965,6 @@ dependencies = [
  "odbc-sys",
  "thiserror 2.0.21",
  "widestring",
- "winit",
 ]
 
 [[package]]
@@ -3973,6 +3972,9 @@ name = "odbc-sys"
 version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38467959ef8ec6b76e0d98a7da6a270b65b7ab4f22b2209ef81c8a9260633a50"
+dependencies = [
+ "unix-odbc",
+]
 
 [[package]]
 name = "odpic-sys"
@@ -6332,6 +6334,15 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unix-odbc"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26bdaf2156eebadc0dbabec5b2c2a6f92bff5cface28f3f0a367d2ee9aeca0e2"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "untrusted"

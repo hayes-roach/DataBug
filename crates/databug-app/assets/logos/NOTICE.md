@@ -11,18 +11,13 @@ These logos are trademarks of their respective owners. DataBug shows them only t
 | `mongodb.svg` | MongoDB, Inc. |
 | `sqlite.svg` | The SQLite project (public domain software; the name and logo identify the project) |
 | `couchdb.svg` | The Apache Software Foundation |
-
-These are original DataBug letter tiles, not the vendors' logos; the names they stand for are trademarks of their owners:
-
-| File | Name is a trademark of |
-|---|---|
-| `oracle.svg` | Oracle Corporation |
-| `db2.svg` | IBM Corporation |
+| `oracle.svg` | Oracle Corporation and/or its affiliates |
+| `db2.svg` | IBM Corporation (the IBM 8-bar logo, standing for Db2) |
 | `duckdb.svg` | DuckDB Foundation |
 | `cassandra.svg`, `spark.svg` | The Apache Software Foundation |
-| `cockroachdb.svg` | Cockroach Labs |
+| `cockroachdb.svg` | Cockroach Labs, Inc. |
 | `timescaledb.svg` | Timescale, Inc. |
-| `questdb.svg` | QuestDB Ltd. |
+| `questdb.png` | QuestDB Ltd. |
 | `influxdb.svg` | InfluxData, Inc. |
 | `h2.svg` | The H2 Database Engine project |
 

@@ -87,7 +87,7 @@ const BUILT_IN: [(DbKind, &str, &[u8]); 16] = [
     (DbKind::CouchDb, "couchdb.svg", include_bytes!("../assets/logos/couchdb.svg")),
     (DbKind::CockroachDb, "cockroachdb.svg", include_bytes!("../assets/logos/cockroachdb.svg")),
     (DbKind::TimescaleDb, "timescaledb.svg", include_bytes!("../assets/logos/timescaledb.svg")),
-    (DbKind::QuestDb, "questdb.svg", include_bytes!("../assets/logos/questdb.svg")),
+    (DbKind::QuestDb, "questdb.png", include_bytes!("../assets/logos/questdb.png")),
     (DbKind::InfluxDb, "influxdb.svg", include_bytes!("../assets/logos/influxdb.svg")),
     (DbKind::Spark, "spark.svg", include_bytes!("../assets/logos/spark.svg")),
     (DbKind::H2, "h2.svg", include_bytes!("../assets/logos/h2.svg")),
@@ -178,11 +178,19 @@ impl Logos {
         self.paint(ui, rect, kind);
     }
 
+    /// The logo faded out, for engines this build can't connect to.
+    pub fn paint_dimmed(&self, ui: &egui::Ui, rect: Rect, kind: DbKind) {
+        match self.uris.get(&kind) {
+            Some(uri) => egui::Image::new(uri.as_str()).tint(egui::Color32::from_white_alpha(90)).fit_to_exact_size(rect.size()).paint_at(ui, rect),
+            None => engine_badge(ui.painter(), rect, kind),
+        }
+    }
+
     pub fn paint(&self, ui: &egui::Ui, rect: Rect, kind: DbKind) {
         match self.uris.get(&kind) {
             Some(uri) => {
-                // the MySQL dolphin is dark blue; give it a light tile so it reads on the dark theme
-                if kind == DbKind::MySql && ui.visuals().dark_mode {
+                // dark-blue marks (MySQL's dolphin, IBM, H2, InfluxDB) get a light tile so they read on dark themes
+                if matches!(kind, DbKind::MySql | DbKind::Db2 | DbKind::H2 | DbKind::InfluxDb) && ui.visuals().dark_mode {
                     ui.painter().rect_filled(rect.expand(1.0), egui::CornerRadius::same(4), egui::Color32::from_rgb(0xE8, 0xEC, 0xF2));
                     egui::Image::new(uri.as_str()).fit_to_exact_size(rect.size() * 0.86).paint_at(ui, Rect::from_center_size(rect.center(), rect.size() * 0.86));
                 } else {

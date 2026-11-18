@@ -72,8 +72,8 @@ The in-app updater reads the latest GitHub release, so every release must includ
 | Apache Cassandra | `scylla` | ✔ CQL | ✔ (system_schema; keyspaces as schemas) | — | drops connection | ✔ Cassandra 5 (Docker) |
 | CouchDB | `reqwest` (HTTP API) | ✔ Mango in shell syntax | ✔ (databases as collections, sampled fields, indexes) | `_explain` JSON | drops connection | ✔ CouchDB 3 (Docker) |
 | InfluxDB | `reqwest` (HTTP API) | ✔ InfluxQL, Flux (2.x), line-protocol `INSERT` | ✔ (measurements, tags, fields) | — | drops connection | ✔ InfluxDB 2.7 (Docker) |
-| Oracle | `oracle` (ODPI-C; needs Oracle Instant Client at run time) | ✔ | ✔ (ALL_* views) | `DBMS_XPLAN` text | ✔ (break) | compiles, not yet run against a server |
-| IBM Db2 | `odbc-api` (needs unixODBC + IBM Db2 ODBC driver) | ✔ | ✔ (SYSCAT) | — | drops connection | compiles, not yet run against a server |
+| Oracle | `oracle` (ODPI-C; Oracle Instant Client when connecting) | ✔ | ✔ (ALL_* views) | `DBMS_XPLAN` text | ✔ (break) | compiles, not yet run against a server |
+| IBM Db2 | `odbc-api` (driver manager built in; IBM Db2 ODBC driver when connecting) | ✔ | ✔ (SYSCAT) | — | drops connection | compiles, not yet run against a server |
 | Spark SQL | `odbc-api` (Thrift server through a Spark ODBC driver) | ✔ | ✔ (`SHOW` / `DESCRIBE`) | `EXPLAIN FORMATTED` text | drops connection | compiles, not yet run against a server |
 
 The new-connection dialog groups engines by type: **Relational / SQL** (PostgreSQL, MySQL, SQL Server, SQLite, Oracle, Db2, H2), **Analytical** (DuckDB), **NoSQL · Document** (MongoDB, CouchDB), **NoSQL · Wide-column** (Cassandra), **Time series** (TimescaleDB, QuestDB, InfluxDB) and **Big data / distributed** (CockroachDB, Spark SQL).
@@ -95,17 +95,13 @@ The new-connection dialog groups engines by type: **Relational / SQL** (PostgreS
 
 Every object with a definition has an **edit** button (the pencil that appears on hover or selection). Tables open the table editor. Views, materialized views, procedures, functions, triggers, sequences, synonyms and events open their definition as runnable DDL in a console: `CREATE OR REPLACE` on Postgres and MySQL views, `CREATE OR ALTER` on SQL Server (2016 SP1+), `DROP` + `CREATE` where the engine has no replace (MySQL routines, SQLite, Postgres materialized views). CLR objects open their `EXTERNAL NAME` binding, and assemblies show their details and the objects bound to them.
 
-Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb`, `cockroachdb`, `timescaledb`, `questdb`, `h2`, `duckdb`, `cassandra`, `couchdb`, `influxdb`, `oracle`, `db2`, `spark`), so a build can leave out the ones it doesn't need. Everything except `oracle`, `db2`, `spark` and `cassandra-tls` is in the default build and needs no system libraries. Those are opt-in because they need software DataBug can't bundle (`cassandra-tls` pulls in rustls' aws-lc backend, a C library):
+Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb`, `cockroachdb`, `timescaledb`, `questdb`, `h2`, `duckdb`, `cassandra`, `couchdb`, `influxdb`, `oracle`, `db2`, `spark`), so a build can leave out the ones it doesn't need. Everything except `cassandra-tls` is in the default build (it pulls in rustls' aws-lc backend, a C library), and building needs no system libraries: ODPI-C (Oracle) and the unixODBC driver manager (Db2, Spark on macOS/Linux) are compiled in, and Windows has its own ODBC. DataBug starts without any vendor software installed; three engines need theirs only when you connect:
 
-| Feature | To build | To connect |
-|---|---|---|
-| `oracle` | nothing extra (ODPI-C is compiled in) | [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) on the library path (`DYLD_LIBRARY_PATH` / `LD_LIBRARY_PATH` / `PATH`) or next to DataBug |
-| `db2` | the ODBC driver manager: `brew install unixodbc` (macOS), `apt install unixodbc-dev` (Linux); built into Windows | the IBM Data Server Driver for ODBC and CLI, registered as `IBM DB2 ODBC DRIVER` (or set *ODBC driver* in the dialog) |
-| `spark` | the ODBC driver manager, as for `db2` | a Spark ODBC driver (Simba or Databricks) and a running Spark Thrift server; *ODBC options* sets `ThriftTransport`, `HTTPPath` and friends |
-
-```sh
-cargo build --release --features databug-drivers/oracle
-```
+| Engine | To connect |
+|---|---|
+| Oracle | [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) on the library path (`DYLD_LIBRARY_PATH` / `LD_LIBRARY_PATH` / `PATH`) or next to DataBug |
+| IBM Db2 | the IBM Data Server Driver for ODBC and CLI, registered as `IBM DB2 ODBC DRIVER` in `odbcinst.ini` (point `ODBCSYSINI` at its folder on macOS/Linux) or set *ODBC driver* in the dialog to the driver library's full path |
+| Spark SQL | a Spark ODBC driver (Simba or Databricks), registered the same way, and a running Spark Thrift server; *ODBC options* sets `ThriftTransport`, `HTTPPath` and friends |
 
 **DuckDB is downloaded, not built in.** Choosing DuckDB in the new-connection dialog offers **Download DuckDB**: DataBug fetches DuckDB's official library for your platform (about 36 MB on macOS, 41 MB on Linux, 13 MB on Windows) from [DuckDB's GitHub releases](https://github.com/duckdb/duckdb/releases/tag/v1.5.6) over verified HTTPS, checks it against a SHA-256 pinned in the source, keeps only the library (in DataBug's data folder under `runtimes/duckdb-1.5.6`) and loads it when you connect. Nothing is downloaded unless you click the button. To use a DuckDB library you already have, set `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (`.so`, `duckdb.dll`).
 
@@ -197,7 +193,7 @@ On macOS and Linux, Windows sign-in is Kerberos only (no NTLM), so the machine n
 - **Double-click a table or view** to see its first 100 rows. The query runs in the background and only the results appear, so your console isn't filled with `SELECT … LIMIT 100` lines. Double-clicking a procedure, function or trigger opens its definition; expand a table with its arrow to see its columns.
 - **Filter objects** above the tree narrows every connection to matching tables, views, routines and other objects as you type; the × button or Esc clears it.
 - The selected row gets a darker background with an accent bar.
-- Engine logos ship with DataBug: they live in `crates/databug-app/assets/logos`, are compiled into the binary, and every release download includes them in a `logos` folder next to the application (next to `DataBug.exe` / `databug`; on macOS next to `DataBug.app`, and inside it). To swap one, replace `postgresql`, `mysql`, `sqlserver`, `sqlite`, `mongodb`, `couchdb`, `oracle`, `db2`, `duckdb`, `cassandra`, `cockroachdb`, `timescaledb`, `questdb`, `influxdb`, `spark` or `h2` (`.svg` or `.png`) in that folder and restart DataBug. The newer engines ship with DataBug's own monogram tiles rather than their official logos; [`SOURCES.md`](crates/databug-app/assets/logos/SOURCES.md) lists where each file comes from and its license. `mariadb.png` is included for later (MariaDB detection).
+- Engine logos ship with DataBug: they live in `crates/databug-app/assets/logos`, are compiled into the binary, and every release download includes them in a `logos` folder next to the application (next to `DataBug.exe` / `databug`; on macOS next to `DataBug.app`, and inside it). To swap one, replace `postgresql`, `mysql`, `sqlserver`, `sqlite`, `mongodb`, `couchdb`, `oracle`, `db2`, `duckdb`, `cassandra`, `cockroachdb`, `timescaledb`, `questdb`, `influxdb`, `spark` or `h2` (`.svg` or `.png`) in that folder and restart DataBug. Every engine has its logo, from the [Devicon](https://github.com/devicons/devicon) (MIT) and [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0) sets or the project's own Apache-2.0 repository; [`SOURCES.md`](crates/databug-app/assets/logos/SOURCES.md) lists where each file comes from and its license. `mariadb.png` is included for later (MariaDB detection).
 
 **Connections**
 - Passwords go to the OS keychain (macOS Keychain, Windows Credential Manager, Secret Service on Linux), never into config files. If no keychain is available, they're kept in memory for the session.
@@ -295,7 +291,7 @@ The other engines have live tests that run when their variable is set; with Dock
 | `DATABUG_TEST_CASSANDRA=localhost:9042` | `docker run -d -p 9042:9042 cassandra:5` |
 | `DATABUG_TEST_COUCHDB=localhost:5984:admin:pw` | `docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=pw couchdb:3` |
 | `DATABUG_TEST_INFLUXDB=localhost:8086:example:store:dev-token` | `docker run -d -p 8086:8086 -e DOCKER_INFLUXDB_INIT_MODE=setup -e DOCKER_INFLUXDB_INIT_USERNAME=admin -e DOCKER_INFLUXDB_INIT_PASSWORD=password123 -e DOCKER_INFLUXDB_INIT_ORG=example -e DOCKER_INFLUXDB_INIT_BUCKET=store -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=dev-token influxdb:2.7` |
-| `DATABUG_TEST_ORACLE`, `DATABUG_TEST_DB2`, `DATABUG_TEST_SPARK` | need the `oracle`, `db2` or `spark` feature and the client software above |
+| `DATABUG_TEST_ORACLE`, `DATABUG_TEST_DB2`, `DATABUG_TEST_SPARK` | need the client software above |
 
 The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
 

@@ -1,6 +1,6 @@
-//! IBM Db2 and Spark SQL (Thrift server) through ODBC. Building needs the
-//! ODBC driver manager (unixODBC on macOS/Linux; built into Windows), and
-//! connecting needs the engine's ODBC driver: the IBM Data Server Driver for
+//! IBM Db2 and Spark SQL (Thrift server) through ODBC. The driver manager is
+//! built in (unixODBC compiled statically on macOS/Linux; Windows' own
+//! odbc32), and connecting needs the engine's ODBC driver: the IBM Data Server Driver for
 //! ODBC and CLI for Db2, the Simba (or Databricks) Spark ODBC driver for Spark.
 
 use crate::infoschema::{group_foreign_keys, group_indexes};

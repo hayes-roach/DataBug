@@ -553,7 +553,7 @@ fn engine_dropdown(ui: &mut egui::Ui, p: &Palette, logos: &crate::icons::Logos, 
                     if enabled {
                         logos.paint(ui, logo, kind);
                     } else {
-                        ui.painter().rect_filled(logo, CornerRadius::same(4), p.raised);
+                        logos.paint_dimmed(ui, logo, kind);
                     }
                     ui.painter().text(egui::pos2(r.left() + 38.0, r.center().y), egui::Align2::LEFT_CENTER, engine_name(kind), egui::FontId::proportional(13.0), if enabled { p.text } else { p.faint });
                     if !enabled {

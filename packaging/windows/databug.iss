@@ -45,6 +45,21 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; 0.3.0 to 0.4.x shipped two-letter placeholder tiles for these engines; the logos are
+; installed only when missing (so your own replacements survive), so remove the
+; old placeholders once to let the real logos in.
+Type: files; Name: "{app}\logos\oracle.svg"
+Type: files; Name: "{app}\logos\db2.svg"
+Type: files; Name: "{app}\logos\duckdb.svg"
+Type: files; Name: "{app}\logos\cassandra.svg"
+Type: files; Name: "{app}\logos\cockroachdb.svg"
+Type: files; Name: "{app}\logos\timescaledb.svg"
+Type: files; Name: "{app}\logos\questdb.svg"
+Type: files; Name: "{app}\logos\influxdb.svg"
+Type: files; Name: "{app}\logos\spark.svg"
+Type: files; Name: "{app}\logos\h2.svg"
+
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "DataBug.exe"; Flags: ignoreversion
 Source: "..\..\crates\databug-app\assets\logos\*"; DestDir: "{app}\logos"; Flags: ignoreversion onlyifdoesntexist

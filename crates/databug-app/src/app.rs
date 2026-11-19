@@ -528,6 +528,11 @@ impl DataBugApp {
             app.settings.current_project = None;
         }
         app.rebuild_virtuals();
+        // every connection starts disconnected (including right after an update);
+        // expanding one in the explorer, or using it, connects
+        if app.screenshot.is_none() && app.demo.is_none() {
+            app.disconnected = app.connections.iter().map(|c| c.id.clone()).collect();
+        }
         // look for a newer release: at startup (at most every 6 hours) and then once a day
         let testing = (app.screenshot.is_some() || app.demo.is_some()) && std::env::var_os("DATABUG_UPDATE_URL").is_none();
         if !testing {
@@ -1496,7 +1501,8 @@ impl DataBugApp {
             Action::Connect(id) => {
                 self.disconnected.remove(&id);
                 self.clear_failure(&id);
-                self.explorer.open_key(format!("c:{id}"));
+                // its node opens once it's connected (or shows why it couldn't)
+                self.explorer.open_when_connected(&id);
                 // sign in once; the extra databases reload only after that works
                 self.pending_virtual_refresh.insert(id.clone());
                 self.refresh_catalog(&id, ctx);
@@ -1956,6 +1962,8 @@ impl DataBugApp {
                 UpdateMsg::Progress(t) => self.updates.busy = Some(t),
                 UpdateMsg::Finished(Ok(())) => {
                     self.updates.busy = Some("Restarting…".into());
+                    // sign out of every database before this version quits
+                    self.disconnect_all();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 UpdateMsg::Finished(Err(e)) => {

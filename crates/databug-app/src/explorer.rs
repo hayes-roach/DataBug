@@ -101,6 +101,8 @@ pub struct ExplorerState {
     project_edit: Option<(Option<String>, String)>,
     /// Focus the project name field on the next frame.
     project_focus: bool,
+    /// Connections being signed in to: their node opens once connected.
+    open_after_connect: HashSet<String>,
     /// Connection being renamed in place: (id, name typed so far, focus it).
     conn_rename: Option<(String, String, bool)>,
     scroll_to_selected: bool,
@@ -116,6 +118,13 @@ pub struct ExplorerState {
 }
 
 impl ExplorerState {
+    /// Open a connection's node once it's connected (or its sign-in fails,
+    /// to show why); until then it stays closed.
+    pub fn open_when_connected(&mut self, conn_id: &str) {
+        self.open.remove(&format!("c:{conn_id}"));
+        self.open_after_connect.insert(conn_id.to_string());
+    }
+
     /// Open the schema picker for a connection (from a menu or command).
     pub fn request_picker(&mut self, conn_id: &str) {
         self.open.insert(format!("c:{conn_id}"));
@@ -484,8 +493,18 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             if r.resp.drag_started() {
                 st.dragging = Some(cfg.id.clone());
             }
-            if r.double {
-                actions.push(if disconnected { Action::Connect(cfg.id.clone()) } else { Action::NewConsole(cfg.id.clone()) });
+            // a disconnected connection doesn't expand: expanding it connects, and
+            // it opens once that works
+            let pending = st.open_after_connect.contains(&cfg.id);
+            if pending && (connected || failed.is_some()) {
+                st.open_after_connect.remove(&cfg.id);
+                st.open.insert(ck.clone());
+            } else if (disconnected || pending) && st.open.remove(&ck) && !pending {
+                actions.push(Action::Connect(cfg.id.clone()));
+                st.open_after_connect.insert(cfg.id.clone());
+            }
+            if r.double && !disconnected && !pending {
+                actions.push(Action::NewConsole(cfg.id.clone()));
             }
             if r.clicked && view.is_none() && !disconnected && failed.is_none() {
                 actions.push(Action::Refresh(cfg.id.clone()));
@@ -498,10 +517,10 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             let mut st_picker = false;
             let mut db_picker = false;
             let state = if disconnected {
-                "Disconnected — double-click or right-click → Connect"
+                "Disconnected: expand it to connect"
             } else if connected {
                 "Connected · drag to reorder"
-            } else if cx.connecting.contains(&cfg.id) {
+            } else if cx.connecting.contains(&cfg.id) || st.open_after_connect.contains(&cfg.id) {
                 "Connecting…"
             } else {
                 "Drag to reorder"
@@ -617,15 +636,8 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 ui.add_space(2.0);
                 continue;
             }
-            if disconnected {
-                ui.horizontal(|ui| {
-                    ui.add_space(30.0);
-                    ui.label(RichText::new("Disconnected").size(11.5).color(p.faint));
-                    if ui.small_button("Connect").clicked() {
-                        actions.push(Action::Connect(cfg.id.clone()));
-                    }
-                });
-                ui.add_space(2.0);
+            // nothing under a connection until it's connected
+            if disconnected || (st.open_after_connect.contains(&cfg.id) && !connected) {
                 continue;
             }
             if cfg.supports_databases() {
@@ -1515,6 +1527,11 @@ mod tests {
         cfg: ConnectionConfig,
         cat: Catalog,
         st: ExplorerState,
+        /// Connection state for the next frame.
+        disconnected: HashSet<String>,
+        connected: HashSet<String>,
+        failed: HashMap<String, String>,
+        actions: Vec<Action>,
     }
 
     impl Harness {
@@ -1527,27 +1544,27 @@ mod tests {
             for k in ["c:c1", "d:c1:", "s:c1:public", "g:c1:public:Table", "g:c1:public:Function", "g:c1:public:Trigger"] {
                 st.open.insert(k.into());
             }
-            Harness { ctx, logos: None, cfg, cat, st }
+            Harness { ctx, logos: None, cfg, cat, st, disconnected: HashSet::new(), connected: HashSet::new(), failed: HashMap::new(), actions: Vec::new() }
         }
 
         /// One frame; `wheel` scrolls by that many points.
         fn frame(&mut self, wheel: f32) {
             let p = crate::theme::palette(crate::theme::ThemeKind::Dark, &Default::default());
-            let (a, b, c, d) = (HashSet::new(), HashSet::new(), HashMap::new(), HashMap::new());
+            let d = HashMap::new();
             let none: HashSet<String> = HashSet::new();
-            let cx = ExplorerCtx { connected: &a, connecting: &none, disconnected: &b, failed: &c, databases: &d, projects: &[], current_project: None };
+            let cx = ExplorerCtx { connected: &self.connected, connecting: &none, disconnected: &self.disconnected, failed: &self.failed, databases: &d, projects: &[], current_project: None };
             let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 1100.0))), ..Default::default() };
             if wheel != 0.0 {
                 input.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 500.0)));
                 input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -wheel), modifiers: Default::default() });
             }
-            let Harness { ctx, logos, cfg, cat, st } = self;
+            let Harness { ctx, logos, cfg, cat, st, actions, .. } = self;
             let _ = ctx.run(input, |ctx| {
                 let l = logos.get_or_insert_with(|| Logos::discover(ctx));
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut views = HashMap::new();
                     views.insert("c1".to_string(), CatalogView { catalog: cat, generation: 1, loading: false, error: None, age: String::new() });
-                    show(ui, &p, st, l, std::slice::from_ref(cfg), &views, &cx);
+                    *actions = show(ui, &p, st, l, std::slice::from_ref(cfg), &views, &cx);
                 });
             });
         }
@@ -1576,6 +1593,46 @@ mod tests {
             assert!(wheel == 0.0 || virt.st.scroll_y > 0.0, "didn't scroll");
             assert_eq!(virt.st.content_height, full.st.content_height, "after scrolling {wheel}");
         }
+    }
+
+    #[test]
+    fn a_disconnected_connection_connects_before_it_opens() {
+        let mut h = Harness::new(catalog(30, 0, 0));
+        let connects = |h: &Harness| h.actions.iter().filter(|a| matches!(a, Action::Connect(id) if id == "c1")).count();
+        // disconnected: its tables aren't shown
+        h.st.open.remove("c:c1");
+        h.disconnected.insert("c1".into());
+        h.frame(0.0);
+        assert!(h.st.content_height < 200.0, "tables shown while disconnected");
+        // expanding it (the arrow puts it in `open`) asks to connect, once, and keeps it closed
+        h.st.open.insert("c:c1".into());
+        h.frame(0.0);
+        assert_eq!(connects(&h), 1);
+        assert!(!h.st.open.contains("c:c1"));
+        assert!(h.st.content_height < 200.0);
+        // signing in: still closed, and expanding again doesn't ask twice
+        h.disconnected.clear();
+        h.st.open.insert("c:c1".into());
+        h.frame(0.0);
+        assert_eq!(connects(&h), 0);
+        assert!(h.st.content_height < 200.0, "tables shown before it connected");
+        // connected: it opens and shows its tables
+        h.connected.insert("c1".into());
+        h.frame(0.0);
+        h.frame(0.0);
+        assert!(h.st.open.contains("c:c1"));
+        assert!(h.st.content_height > 500.0, "tables not shown once connected");
+
+        // a failed sign-in opens it to show why
+        let mut h = Harness::new(catalog(30, 0, 0));
+        h.st.open.remove("c:c1");
+        h.disconnected.insert("c1".into());
+        h.st.open.insert("c:c1".into());
+        h.frame(0.0);
+        h.disconnected.clear();
+        h.failed.insert("c1".into(), "password authentication failed".into());
+        h.frame(0.0);
+        assert!(h.st.open.contains("c:c1"));
     }
 
     #[test]

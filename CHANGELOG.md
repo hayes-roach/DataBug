@@ -6,6 +6,16 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Added
+
+- Rename a connection in place from the explorer: right-click → *Rename…*, or `F2` over its row
+
+### Changed
+
+- The connection button only opens its menu while connected. Clicking it while signed out connects once with the saved credentials and opens the menu when that works
+- Explorer connection rows no longer spell out the engine and state ("sql server · connected"): the logo shows the engine and the dot the state. The tooltip still has both
+- Closing DataBug disconnects from every database first
+
 ## [0.7.0] - 2026-11-18
 
 ### Added

@@ -43,6 +43,8 @@ pub enum Action {
     /// Close every session of a connection but keep it in the list.
     Disconnect(String),
     Connect(String),
+    /// Give a saved connection a new display name.
+    RenameConn(String, String),
     /// Move a connection to this position in the visible list (drag and drop).
     MoveConn(String, usize),
     /// Open an EXEC / CALL / SELECT template for a routine.
@@ -99,6 +101,8 @@ pub struct ExplorerState {
     project_edit: Option<(Option<String>, String)>,
     /// Focus the project name field on the next frame.
     project_focus: bool,
+    /// Connection being renamed in place: (id, name typed so far, focus it).
+    conn_rename: Option<(String, String, bool)>,
     scroll_to_selected: bool,
     /// Indexes of each group's objects (all, and those matching the filter),
     /// built once per catalog load instead of on every frame.
@@ -248,6 +252,38 @@ impl Skipper {
 #[allow(clippy::too_many_arguments)]
 fn row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, key: &str, depth: usize, expandable: bool, glyph: Glyph, label: &str, detail: &str, editable: bool, strong: bool) -> RowOut {
     row_ex(ui, p, st, logos, key, depth, expandable, glyph, label, detail, editable, strong, Sense::click(), false)
+}
+
+/// The name field over a connection row being renamed. Returns the new name
+/// on Enter or when focus leaves; Escape cancels.
+fn rename_field(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, row: Rect) -> Option<String> {
+    let (_, buf, focus) = st.conn_rename.as_mut()?;
+    let rect = Rect::from_min_max(egui::pos2(row.left() + 44.0, row.top() + 2.0), egui::pos2(row.right() - 4.0, row.bottom() - 2.0));
+    let te = egui::TextEdit::singleline(buf)
+        .font(bold(13.0))
+        .margin(egui::vec2(6.0, 2.0))
+        .background_color(p.island)
+        .text_color(p.text);
+    let resp = ui.put(rect, te);
+    if std::mem::take(focus) {
+        resp.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+            let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()));
+            state.cursor.set_char_range(Some(all));
+            state.store(ui.ctx(), resp.id);
+        }
+        return None;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.conn_rename = None;
+        return None;
+    }
+    if resp.lost_focus() {
+        let name = buf.trim().to_string();
+        st.conn_rename = None;
+        return Some(name);
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -422,28 +458,23 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             let disconnected = cx.disconnected.contains(&cfg.id);
             let failed = cx.failed.get(&cfg.id);
             let connected = cx.connected.contains(&cfg.id);
-            let engine = match cfg.kind {
-                DbKind::Postgres => "postgres",
-                DbKind::MySql => "mysql",
-                DbKind::MsSql => "sql server",
-                DbKind::Sqlite => "sqlite",
-                DbKind::MongoDb => "mongodb",
-                k => k.label(),
-            };
-            let detail = if disconnected {
-                "disconnected".to_string()
-            } else if failed.is_some() {
-                "sign-in failed".to_string()
-            } else if connected {
-                format!("{engine} · connected")
-            } else if cx.connecting.contains(&cfg.id) {
-                format!("{engine} · connecting…")
-            } else {
-                engine.to_string()
-            };
-            let sense = if filtering { Sense::click() } else { Sense::click_and_drag() };
-            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, connected && !disconnected), &cfg.name, &detail, false, true, sense, disconnected);
+            // the logo says which engine it is and the dot whether it's signed in
+            let detail = if failed.is_some() && !disconnected { "sign-in failed" } else { "" };
+            let renaming = st.conn_rename.as_ref().is_some_and(|(id, _, _)| *id == cfg.id);
+            let sense = if filtering || renaming { Sense::click() } else { Sense::click_and_drag() };
+            let label = if renaming { "" } else { cfg.name.as_str() };
+            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, connected && !disconnected), label, detail, false, true, sense, disconnected);
             headers.push(r.resp.rect);
+            if renaming {
+                if let Some(name) = rename_field(ui, p, st, r.resp.rect) {
+                    if !name.is_empty() && name != cfg.name {
+                        actions.push(Action::RenameConn(cfg.id.clone(), name));
+                    }
+                }
+            }
+            if r.resp.hovered() && !renaming && ui.input(|i| i.key_pressed(egui::Key::F2)) && !ui.ctx().wants_keyboard_input() {
+                st.conn_rename = Some((cfg.id.clone(), cfg.name.clone(), true));
+            }
             let connecting = cx.connecting.contains(&cfg.id);
             if !disconnected && (connected || connecting) {
                 // status at the right edge: green when signed in, amber while signing in
@@ -466,7 +497,16 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             let multi_schema = view.map(|v| v.catalog.schemas.len() > 1).unwrap_or(false);
             let mut st_picker = false;
             let mut db_picker = false;
-            let hover = if disconnected { format!("{}\nDisconnected — double-click or right-click → Connect", cfg.display_target()) } else { format!("{}\nDrag to reorder", cfg.display_target()) };
+            let state = if disconnected {
+                "Disconnected — double-click or right-click → Connect"
+            } else if connected {
+                "Connected · drag to reorder"
+            } else if cx.connecting.contains(&cfg.id) {
+                "Connecting…"
+            } else {
+                "Drag to reorder"
+            };
+            let hover = format!("{}\n{}\n{state}", cfg.kind.label(), cfg.display_target());
             r.resp.on_hover_text(hover).context_menu(|ui| {
                 if disconnected {
                     if ui.button(RichText::new("Connect").color(p.success)).clicked() {
@@ -511,6 +551,10 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 ui.separator();
                 if !disconnected && ui.button("Disconnect").on_hover_text("Close its sessions; the connection stays in the list").clicked() {
                     actions.push(Action::Disconnect(cfg.id.clone()));
+                    ui.close_menu();
+                }
+                if ui.button("Rename…").on_hover_text("F2").clicked() {
+                    st.conn_rename = Some((cfg.id.clone(), cfg.name.clone(), true));
                     ui.close_menu();
                 }
                 if ui.button("Edit connection…").clicked() {

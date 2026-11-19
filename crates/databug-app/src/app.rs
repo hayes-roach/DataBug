@@ -231,6 +231,9 @@ pub struct DataBugApp {
     databases: HashMap<String, DbList>,
     /// Connections the user disconnected (kept in the list).
     disconnected: HashSet<String>,
+    /// The connection button was clicked while signed out: open its menu
+    /// once this connection is signed in.
+    menu_after_connect: Option<String>,
     /// Connections whose last sign-in failed, with the error. Nothing
     /// connects to them automatically until the user retries, so a wrong
     /// password can't lock the account with repeated attempts.
@@ -452,6 +455,7 @@ impl DataBugApp {
             virtuals: Vec::new(),
             databases: HashMap::new(),
             disconnected: HashSet::new(),
+            menu_after_connect: None,
             failed: HashMap::new(),
             pending_virtual_refresh: HashSet::new(),
             meta_state: HashMap::new(),
@@ -572,6 +576,20 @@ impl DataBugApp {
         if rolled_back {
             self.toast("Open transactions were rolled back");
         }
+    }
+
+    /// The window is closing: sign out of every database (open transactions
+    /// roll back on the server), giving the sessions a moment to close cleanly.
+    fn disconnect_all(&mut self) {
+        let bases: HashSet<String> = self.tabs.iter().filter(|t| t.session.is_some()).map(|t| ConnectionConfig::base_id(&t.conn_id).to_string()).chain(self.meta.keys().map(|k| ConnectionConfig::base_id(k).to_string())).collect();
+        if bases.is_empty() {
+            return;
+        }
+        for b in &bases {
+            self.disconnect(b);
+        }
+        // the workers end once their channels close; let them drop their connections
+        self.rt.block_on(async { tokio::time::sleep(Duration::from_millis(250)).await });
     }
 
     fn catalog(&self, conn_id: &str) -> Option<&Catalog> {
@@ -1510,6 +1528,13 @@ impl DataBugApp {
                     }
                     self.dialog = Some(d);
                     self.editing_conn = Some(id);
+                }
+            }
+            Action::RenameConn(id, name) => {
+                if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
+                    c.name = name;
+                    self.store.save_connections(&self.connections);
+                    self.rebuild_virtuals();
                 }
             }
             Action::DuplicateConn(id) => {
@@ -2712,6 +2737,7 @@ impl DataBugApp {
         let mut pick_schema: Option<String> = None;
         let mut pick_db: Option<String> = None;
         let mut console_pick: Option<ConsolePick> = None;
+        let mut connect: Option<String> = None;
         let custom_frame = custom_window_frame();
         if custom_frame {
             // the empty parts of the toolbar act as the title bar; widgets added
@@ -2766,12 +2792,33 @@ impl DataBugApp {
                         _ if pickable => current.clone(),
                         _ => String::new(),
                     };
-                    let live = self.liveness(&base).0;
-                    let conn_btn = tb::connection_button(ui, p, &self.logos, cfg, live, &detail).on_hover_text(format!("{} · {}\nDatabase, schema and consoles", cfg.name, cfg.kind.label()));
+                    let (live, connecting) = self.liveness(&base);
+                    let hover = if live {
+                        format!("{} · {}\nDatabase, schema and consoles", cfg.name, cfg.kind.label())
+                    } else if connecting {
+                        format!("{} · {}\nConnecting…", cfg.name, cfg.kind.label())
+                    } else {
+                        format!("{} · {}\nDisconnected: click to connect", cfg.name, cfg.kind.label())
+                    };
+                    let conn_btn = tb::connection_button(ui, p, &self.logos, cfg, live, &detail).on_hover_text(hover);
+                    let menu = conn_btn.id.with("menu");
                     // screenshot scenes open the menu with a flag in egui's memory
-                    if ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false) {
-                        ui.memory_mut(|m| m.open_popup(conn_btn.id.with("menu")));
+                    if ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false) && live {
+                        ui.memory_mut(|m| m.open_popup(menu));
                     }
+                    if !live {
+                        // signed out: no menu; a click signs in (once), and the
+                        // menu opens when that works
+                        if ui.memory(|m| m.is_popup_open(menu)) {
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if conn_btn.clicked() && !connecting {
+                            connect = Some(base.clone());
+                        }
+                    } else if self.menu_after_connect.as_deref() == Some(base.as_str()) {
+                        ui.memory_mut(|m| m.open_popup(menu));
+                    }
+                    if live {
                     tb::dropdown(ui, &conn_btn, 420.0, |ui| {
                         let section = |ui: &mut egui::Ui, t: &str| {
                             ui.label(RichText::new(t).size(11.5).color(p.muted));
@@ -2803,15 +2850,12 @@ impl DataBugApp {
                             ui.separator();
                         }
                         section(ui, "Consoles");
-                        if live {
-                            console_pick = self.consoles_list(ui, p, &base);
-                            if matches!(console_pick, Some(ConsolePick::Open(_))) {
-                                tb::close(ui);
-                            }
-                        } else {
-                            ui.label(RichText::new("Connect to see this connection's consoles.").size(12.0).color(p.faint));
+                        console_pick = self.consoles_list(ui, p, &base);
+                        if matches!(console_pick, Some(ConsolePick::Open(_))) {
+                            tb::close(ui);
                         }
                     });
+                    }
                     if cfg.production {
                         tb::badge(ui, p.danger, "PRODUCTION").on_hover_text("Changes ask for confirmation on this connection");
                     }
@@ -2913,6 +2957,17 @@ impl DataBugApp {
             });
         });
         let ti = self.active;
+        // the pending menu opened (or sign-in failed or was cancelled): forget it
+        if let Some(base) = self.menu_after_connect.clone() {
+            let (live, connecting) = self.liveness(&base);
+            if live || (!connecting && self.is_failed(&base)) || self.disconnected.contains(&base) {
+                self.menu_after_connect = None;
+            }
+        }
+        if let Some(id) = connect {
+            self.menu_after_connect = Some(id.clone());
+            self.apply(Action::Connect(id), ctx);
+        }
         if let Some(id) = pick_db {
             self.set_tab_database(ti, id, ctx);
         }
@@ -4159,6 +4214,9 @@ impl DataBugApp {
         self.pump_events(ctx);
         let closing = ctx.input(|i| i.viewport().close_requested());
         self.flush_editors(closing);
+        if closing {
+            self.disconnect_all();
+        }
         if let Some(id) = self.reopen_request.take() {
             self.reopen_editor(id, ctx);
         }

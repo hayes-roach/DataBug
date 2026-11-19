@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-19
+
 ### Added
 
 - CouchDB updates and deletes: `updateOne`, `updateMany`, `replaceOne`, `deleteOne` and `deleteMany`, with MongoDB's update operators (`$set`, `$inc`, `$push` …) and dotted paths; a document changed in the meantime is reported as a conflict

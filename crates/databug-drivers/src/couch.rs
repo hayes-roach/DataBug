@@ -199,6 +199,29 @@ impl CouchConn {
     }
 }
 
+/// A document's path segment. Design documents keep their literal
+/// `_design/` prefix, which CouchDB requires; anything else is escaped whole.
+fn doc_path(id: &str) -> String {
+    match id.strip_prefix("_design/") {
+        Some(rest) => format!("_design/{}", urlencode(rest)),
+        None => urlencode(id),
+    }
+}
+
+/// The attachment's address, never with credentials: a user name and
+/// password written into the connection URI are left out.
+pub(crate) fn attachment_url(cfg: &ConnectionConfig, db: &str, doc_id: &str, name: &str) -> String {
+    let mut base = crate::http::base_url(cfg);
+    if let Ok(mut u) = reqwest::Url::parse(&base) {
+        if !u.username().is_empty() || u.password().is_some() {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            base = u.as_str().trim_end_matches('/').to_string();
+        }
+    }
+    format!("{base}{}/{}/{}", CouchConn::db_path(db), doc_path(doc_id), urlencode(name))
+}
+
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -294,6 +317,22 @@ impl DbConnection for CouchConn {
         anyhow::bail!("CouchDB {}s have no SQL definition", obj.kind.label())
     }
 
+    async fn attachment(&mut self, db: &str, doc_id: &str, name: &str) -> anyhow::Result<Vec<u8>> {
+        let path = format!("{}/{}/{}", Self::db_path(db), doc_path(doc_id), urlencode(name));
+        let mut resp = check(self.req(reqwest::Method::GET, &path).header("Accept", "*/*").send().await?).await?;
+        if resp.content_length().is_some_and(|n| n > crate::MAX_ATTACHMENT_BYTES) {
+            anyhow::bail!("{name} is larger than {} MB, so DataBug won't download it", crate::MAX_ATTACHMENT_BYTES / 1024 / 1024);
+        }
+        let mut out = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            out.extend_from_slice(&chunk);
+            if out.len() as u64 > crate::MAX_ATTACHMENT_BYTES {
+                anyhow::bail!("{name} is larger than {} MB, so DataBug won't download it", crate::MAX_ATTACHMENT_BYTES / 1024 / 1024);
+            }
+        }
+        Ok(out)
+    }
+
     async fn explain(&mut self, stmt: &str, _analyze: bool) -> anyhow::Result<Plan> {
         match parse(stmt).map_err(|e| anyhow::anyhow!(e))? {
             MongoStatement::Command { collection: Some(db), calls } if matches!(calls[0].name.as_str(), "find" | "findOne") => {
@@ -335,6 +374,17 @@ mod tests {
         let (b, _) = find_body(&calls("db.orders.findOne({_id: 'a'})"), 1000).unwrap();
         assert_eq!(b["limit"], json!(1));
         assert!(find_body(&calls("db.orders.find({}).hint('x')"), 10).is_err());
+    }
+
+    #[test]
+    fn attachment_urls() {
+        let mut c = ConnectionConfig::new(databug_core::DbKind::CouchDb);
+        c.host = "127.0.0.1".into();
+        assert_eq!(attachment_url(&c, "store", "photo:0001", "sunset.png"), "http://127.0.0.1:5984/store/photo%3A0001/sunset.png");
+        assert_eq!(attachment_url(&c, "store", "_design/reports", "a b.txt"), "http://127.0.0.1:5984/store/_design/reports/a%20b.txt");
+        assert_eq!(attachment_url(&c, "store", "a/b", "x"), "http://127.0.0.1:5984/store/a%2Fb/x");
+        c.uri = "https://admin:secret@couch.example.com/".into();
+        assert_eq!(attachment_url(&c, "store", "d", "x"), "https://couch.example.com/store/d/x");
     }
 
     #[test]

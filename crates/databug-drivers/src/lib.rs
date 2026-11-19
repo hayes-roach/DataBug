@@ -93,6 +93,27 @@ pub trait DbConnection: Send {
         let _ = schema;
         anyhow::bail!("Viewing the source of a {} isn't supported for this database", obj.kind.label())
     }
+
+    /// The bytes of a document's attachment (CouchDB): `collection` is the
+    /// database, `doc_id` the document and `name` the attachment.
+    async fn attachment(&mut self, collection: &str, doc_id: &str, name: &str) -> anyhow::Result<Vec<u8>> {
+        let _ = (collection, doc_id, name);
+        anyhow::bail!("This database doesn't store attachments")
+    }
+}
+
+/// Largest attachment DataBug downloads, so a huge file can't exhaust memory.
+pub const MAX_ATTACHMENT_BYTES: u64 = 200 * 1024 * 1024;
+
+/// The HTTP address of a CouchDB attachment (without credentials), for
+/// copying or opening elsewhere. `None` for other engines.
+pub fn attachment_url(cfg: &databug_core::ConnectionConfig, collection: &str, doc_id: &str, name: &str) -> Option<String> {
+    #[cfg(feature = "couchdb")]
+    if cfg.kind == databug_core::DbKind::CouchDb {
+        return Some(couch::attachment_url(cfg, collection, doc_id, name));
+    }
+    let _ = (cfg, collection, doc_id, name);
+    None
 }
 
 /// Identifies an object whose definition should be fetched.

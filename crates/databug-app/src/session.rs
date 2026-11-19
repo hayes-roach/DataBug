@@ -20,6 +20,8 @@ pub enum Cmd {
     /// Statement that switches the session to the console's schema; applied
     /// before the next query and again after every reconnect. Doesn't connect.
     UseSchema(Option<String>),
+    /// Download a document's attachment (CouchDB).
+    Attachment { req: u64, collection: String, doc_id: String, name: String },
 }
 
 pub enum Ev {
@@ -36,6 +38,7 @@ pub enum Ev {
     JobDone { job: u64 },
     Plan { job: u64, result: Result<Plan, String>, elapsed: Duration },
     Sources { req: u64, results: Vec<(SourceRef, Result<String, String>)> },
+    Attachment { req: u64, result: Result<Vec<u8>, String> },
 }
 
 pub type EvSender = mpsc::Sender<(SessionId, Ev)>;
@@ -127,6 +130,7 @@ fn fail(send: &impl Fn(Ev), cmd: Cmd, msg: &str) {
         Cmd::ListDatabases => send(Ev::Databases(Err(msg))),
         Cmd::Sources { req, items, .. } => send(Ev::Sources { req, results: items.into_iter().map(|i| (i, Err(msg.clone()))).collect() }),
         Cmd::UseSchema(_) => {}
+        Cmd::Attachment { req, .. } => send(Ev::Attachment { req, result: Err(msg) }),
     }
 }
 
@@ -283,6 +287,10 @@ async fn worker(
                 send(Ev::Sources { req, results });
             }
             Cmd::UseSchema(_) => {}
+            Cmd::Attachment { req, collection, doc_id, name } => {
+                let result = c.attachment(&collection, &doc_id, &name).await.map_err(|e| format!("{e:#}"));
+                send(Ev::Attachment { req, result });
+            }
         }
     }
 }

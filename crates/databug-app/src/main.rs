@@ -12,6 +12,7 @@ mod icons;
 mod rename_dialog;
 mod table_editor;
 mod dialogs;
+mod docview;
 mod editor;
 mod grid;
 mod plan_view;

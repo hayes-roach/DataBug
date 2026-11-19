@@ -109,6 +109,15 @@ enum Tool {
 }
 
 /// Object definitions that arrived from a metadata session, by request id.
+/// What to do with an attachment once it's downloaded.
+struct AttachmentReq {
+    tab_id: u64,
+    result: usize,
+    name: String,
+    doc_id: String,
+    purpose: crate::docview::Purpose,
+}
+
 type SourcesDone = Vec<(u64, Vec<(SourceRef, Result<String, String>)>)>;
 
 /// Why a batch of object definitions was requested.
@@ -234,6 +243,9 @@ pub struct DataBugApp {
     /// The connection button was clicked while signed out: open its menu
     /// once this connection is signed in.
     menu_after_connect: Option<String>,
+    /// Attachment downloads in flight, by request id.
+    attachment_reqs: HashMap<u64, AttachmentReq>,
+    attachments_done: Vec<(u64, Result<Vec<u8>, String>)>,
     /// Connections whose last sign-in failed, with the error. Nothing
     /// connects to them automatically until the user retries, so a wrong
     /// password can't lock the account with repeated attempts.
@@ -456,6 +468,8 @@ impl DataBugApp {
             databases: HashMap::new(),
             disconnected: HashSet::new(),
             menu_after_connect: None,
+            attachment_reqs: HashMap::new(),
+            attachments_done: Vec::new(),
             failed: HashMap::new(),
             pending_virtual_refresh: HashSet::new(),
             meta_state: HashMap::new(),
@@ -1073,6 +1087,9 @@ impl DataBugApp {
         for (req, results) in sources_done {
             self.sources_arrived(req, results, ctx);
         }
+        for (req, result) in std::mem::take(&mut self.attachments_done) {
+            self.attachment_arrived(req, result);
+        }
         self.poll_compare(ctx);
     }
 
@@ -1092,6 +1109,9 @@ impl DataBugApp {
                     }
                     Ev::Sources { req, results } => {
                         sources_done.push((req, results));
+                    }
+                    Ev::Attachment { req, result } => {
+                        self.attachments_done.push((req, result));
                     }
                     Ev::Databases(r) => {
                         let d = self.databases.entry(conn_id.clone()).or_insert(DbList { names: Vec::new(), current: String::new(), loading: false, error: None });
@@ -1150,6 +1170,7 @@ impl DataBugApp {
                 let catalog = self.catalogs.get(&conn_id).map(|e| &e.catalog);
                 let tab = &mut self.tabs[ti];
                 let d = tab.editor.dialect;
+                let couch = cfg.as_ref().is_some_and(|c| c.kind == databug_core::DbKind::CouchDb);
                 match ev {
                     Ev::Connecting => tab.state = ConnState::Connecting,
                     Ev::Connected(caps) => {
@@ -1171,7 +1192,7 @@ impl DataBugApp {
                         }
                         tab.in_tx = false;
                     }
-                    Ev::Catalog(_) | Ev::Sources { .. } | Ev::Databases(_) => {}
+                    Ev::Catalog(_) | Ev::Sources { .. } | Ev::Databases(_) | Ev::Attachment { .. } => {}
                     Ev::Query { job, idx, ev } => {
                         let Some(run) = tab.running.as_mut().filter(|r| r.job == job) else { continue };
                         match ev {
@@ -1181,6 +1202,15 @@ impl DataBugApp {
                                 let src = single_table_source(&sql, d);
                                 let title = src.as_ref().map(|t| t.name.clone()).unwrap_or_else(|| format!("Result {n}"));
                                 let mut view = ResultView::new(title, cols, d, run.job * 100 + idx as u64);
+                                if d == Dialect::Mongo {
+                                    // documents: open in the document view when they have ids
+                                    let collection = match databug_sql::mongo::parse(sql.trim().trim_end_matches(';')) {
+                                        Ok(databug_sql::mongo::MongoStatement::Command { collection, .. }) => collection,
+                                        _ => None,
+                                    };
+                                    let has_id = view.columns.iter().any(|c| c.name == "_id");
+                                    view.docs = Some(crate::docview::DocView::new(collection, couch, has_id));
+                                }
                                 if let (Some(src), Some(cat)) = (src, catalog) {
                                     if let Some(t) = cat.find_table(src.schema.as_deref(), &src.name) {
                                         let pk_cols: Vec<usize> = t.primary_key().iter().filter_map(|pk| view.columns.iter().position(|c| c.name.eq_ignore_ascii_case(&pk.name))).collect();
@@ -3168,6 +3198,7 @@ impl DataBugApp {
         let mut grid_action = GridAction::None;
         let mut insert: Option<String> = None;
         let mut toast: Option<String> = None;
+        let mut fetches = Vec::new();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -3193,6 +3224,17 @@ impl DataBugApp {
                 tab.bottom = BottomTab::History;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let BottomTab::Result(i) = tab.bottom {
+                    if let Some(d) = tab.results.get_mut(i).and_then(|r| r.docs.as_mut()) {
+                        if chip(ui, !d.showing, "Table".into()) {
+                            d.showing = false;
+                        }
+                        if chip(ui, d.showing, "Documents".into()) {
+                            d.showing = true;
+                        }
+                        ui.add_space(10.0);
+                    }
+                }
                 if let Some(r) = &tab.running {
                     ui.label(RichText::new(fmt_duration(r.started.elapsed())).font(FontId::monospace(12.0)).color(p.muted));
                     ui.add(egui::Spinner::new().size(13.0));
@@ -3204,6 +3246,20 @@ impl DataBugApp {
         ui.add_space(2.0);
         ui.separator();
         match tab.bottom {
+            BottomTab::Result(i) if i < tab.results.len() && tab.results[i].docs.as_ref().is_some_and(|d| d.showing) => {
+                let cfg = self.connections.iter().chain(self.virtuals.iter()).find(|c| c.id == tab.conn_id).cloned();
+                let collection = tab.results[i].docs.as_ref().and_then(|d| d.collection.clone());
+                let url_for = |doc: &str, name: &str| -> Option<String> { databug_drivers::attachment_url(cfg.as_ref()?, collection.as_deref()?, doc, name) };
+                for a in crate::docview::show(ui, p, &mut tab.results[i], &url_for) {
+                    match a {
+                        crate::docview::DocAction::Copy(t) => {
+                            ui.ctx().copy_text(t);
+                            toast = Some("Copied".into());
+                        }
+                        crate::docview::DocAction::Fetch { doc_id, name, purpose } => fetches.push((tab.id, i, doc_id, name, purpose)),
+                    }
+                }
+            }
             BottomTab::Result(i) if i < tab.results.len() => {
                 grid_action = tab.results[i].show(ui, p);
                 if let GridAction::Run(stmts) = &grid_action {
@@ -3303,6 +3359,9 @@ impl DataBugApp {
         if let GridAction::Toast(t) = grid_action {
             toast = Some(t);
         }
+        for (tab_id, i, doc_id, name, purpose) in fetches {
+            self.fetch_attachment(tab_id, i, doc_id, name, purpose, ctx);
+        }
         if let Some(s) = insert {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 let mut text = t.editor.text.trim_end().to_string();
@@ -3316,6 +3375,62 @@ impl DataBugApp {
         }
         if let Some(t) = toast {
             self.toast(t);
+        }
+    }
+
+    /// Download an attachment through the connection's background session.
+    fn fetch_attachment(&mut self, tab_id: u64, result: usize, doc_id: String, name: String, purpose: crate::docview::Purpose, ctx: &egui::Context) {
+        let Some(tab) = self.tabs.iter().find(|t| t.id == tab_id) else { return };
+        let conn_id = tab.conn_id.clone();
+        let Some(collection) = tab.results.get(result).and_then(|r| r.docs.as_ref()).and_then(|d| d.collection.clone()) else { return };
+        let Some(cfg) = self.conn(&conn_id).cloned() else { return };
+        if !self.meta.contains_key(&conn_id) {
+            let sid = META_BIT | self.id();
+            let s = self.spawn_session(sid, &cfg, ctx);
+            self.meta.insert(conn_id.clone(), s);
+        }
+        let req = self.id();
+        self.meta[&conn_id].send(Cmd::Attachment { req, collection, doc_id: doc_id.clone(), name: name.clone() });
+        self.attachment_reqs.insert(req, AttachmentReq { tab_id, result, name, doc_id, purpose });
+    }
+
+    fn attachment_arrived(&mut self, req: u64, result: Result<Vec<u8>, String>) {
+        use crate::docview::{Preview, Purpose};
+        let Some(r) = self.attachment_reqs.remove(&req) else { return };
+        let bytes = match result {
+            Ok(b) => b,
+            Err(e) => {
+                if let Purpose::Preview(key) = &r.purpose {
+                    if let Some(d) = self.tabs.iter_mut().find(|t| t.id == r.tab_id).and_then(|t| t.results.get_mut(r.result)).and_then(|v| v.docs.as_mut()) {
+                        d.previews.insert(key.clone(), Preview::Failed(e.clone()));
+                    }
+                    return;
+                }
+                self.toast(format!("Couldn't download {}: {e}", r.name));
+                return;
+            }
+        };
+        match r.purpose {
+            Purpose::Preview(key) => {
+                if let Some(d) = self.tabs.iter_mut().find(|t| t.id == r.tab_id).and_then(|t| t.results.get_mut(r.result)).and_then(|v| v.docs.as_mut()) {
+                    d.previews.insert(key, Preview::Bytes(bytes));
+                }
+            }
+            Purpose::Open => {
+                // a folder per document; names are kept (sanitized) so the
+                // system picks the right app by extension
+                let safe = |s: &str| s.chars().map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') { c } else { '_' }).collect::<String>();
+                let dir = self.store.data_dir().join("attachments").join(safe(&r.doc_id));
+                let path = dir.join(safe(&r.name).trim_start_matches('.'));
+                match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &bytes)) {
+                    Ok(()) => crate::update::open_page(&path.to_string_lossy()),
+                    Err(e) => self.toast(format!("Couldn't save {}: {e}", r.name)),
+                }
+            }
+            Purpose::Save(path) => match std::fs::write(&path, &bytes) {
+                Ok(()) => self.toast(format!("Saved {} ({})", r.name, crate::docview::human_size(bytes.len() as u64))),
+                Err(e) => self.toast(format!("Couldn't save {}: {e}", r.name)),
+            },
         }
     }
 
@@ -3639,14 +3754,21 @@ impl DataBugApp {
                 }
                 plan.step = 1;
                 plan.wait_frames = 0;
+                // `couch…` scenes: the first connection is a CouchDB server with a
+                // `store` database (see the scene list in the README)
+                let couch = plan.scene.starts_with("couch");
+                let couch_sql = "// photos and products\ndb.store.find({type: {$in: [\"photo\", \"product\"]}})";
                 if plan.scene.starts_with("pg") {
                     let id = self.connections.first().map(|c| c.id.clone()).unwrap_or_default();
                     self.open_console(&id, Some(DEMO_SQL.into()), ctx);
+                } else if couch {
+                    let id = self.connections.first().map(|c| c.id.clone()).unwrap_or_default();
+                    self.open_console(&id, Some(couch_sql.into()), ctx);
                 } else {
                     self.open_sample(ctx);
                 }
                 if let Some(t) = self.tabs.get_mut(self.active) {
-                    t.editor.cursor = DEMO_SQL.len() - 2;
+                    t.editor.cursor = if couch { couch_sql.len() } else { DEMO_SQL.len() - 2 };
                     t.editor.selection = None;
                 }
                 self.request_run(false, None, ctx);
@@ -3774,6 +3896,12 @@ impl DataBugApp {
                                 t.editor.cursor = 40;
                             }
                             self.request_run(false, Some(true), ctx);
+                        }
+                        "couch-docs" | "couch-fields" => {
+                            let id = if scene == "couch-docs" { "photo:0001" } else { "product:001" };
+                            if let Some(d) = self.tabs.get_mut(self.active).and_then(|t| t.results.first_mut()).and_then(|r| r.docs.as_mut()) {
+                                d.select_id(id);
+                            }
                         }
                         "plan" => {
                             if let Some(t) = self.tabs.get_mut(self.active) {
@@ -4062,7 +4190,7 @@ impl DataBugApp {
                     t.editor.complete_now = true;
                 }
             }
-            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, "perf" => 400, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
+            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, "couch-docs" | "couch-fields" => 60, "perf" => 400, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
                 plan.step = 3;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }

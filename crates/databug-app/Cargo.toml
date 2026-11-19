@@ -40,7 +40,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 egui_extras = { version = "=0.31.1", default-features = false, features = ["file", "image", "svg"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 csv = "1"
 directories = "6"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "vendored", "crypto-rust"] }

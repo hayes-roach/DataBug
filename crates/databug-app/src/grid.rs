@@ -24,6 +24,8 @@ pub struct ResultView {
     pub elapsed: Option<Duration>,
     pub edit_target: Option<EditTarget>,
     pub dialect: Dialect,
+    /// Document view, for results from document databases.
+    pub docs: Option<crate::docview::DocView>,
     order: Vec<u32>,
     order_dirty: bool,
     sort: Option<(usize, bool)>,
@@ -73,6 +75,7 @@ impl ResultView {
             elapsed: None,
             edit_target: None,
             dialect,
+            docs: None,
             order: Vec::new(),
             order_dirty: true,
             sort: None,

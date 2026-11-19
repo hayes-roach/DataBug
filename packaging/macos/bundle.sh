@@ -62,8 +62,22 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# ad-hoc signature so Apple silicon will run it
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# Sign with DataBug's certificate when the release provides it
+# (MACOS_SIGN_IDENTITY, MACOS_SIGN_KEYCHAIN): every version then has the
+# same code identity, so macOS keychain access granted with "Always Allow"
+# carries over to updates. Without it, an ad-hoc signature (needed to run on
+# Apple silicon) that changes with every build.
+if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+  if [ -n "${MACOS_SIGN_KEYCHAIN:-}" ]; then
+    codesign --force --deep --timestamp=none --keychain "$MACOS_SIGN_KEYCHAIN" --sign "$MACOS_SIGN_IDENTITY" "$APP"
+  else
+    codesign --force --deep --timestamp=none --sign "$MACOS_SIGN_IDENTITY" "$APP"
+  fi
+  codesign --verify --deep "$APP"
+  codesign -d -r- "$APP" 2>&1 | grep designated
+else
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+fi
 rm -f "dist/DataBug-macos-$ARCH.zip"
 (cd dist && ditto -c -k --keepParent DataBug.app "DataBug-macos-$ARCH.zip")
 # installer disk image: the app next to a link to /Applications

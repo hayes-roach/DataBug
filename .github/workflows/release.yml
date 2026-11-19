@@ -70,6 +70,31 @@ jobs:
         with:
           key: ${{ matrix.name }}
 
+      # DataBug's signing certificate (repository secrets), in a keychain that
+      # exists only for this build; bundle.sh signs with it
+      - name: macOS signing certificate
+        if: startsWith(matrix.os, 'macos')
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_SIGNING_P12" ]; then
+            echo "No signing certificate; the app gets an ad-hoc signature"
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/databug-signing.keychain-db"
+          KPW=$(openssl rand -hex 16)
+          security create-keychain -p "$KPW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KPW" "$KC"
+          printf '%s' "$MACOS_SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KC" -P "$MACOS_SIGNING_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPW" "$KC" > /dev/null
+          security find-identity -p codesigning "$KC"
+          echo "MACOS_SIGN_IDENTITY=DataBug Code Signing" >> "$GITHUB_ENV"
+          echo "MACOS_SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
+
       # DataBug-macos-universal.dmg (drag to Applications) and .zip
       - name: macOS installer
         if: startsWith(matrix.os, 'macos')

@@ -9,11 +9,93 @@ use databug_core::{Capabilities, Catalog, ColumnMeta, ConnectionConfig, DbObject
 use std::ffi::CString;
 use std::sync::{Arc, Mutex};
 
-/// An open database and connection. Shared with the canceller, which calls
-/// `duckdb_interrupt` (thread-safe) while a query holds `lock`.
-struct Inner {
+/// An open database file, shared by every DataBug session on it. DuckDB
+/// allows one instance per file per process (on Windows its file lock is
+/// exclusive even within a process), so sessions share the instance and each
+/// opens its own connection to it. Closed when the last session ends.
+struct Database {
     api: Arc<Api>,
     db: Handle,
+}
+
+// SAFETY: a `duckdb_database` may be used from any thread; DuckDB serializes
+// access internally (`duckdb_connect` is thread-safe).
+unsafe impl Send for Database {}
+// SAFETY: see above; shared use is only `duckdb_connect`.
+unsafe impl Sync for Database {}
+
+impl Drop for Database {
+    fn drop(&mut self) {
+        // SAFETY: `db` was opened by `open_database` and is closed exactly once,
+        // after every connection to it (each holds an `Arc`) has been closed.
+        unsafe { (self.api.close)(&mut self.db) }
+    }
+}
+
+/// Open databases by file (and access mode), so a second session reuses the
+/// first one's instance instead of failing on the file lock.
+static DATABASES: Mutex<Vec<(String, std::sync::Weak<Database>)>> = Mutex::new(Vec::new());
+
+/// The registry key: the file's canonical path, or the connection for an
+/// in-memory database (so its sessions see the same tables).
+fn database_key(cfg_id: &str, path: &str, read_only: bool) -> String {
+    let file = if path == ":memory:" {
+        format!(":memory:{}", ConnectionConfig::base_id(cfg_id))
+    } else {
+        // resolve the folder, not the file: the file may not exist until the
+        // first session creates it, and the key mustn't change when it does
+        let p = std::path::Path::new(path);
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        match (std::fs::canonicalize(dir), p.file_name()) {
+            (Ok(d), Some(name)) => d.join(name).to_string_lossy().into_owned(),
+            _ => path.to_string(),
+        }
+    };
+    format!("{}|{file}", if read_only { "ro" } else { "rw" })
+}
+
+/// The shared instance for this file, opening it if no session has it open.
+fn open_database(api: &Arc<Api>, key: &str, path: &str, read_only: bool) -> anyhow::Result<Arc<Database>> {
+    let mut open = DATABASES.lock().map_err(|_| anyhow::anyhow!("DuckDB registry poisoned"))?;
+    open.retain(|(_, w)| w.strong_count() > 0);
+    if let Some(db) = open.iter().find(|(k, _)| k == key).and_then(|(_, w)| w.upgrade()) {
+        return Ok(db);
+    }
+    // SAFETY: every handle passed to DuckDB is either null (to be filled) or
+    // one it just returned; `cpath` and the config strings are NUL-terminated
+    // and outlive the calls; the config is destroyed after opening.
+    let db = unsafe {
+        let mut config: Handle = std::ptr::null_mut();
+        if (api.create_config)(&mut config) != 0 {
+            anyhow::bail!("DuckDB couldn't create a configuration");
+        }
+        if read_only {
+            (api.set_config)(config, c"access_mode".as_ptr(), c"READ_ONLY".as_ptr());
+        }
+        let cpath = CString::new(if path == ":memory:" { "" } else { path })?;
+        let mut db: Handle = std::ptr::null_mut();
+        let mut err: *mut std::ffi::c_char = std::ptr::null_mut();
+        let state = (api.open_ext)(cpath.as_ptr(), &mut db, config, &mut err);
+        (api.destroy_config)(&mut config);
+        if state != 0 {
+            let msg = cstr(err);
+            if !err.is_null() {
+                (api.free)(err.cast());
+            }
+            anyhow::bail!("{}", if msg.is_empty() { "DuckDB couldn't open the database".into() } else { msg });
+        }
+        Arc::new(Database { api: api.clone(), db })
+    };
+    open.push((key.to_string(), Arc::downgrade(&db)));
+    Ok(db)
+}
+
+/// One session's connection to a shared database. Shared with the
+/// canceller, which calls `duckdb_interrupt` (thread-safe) while a query
+/// holds `lock`.
+struct Inner {
+    api: Arc<Api>,
+    _db: Arc<Database>,
     conn: Handle,
     lock: Mutex<()>,
 }
@@ -27,12 +109,10 @@ unsafe impl Sync for Inner {}
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        // SAFETY: `conn` and `db` were opened by `connect` and are closed exactly
-        // once, here; nothing else can use them once `Inner` is being dropped.
-        unsafe {
-            (self.api.disconnect)(&mut self.conn);
-            (self.api.close)(&mut self.db);
-        }
+        // SAFETY: `conn` was opened by `connect` and is closed exactly once,
+        // here, before `_db` (declared earlier but released after this body
+        // runs) can close the database.
+        unsafe { (self.api.disconnect)(&mut self.conn) }
     }
 }
 
@@ -113,42 +193,19 @@ impl DuckConn {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
         let path = cfg.path.trim().to_string();
         let read_only = cfg.read_only;
+        let key = database_key(&cfg.id, &path, read_only);
         let inner = tokio::task::spawn_blocking(move || -> anyhow::Result<Inner> {
             if path.is_empty() {
                 anyhow::bail!("Choose a database file, or enter :memory: for a scratch database");
             }
             let api = api()?;
-            // SAFETY: every handle passed to DuckDB is either null (to be filled)
-            // or one it just returned; `cpath` and the config strings are
-            // NUL-terminated and outlive the calls; the config is destroyed after
-            // opening and `db` is closed if connecting fails.
-            unsafe {
-                let mut config: Handle = std::ptr::null_mut();
-                if (api.create_config)(&mut config) != 0 {
-                    anyhow::bail!("DuckDB couldn't create a configuration");
-                }
-                if read_only {
-                    (api.set_config)(config, c"access_mode".as_ptr(), c"READ_ONLY".as_ptr());
-                }
-                let cpath = CString::new(if path == ":memory:" { String::new() } else { path })?;
-                let mut db: Handle = std::ptr::null_mut();
-                let mut err: *mut std::ffi::c_char = std::ptr::null_mut();
-                let state = (api.open_ext)(cpath.as_ptr(), &mut db, config, &mut err);
-                (api.destroy_config)(&mut config);
-                if state != 0 {
-                    let msg = cstr(err);
-                    if !err.is_null() {
-                        (api.free)(err.cast());
-                    }
-                    anyhow::bail!("{}", if msg.is_empty() { "DuckDB couldn't open the database".into() } else { msg });
-                }
-                let mut conn: Handle = std::ptr::null_mut();
-                if (api.connect)(db, &mut conn) != 0 {
-                    (api.close)(&mut db);
-                    anyhow::bail!("DuckDB couldn't open a connection");
-                }
-                Ok(Inner { api, db, conn, lock: Mutex::new(()) })
+            let db = open_database(&api, &key, &path, read_only)?;
+            let mut conn: Handle = std::ptr::null_mut();
+            // SAFETY: `db.db` is open while `db` lives; `conn` is filled by DuckDB.
+            if unsafe { (api.connect)(db.db, &mut conn) } != 0 {
+                anyhow::bail!("DuckDB couldn't open a connection");
             }
+            Ok(Inner { api, _db: db, conn, lock: Mutex::new(()) })
         })
         .await??;
         Ok(DuckConn { inner: Arc::new(inner) })

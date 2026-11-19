@@ -6,7 +6,13 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+<<<<<<< Updated upstream
 ## [0.8.1] - 2026-11-19
+=======
+### Fixed
+
+- DuckDB files couldn't be opened on Windows ("The process cannot access the file because it is being used by another process"): each DataBug session opened its own copy of the database, and Windows refuses a second lock on the file even from the same app. Sessions on the same file now share one open database, each with its own connection, and the file is released when the last one closes
+>>>>>>> Stashed changes
 
 ### Changed
 

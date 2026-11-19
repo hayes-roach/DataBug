@@ -512,6 +512,53 @@ async fn store_checks(conn: &mut Box<dyn DbConnection>) -> databug_core::Catalog
     cat
 }
 
+/// Several sessions on one DuckDB file (the app opens one to load the schema
+/// and one per console) share one database instance: on Windows a second
+/// instance fails on DuckDB's file lock. Needs `DATABUG_DUCKDB_LIB`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duckdb_sessions_share_one_file() {
+    if std::env::var_os("DATABUG_DUCKDB_LIB").is_none() {
+        eprintln!("DATABUG_DUCKDB_LIB not set; skipping");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("databug-duckshare-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shared.duckdb");
+    let _ = std::fs::remove_file(&path);
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.path = path.to_string_lossy().into_owned();
+    let mut a = connect(&cfg, None).await.unwrap();
+    let mut b = connect(&cfg, None).await.unwrap();
+    run(&mut a, "CREATE TABLE t AS SELECT 42 AS x", 10).await.unwrap();
+    let c = run(&mut b, "SELECT x FROM t", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("42"));
+    assert!(b.introspect().await.unwrap().find_table(None, "t").is_some());
+    drop(a);
+    // the instance stays open for the session still using it
+    assert_eq!(run(&mut b, "SELECT count(*) FROM t", 10).await.unwrap().rows.cell(0, 0), Some("1"));
+    drop(b);
+    // and closes with the last one, so the file can be opened again (here as
+    // a fresh instance in read-only mode, which needs the old one closed)
+    let mut ro = cfg.clone();
+    ro.read_only = true;
+    let mut r = connect(&ro, None).await.unwrap();
+    assert_eq!(run(&mut r, "SELECT x FROM t", 10).await.unwrap().rows.cell(0, 0), Some("42"));
+    drop(r);
+
+    // in-memory databases are shared per connection, not between connections
+    let mut m = ConnectionConfig::new(DbKind::DuckDb);
+    m.path = ":memory:".into();
+    let mut m1 = connect(&m, None).await.unwrap();
+    let mut m2 = connect(&m, None).await.unwrap();
+    run(&mut m1, "CREATE TABLE scratch (i INT)", 10).await.unwrap();
+    run(&mut m2, "SELECT * FROM scratch", 10).await.unwrap();
+    let mut other = ConnectionConfig::new(DbKind::DuckDb);
+    other.path = ":memory:".into();
+    let mut o = connect(&other, None).await.unwrap();
+    assert!(run(&mut o, "SELECT * FROM scratch", 10).await.is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (or `.so` / `duckdb.dll`):
 /// DuckDB's library is downloaded by the app on demand, so tests need one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

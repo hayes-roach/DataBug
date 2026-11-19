@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-19
+
 ### Added
 
 - Document view for CouchDB and MongoDB results (**Documents** / **Table** above the result): a list of the documents and, for the selected one, every field (`_id` and `_rev` included) as an expandable tree or raw JSON. CouchDB attachments show their content type, size, revision, digest and link, with **Open**, **Save…**, **Copy link** and an inline preview for images

@@ -11,6 +11,7 @@ on:
       - "docs/demo.mp4"
       - "docs/demo-poster.jpg"
       - "crates/databug-app/assets/icon/icon.png"
+      - "crates/databug-app/assets/logos/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -38,6 +39,10 @@ jobs:
           cp -r site/. _site/
           cp docs/demo.mp4 docs/demo-poster.jpg _site/
           cp crates/databug-app/assets/icon/icon.png _site/icon.png
+          # engine logos from the app (site/logos adds the ones it lacks)
+          mkdir -p _site/logos
+          cp crates/databug-app/assets/logos/*.svg crates/databug-app/assets/logos/questdb.png _site/logos/
+          cp -r site/logos/. _site/logos/
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

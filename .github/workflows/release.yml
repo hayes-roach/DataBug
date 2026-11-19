@@ -91,8 +91,15 @@ jobs:
           security import "$RUNNER_TEMP/signing.p12" -k "$KC" -P "$MACOS_SIGNING_PASSWORD" -T /usr/bin/codesign -f pkcs12
           rm -f "$RUNNER_TEMP/signing.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPW" "$KC" > /dev/null
+          # codesign finds the private key through the keychain search list
+          # (this runner is thrown away after the job)
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           security find-identity -p codesigning "$KC"
-          echo "MACOS_SIGN_IDENTITY=DataBug Code Signing" >> "$GITHUB_ENV"
+          # the certificate's SHA-1, which names exactly this identity (it's
+          # self-signed, so macOS lists it as not trusted; signing still works)
+          ID=$(security find-identity -p codesigning "$KC" | awk '/DataBug Code Signing/ { print $2; exit }')
+          test -n "$ID"
+          echo "MACOS_SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
           echo "MACOS_SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
 
       # DataBug-macos-universal.dmg (drag to Applications) and .zip

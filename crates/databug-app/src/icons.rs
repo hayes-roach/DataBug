@@ -155,11 +155,13 @@ impl Logos {
         for kind in DbKind::ALL {
             'found: for d in &dirs {
                 for ext in ["svg", "png"] {
-                    let f = d.join(format!("{}.{ext}", file_stem(kind)));
-                    if f.is_file() {
-                        // forward slashes and no `\\?\` prefix, so Windows paths load too
-                        let path = strip_verbatim(&f).display().to_string().replace('\\', "/");
-                        let uri = if path.starts_with('/') { format!("file://{path}") } else { format!("file:///{path}") };
+                    let name = format!("{}.{ext}", file_stem(kind));
+                    // read now, into memory: a file that disappears or can't be
+                    // read later (the app was moved or deleted while running)
+                    // would otherwise draw as egui's red "failed to load" mark
+                    if let Ok(bytes) = std::fs::read(d.join(&name)).map_err(|_| ()).and_then(|b| if b.is_empty() { Err(()) } else { Ok(b) }) {
+                        let uri = format!("bytes://databug/disk-logos/{name}");
+                        ctx.include_bytes(uri.clone(), bytes);
                         uris.insert(kind, uri);
                         break 'found;
                     }

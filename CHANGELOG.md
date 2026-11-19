@@ -16,6 +16,7 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ### Fixed
 
+- Engine logos could show a red "failed to load" mark when DataBug's folder changed while it was running (it was moved, updated or deleted): logos are now read into memory at startup, and one that can't be read falls back to the built-in copy
 - macOS asked for keychain access again and again for one connection (CouchDB attachments, consoles and the explorer each read the password). DataBug now reads a saved password once per run
 
 ## [0.9.0] - 2026-11-19

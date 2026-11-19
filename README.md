@@ -72,7 +72,7 @@ The in-app updater reads the latest GitHub release, so every release must includ
 | TimescaleDB | `tokio-postgres` (PostgreSQL protocol) | ✔ | ✔ (pg_catalog; chunks hidden, continuous aggregates as materialized views) | JSON tree, `ANALYZE` | ✔ | ✔ TimescaleDB on Postgres 16 (Docker) |
 | QuestDB | `tokio-postgres` (PostgreSQL protocol, port 8812) | ✔ | ✔ (`SHOW TABLES` / `SHOW COLUMNS`) | text | drops connection | ✔ QuestDB (Docker, latest) |
 | H2 | `tokio-postgres` (H2's `-pg` server mode) | ✔ | ✔ (information_schema) | text, `ANALYZE` | drops connection | ✔ H2 2.3.232 (`-pg`) |
-| DuckDB | official `libduckdb` 1.5.6, downloaded on demand and loaded at run time | ✔ | ✔ (information_schema, macros, sequences) | text, `ANALYZE` | ✔ (interrupt) | ✔ DuckDB 1.5.6 |
+| DuckDB | official `libduckdb` 2.0.0, downloaded on demand and loaded at run time | ✔ | ✔ (information_schema, macros, sequences) | text, `ANALYZE` | ✔ (interrupt) | ✔ DuckDB 2.0.0 |
 | Apache Cassandra | `scylla` | ✔ CQL | ✔ (system_schema; keyspaces as schemas) | — | drops connection | ✔ Cassandra 5 (Docker) |
 | CouchDB | `reqwest` (HTTP API) | ✔ Mango in shell syntax | ✔ (databases as collections, sampled fields, indexes) | `_explain` JSON | drops connection | ✔ CouchDB 3 (Docker) |
 | InfluxDB | `reqwest` (HTTP API) | ✔ InfluxQL, Flux (2.x), line-protocol `INSERT` | ✔ (measurements, tags, fields) | — | drops connection | ✔ InfluxDB 2.7 (Docker) |
@@ -107,7 +107,7 @@ Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb
 | IBM Db2 | the IBM Data Server Driver for ODBC and CLI, registered as `IBM DB2 ODBC DRIVER` in `odbcinst.ini` (point `ODBCSYSINI` at its folder on macOS/Linux) or set *ODBC driver* in the dialog to the driver library's full path |
 | Spark SQL | a Spark ODBC driver (Simba or Databricks), registered the same way, and a running Spark Thrift server; *ODBC options* sets `ThriftTransport`, `HTTPPath` and friends |
 
-**DuckDB is downloaded, not built in.** Choosing DuckDB in the new-connection dialog offers **Download DuckDB**: DataBug fetches DuckDB's official library for your platform (about 36 MB on macOS, 41 MB on Linux, 13 MB on Windows) from [DuckDB's GitHub releases](https://github.com/duckdb/duckdb/releases/tag/v1.5.6) over verified HTTPS, checks it against a SHA-256 pinned in the source, keeps only the library (in DataBug's data folder under `runtimes/duckdb-1.5.6`) and loads it when you connect. Nothing is downloaded unless you click the button. To use a DuckDB library you already have, set `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (`.so`, `duckdb.dll`).
+**DuckDB is downloaded, not built in.** Choosing DuckDB in the new-connection dialog offers **Download DuckDB**: DataBug fetches DuckDB's official library for your platform (about 40 MB on macOS, 28 MB on Linux, 20 MB on Windows) from [DuckDB's GitHub releases](https://github.com/duckdb/duckdb/releases/tag/v2.0.0) over verified HTTPS, checks it against a SHA-256 pinned in the source, keeps only the library (in DataBug's data folder under `runtimes/duckdb-2.0.0`) and loads it when you connect. Nothing is downloaded unless you click the button. To use a DuckDB library you already have, set `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (`.so`, `duckdb.dll`).
 
 Engines without a dialect of their own borrow the closest one for highlighting, completion and generated SQL: the PostgreSQL-compatible engines, Oracle, Db2, DuckDB, Cassandra and InfluxDB use the Postgres one (double-quoted identifiers), Spark SQL the MySQL one (backticks), and CouchDB the MongoDB shell syntax. Oracle gets `LIMIT n` rewritten to `FETCH FIRST n ROWS ONLY`. PL/SQL and SQL PL blocks run as one statement (packages up to a `/` line).
 
@@ -290,7 +290,7 @@ The other engines have live tests that run when their variable is set; with Dock
 
 | Variable | Server |
 |---|---|
-| `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` | DuckDB's library from its [releases](https://github.com/duckdb/duckdb/releases/tag/v1.5.6) (no server) |
+| `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` | DuckDB's library from its [releases](https://github.com/duckdb/duckdb/releases/tag/v2.0.0) (no server) |
 | `DATABUG_TEST_DUCKDB_DOWNLOAD=1` | downloads and verifies the library the way the dialog does, into a temporary folder |
 | `DATABUG_TEST_COCKROACH=localhost:26257:defaultdb:root` | `docker run -d -p 26257:26257 cockroachdb/cockroach:latest-v24.3 start-single-node --insecure` |
 | `DATABUG_TEST_TIMESCALE=localhost:5432:postgres:postgres` | `docker run -d -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust timescale/timescaledb:latest-pg16` |

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The DuckDB release DataBug downloads.
-pub const DUCKDB_VERSION: &str = "1.5.6";
+pub const DUCKDB_VERSION: &str = "2.0.0";
 
 /// One platform's download: the release asset, its SHA-256 and the library inside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,14 +27,15 @@ pub fn asset() -> Option<Asset> {
 }
 
 pub(crate) fn asset_for(os: &str, arch: &str) -> Option<Asset> {
-    // From https://github.com/duckdb/duckdb/releases/tag/v1.5.6 (GitHub's published digests)
+    // From https://github.com/duckdb/duckdb/releases/tag/v2.0.0 (GitHub's published digests).
+    // Since 2.0 the library ships as duckdb-shared-libs-<platform>.tar.gz.
     let a = |file, sha256, size, library| Some(Asset { file, sha256, size, library });
     match (os, arch) {
-        ("macos", _) => a("libduckdb-osx-universal.zip", "e0bc007d9b0094c0970ac1847a8601d10aad07cbd2910ce586ec810f77b638d6", 36_216_941, "libduckdb.dylib"),
-        ("linux", "x86_64") => a("libduckdb-linux-amd64.zip", "b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b", 41_378_782, "libduckdb.so"),
-        ("linux", "aarch64") => a("libduckdb-linux-arm64.zip", "b72ed9f05003f5e9d2015f7ceada6416b377d9dd33169cdde3c9e33897856eee", 37_763_835, "libduckdb.so"),
-        ("windows", "x86_64") => a("libduckdb-windows-amd64.zip", "44cf59583f9951d2cb09b1bf115a63ecb2d8901e363903029d86c7d8683fe96a", 13_408_787, "duckdb.dll"),
-        ("windows", "aarch64") => a("libduckdb-windows-arm64.zip", "c63285647e94c46d309b60d5dd1ff3cb2cdf9ca03e415a818ff7d8dbf838e0e8", 14_366_908, "duckdb.dll"),
+        ("macos", _) => a("duckdb-shared-libs-osx-universal.tar.gz", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", 40_361_654, "libduckdb.dylib"),
+        ("linux", "x86_64") => a("duckdb-shared-libs-linux-amd64.tar.gz", "993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1", 27_841_656, "libduckdb.so"),
+        ("linux", "aarch64") => a("duckdb-shared-libs-linux-arm64.tar.gz", "c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7", 25_735_927, "libduckdb.so"),
+        ("windows", "x86_64") => a("duckdb-shared-libs-windows-amd64.tar.gz", "2b83169128239de5f45fe21de80f99bf436e53aa4bb24020dd951a1ba8d4b95f", 19_833_650, "duckdb.dll"),
+        ("windows", "aarch64") => a("duckdb-shared-libs-windows-arm64.tar.gz", "159ce60eb587112b8c5f290b8beea56af5f13be4d13679de127ad9bfaafb7447", 18_389_170, "duckdb.dll"),
         _ => None,
     }
 }
@@ -120,10 +121,10 @@ async fn install(notify: &Arc<dyn Fn() + Send + Sync>) -> anyhow::Result<PathBuf
     let a = asset().ok_or_else(|| anyhow::anyhow!("DuckDB doesn't publish a library for {} {}", std::env::consts::OS, std::env::consts::ARCH))?;
     let dir = install_dir().ok_or_else(|| anyhow::anyhow!("DataBug's data folder isn't set"))?;
     std::fs::create_dir_all(&dir)?;
-    let zip_path = dir.join(format!("{}.part", a.file));
+    let archive = dir.join(format!("{}.part", a.file));
     let mut resp = crate::http::check(verifying_client()?.get(download_url(&a)).send().await?).await?;
     update(|s| s.total = resp.content_length().unwrap_or(a.size));
-    let mut file = std::fs::File::create(&zip_path)?;
+    let mut file = std::fs::File::create(&archive)?;
     let mut hash = Sha256::new();
     let mut n = 0u64;
     let mut last = 0u64;
@@ -142,27 +143,50 @@ async fn install(notify: &Arc<dyn Fn() + Send + Sync>) -> anyhow::Result<PathBuf
     update(|s| s.downloaded = n);
     let got = hex(&hash.finalize());
     if got != a.sha256 {
-        let _ = std::fs::remove_file(&zip_path);
+        let _ = std::fs::remove_file(&archive);
         anyhow::bail!("The download didn't match DuckDB {DUCKDB_VERSION}'s published checksum (got {got}), so it was deleted");
     }
-    let (zp, d, lib) = (zip_path.clone(), dir.clone(), a.library);
-    let out = tokio::task::spawn_blocking(move || extract(&zp, &d, lib)).await?;
-    let _ = std::fs::remove_file(&zip_path);
+    let (ap, d, lib) = (archive.clone(), dir.clone(), a.library);
+    let out = tokio::task::spawn_blocking(move || extract(&ap, &d, lib)).await?;
+    let _ = std::fs::remove_file(&archive);
+    if out.is_ok() {
+        remove_older_versions(&dir);
+    }
     out
 }
 
-/// Unpack only the library, through a temporary name so a half-written
-/// file is never loaded.
-fn extract(zip_path: &Path, dir: &Path, library: &str) -> anyhow::Result<PathBuf> {
-    let mut z = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
-    let mut entry = z.by_name(library).map_err(|_| anyhow::anyhow!("{library} is missing from the download"))?;
-    let tmp = dir.join(format!("{library}.part"));
-    let mut out = std::fs::File::create(&tmp)?;
-    std::io::copy(&mut entry, &mut out)?;
-    drop(out);
-    let dest = dir.join(library);
-    std::fs::rename(&tmp, &dest)?;
-    Ok(dest)
+/// Delete libraries left by earlier DuckDB versions (`runtimes/duckdb-<old>`).
+fn remove_older_versions(current: &Path) {
+    let (Some(parent), Some(name)) = (current.parent(), current.file_name()) else { return };
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    for e in entries.flatten() {
+        let n = e.file_name();
+        if n != name && n.to_string_lossy().starts_with("duckdb-") && e.path().is_dir() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// Unpack only the library from the .tar.gz, through a temporary name so a
+/// half-written file is never loaded.
+fn extract(archive: &Path, dir: &Path, library: &str) -> anyhow::Result<PathBuf> {
+    let gz = flate2::read::GzDecoder::new(std::io::BufReader::new(std::fs::File::open(archive)?));
+    let mut tar = tar::Archive::new(gz);
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let is_lib = entry.header().entry_type().is_file() && entry.path()?.file_name().is_some_and(|n| n == library);
+        if !is_lib {
+            continue;
+        }
+        let tmp = dir.join(format!("{library}.part"));
+        let mut out = std::fs::File::create(&tmp)?;
+        std::io::copy(&mut entry, &mut out)?;
+        drop(out);
+        let dest = dir.join(library);
+        std::fs::rename(&tmp, &dest)?;
+        return Ok(dest);
+    }
+    anyhow::bail!("{library} is missing from the download")
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +221,7 @@ macro_rules! api {
         impl Api {
             /// # Safety
             /// `path` must be a DuckDB library whose C API matches these
-            /// signatures (DuckDB 1.x); loading it runs its initialisers.
+            /// signatures (DuckDB 1.x and 2.x); loading it runs its initialisers.
             unsafe fn load(path: &Path) -> anyhow::Result<Api> {
                 // SAFETY: the caller guarantees `path` is a compatible DuckDB library.
                 let lib = unsafe { libloading::Library::new(path)? };
@@ -272,7 +296,8 @@ mod tests {
             let a = asset_for(os, arch).unwrap_or_else(|| panic!("{os} {arch}"));
             assert_eq!(a.sha256.len(), 64);
             assert!(a.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-            assert!(download_url(&a).starts_with("https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-"));
+            assert!(download_url(&a).starts_with("https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-shared-libs-"));
+            assert!(a.file.ends_with(".tar.gz"));
         }
         assert!(asset_for("freebsd", "x86_64").is_none());
         assert_eq!(asset_for("windows", "x86_64").unwrap().library, "duckdb.dll");
@@ -285,21 +310,36 @@ mod tests {
 
     #[test]
     fn extracts_only_the_library() {
-        use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("databug-duckzip-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("databug-ducktar-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let zp = dir.join("lib.zip");
-        let mut w = zip::ZipWriter::new(std::fs::File::create(&zp).unwrap());
-        let opts = zip::write::SimpleFileOptions::default();
-        w.start_file("duckdb.h", opts).unwrap();
-        w.write_all(b"header").unwrap();
-        w.start_file("libduckdb.so", opts).unwrap();
-        w.write_all(b"library bytes").unwrap();
-        w.finish().unwrap();
-        let out = extract(&zp, &dir, "libduckdb.so").unwrap();
+        let ap = dir.join("lib.tar.gz");
+        let gz = flate2::write::GzEncoder::new(std::fs::File::create(&ap).unwrap(), flate2::Compression::fast());
+        let mut w = tar::Builder::new(gz);
+        for (name, body) in [("duckdb.h", &b"header"[..]), ("libduckdb.so", &b"library bytes"[..])] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            w.append_data(&mut h, name, body).unwrap();
+        }
+        w.into_inner().unwrap().finish().unwrap();
+        let out = extract(&ap, &dir, "libduckdb.so").unwrap();
         assert_eq!(std::fs::read(&out).unwrap(), b"library bytes");
         assert!(!dir.join("duckdb.h").exists());
-        assert!(extract(&zp, &dir, "duckdb.dll").is_err());
+        assert!(extract(&ap, &dir, "duckdb.dll").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_versions_are_removed() {
+        let root = std::env::temp_dir().join(format!("databug-duckold-{}", std::process::id()));
+        for d in ["duckdb-1.5.6", "duckdb-2.0.0", "other"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        remove_older_versions(&root.join("duckdb-2.0.0"));
+        assert!(!root.join("duckdb-1.5.6").exists());
+        assert!(root.join("duckdb-2.0.0").exists());
+        assert!(root.join("other").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

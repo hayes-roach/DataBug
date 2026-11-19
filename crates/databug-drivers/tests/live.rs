@@ -869,11 +869,11 @@ async fn duckdb_download_and_load() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     // only the library is kept
-    let files: Vec<_> = std::fs::read_dir(dir.join("duckdb-1.5.6")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    let files: Vec<_> = std::fs::read_dir(dir.join("duckdb-2.0.0")).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(files.len(), 1, "{files:?}");
     let mut conn = connect(&cfg, None).await.unwrap();
     let c = run(&mut conn, "SELECT version() AS v", 10).await.unwrap();
-    assert_eq!(c.rows.cell(0, 0), Some("v1.5.6"));
+    assert_eq!(c.rows.cell(0, 0), Some("v2.0.0"));
     drop(conn);
     let _ = std::fs::remove_dir_all(&dir);
 }

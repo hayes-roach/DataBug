@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- DuckDB is now 2.0.0 (was 1.5.6), so DataBug opens database files written by DuckDB 2.0. Connecting asks you to download the new library once (about 40 MB on macOS), and the old one is deleted afterwards. Files DataBug changes are then in DuckDB 2.0's format, which DuckDB 1.x can't open
+
 ## [0.8.0] - 2026-11-19
 
 ### Added

@@ -92,7 +92,7 @@ table.dbs td:not(:first-child) { color: var(--muted); }
 @media (max-width: 640px) { table.dbs .kind { display: none; } }
 
 .install { border-top: 1px solid var(--line); }
-.install .row { display: grid; grid-template-columns: 90px 1fr auto; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.install .row { display: grid; grid-template-columns: 130px 1fr auto; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .install .os { font-weight: 500; }
 .install pre { margin: 0; overflow-x: auto; color: var(--muted); }
 .copy { font: inherit; font-size: 14px; color: var(--faint); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; cursor: pointer; }
@@ -188,8 +188,7 @@ footer a:hover { color: var(--text); }
   <section class="wrap" id="install">
     <h2>Install</h2>
     <div class="install">
-      <div class="row"><span class="os">macOS</span><pre>curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh | sh</pre><button class="copy" type="button">Copy</button></div>
-      <div class="row"><span class="os">Linux</span><pre>curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh | sh</pre><button class="copy" type="button">Copy</button></div>
+      <div class="row"><span class="os">macOS &amp; Linux</span><pre>curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh | sh</pre><button class="copy" type="button">Copy</button></div>
       <div class="row"><span class="os">Windows</span><pre>irm https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.ps1 | iex</pre><button class="copy" type="button">Copy</button></div>
     </div>
     <p class="after">The scripts verify the download against the release's checksums. Run them again to update. Installers are on the <a href="https://github.com/hayes-roach/DataBug/releases/latest">releases page</a>.</p>

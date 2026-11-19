@@ -461,7 +461,7 @@ fn database_field(kind: DbKind, sid: bool) -> (&'static str, &'static str) {
 /// A short note about what an engine needs, shown under the form.
 fn engine_note(kind: DbKind) -> Option<&'static str> {
     match kind {
-        DbKind::Oracle => Some("Needs Oracle Instant Client on this computer (see the README)."),
+        DbKind::Oracle => Some("Needs Oracle Instant Client on this computer (see docs/databases.md on DataBug's GitHub)."),
         DbKind::Db2 => Some("Needs the IBM Db2 ODBC driver registered with the ODBC driver manager."),
         DbKind::Spark => Some("Connects to the Spark Thrift server through a Spark ODBC driver (Simba or Databricks)."),
         DbKind::H2 => Some("Start the H2 server with -pg (PostgreSQL server mode); DataBug connects to that port."),

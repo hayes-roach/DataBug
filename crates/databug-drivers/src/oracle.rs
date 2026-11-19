@@ -56,7 +56,7 @@ pub(crate) fn oci_text(stmt: &str) -> String {
 fn ora_error(e: oracle::Error) -> anyhow::Error {
     let msg = e.to_string();
     if msg.contains("DPI-1047") {
-        anyhow::anyhow!("{msg}\n\nDataBug needs Oracle Instant Client to talk to Oracle. Install it and put it on the library path (or next to DataBug); see the README.")
+        anyhow::anyhow!("{msg}\n\nDataBug needs Oracle Instant Client to talk to Oracle. Install it and put it on the library path (or next to DataBug); see https://github.com/hayes-roach/DataBug/blob/main/docs/databases.md")
     } else {
         anyhow::anyhow!(msg)
     }

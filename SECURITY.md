@@ -48,4 +48,4 @@ Out of scope:
 - Problems that need an attacker who already controls your user account or machine
 - Vulnerabilities in a database server itself (report those to its vendor)
 - TLS without certificate verification when you chose *Prefer* or *Trust server certificate*; that's documented behaviour
-- The apps not being signed with paid Apple or Microsoft certificates (known; see the README)
+- The apps not being signed with paid Apple or Microsoft certificates (known; see [installing and updating](docs/install.md))

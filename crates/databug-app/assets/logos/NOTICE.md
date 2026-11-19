@@ -25,4 +25,4 @@ Where each file came from and under what license: see `SOURCES.md`.
 
 If you represent one of these owners and would like a logo removed or used differently, open an issue on the repository and it will be changed promptly.
 
-You can replace any of these files with your own artwork; see *Explorer* in the README.
+You can replace any of these files with your own artwork; see *Explorer* in [docs/features.md](../../../../docs/features.md).

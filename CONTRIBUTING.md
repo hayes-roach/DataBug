@@ -9,7 +9,7 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Se
 - **Report a bug** with the bug report form under [Issues](https://github.com/hayes-roach/DataBug/issues/new/choose). Include the DataBug version, your OS, the database engine and version, and the steps to reproduce.
 - **Suggest a feature** with the feature request form. Explain the problem you're trying to solve, not only the feature you have in mind.
 - **Pick up an issue.** Issues labelled `good first issue` are small and well described; `help wanted` ones are larger. Comment on an issue before starting so two people don't build the same thing.
-- **Test against real servers.** MongoDB hasn't been run against a live server yet, and SQL Server's less common objects (CLR objects, sequences, synonyms) have seen little use (see *Not done yet* in the README). Reports from real setups are valuable even without a fix.
+- **Test against real servers.** MongoDB hasn't been run against a live server yet, and SQL Server's less common objects (CLR objects, sequences, synonyms) have seen little use (see the [roadmap](docs/roadmap.md)). Reports from real setups are valuable even without a fix.
 
 For anything bigger than a bug fix (a new driver, a new panel, a change to how sessions work), open an issue or a draft pull request to agree on the approach first.
 
@@ -49,7 +49,7 @@ docker run -d --name my -p 3306:3306 -e MYSQL_ROOT_PASSWORD=pw -e MYSQL_DATABASE
 
 ### Checking UI changes
 
-`databug --screenshot out.png` drives the UI without a person and saves a PNG. `DATABUG_SHOT_SCENE` picks a scene (`light`, `find`, `theme`, `multidb`, `plan`, `dialog` and more; see the README). Attach before/after screenshots to any pull request that changes how something looks, in both a dark and a light theme.
+`databug --screenshot out.png` drives the UI without a person and saves a PNG. `DATABUG_SHOT_SCENE` picks a scene (`light`, `find`, `theme`, `multidb`, `plan`, `dialog` and more; see [docs/development.md](docs/development.md)). Attach before/after screenshots to any pull request that changes how something looks, in both a dark and a light theme.
 
 ## Where things live
 
@@ -107,7 +107,7 @@ Dependabot opens pull requests for dependency updates: Rust crates weekly, GitHu
 - **Only compatible versions.** Dependabot only updates `Cargo.lock` within the version ranges in `Cargo.toml`, which Cargo treats as compatible (`1.2 → 1.3`, `0.15.1 → 0.15.4`). It never proposes major versions, and egui is left alone because it's pinned on purpose. Upgrades that need `Cargo.toml` changed are done by hand in a `chore/` branch.
 - **CI tests the exact update.** Every Dependabot commit runs the full CI with `--locked`: the live Postgres and MySQL tests, macOS and Windows builds and tests, and a build with the minimum supported Rust (`rust-version` in `Cargo.toml`, currently 1.89).
 - **Red means don't merge.** With checks required on `main`, a failing update can't be merged. If an update breaks something, comment `@dependabot ignore this minor version` (or `… this dependency`) on its pull request and open an issue for the real fix.
-- **Raising the minimum Rust** is a deliberate change: bump `rust-version` in `Cargo.toml` and the README in its own pull request, and note it in the changelog.
+- **Raising the minimum Rust** is a deliberate change: bump `rust-version` in `Cargo.toml`, the README and [docs/development.md](docs/development.md) in its own pull request, and note it in the changelog.
 
 When you update dependencies yourself, run `cargo update` (the repository's `.cargo/config.toml` makes it prefer versions that still build with the minimum Rust), then `cargo test --workspace --locked` and `cargo +1.89 check --workspace --all-targets --locked`.
 
@@ -146,7 +146,7 @@ The body says *why* the change is needed and anything a reviewer should know. Re
 - **Guard rails stay on.** Changes that run SQL must keep the read-only, production and dangerous-statement checks (`check_and_dispatch`) in the path.
 - **New drivers** implement `DbConnection`, sit behind a cargo feature in `databug-drivers`, and fill in `Capabilities` honestly so the UI can adapt.
 - **Tests:** add unit tests for logic in `databug-sql` and `databug-core`, and live tests in `crates/databug-drivers/tests/live.rs` for driver behaviour. Every bug fix should come with a test that fails without the fix, where that's practical.
-- **Docs:** update the README when you add or change a user-facing feature or shortcut, and add a line under *Unreleased* in [CHANGELOG.md](CHANGELOG.md).
+- **Docs:** update the README and the pages in [docs/](docs) when you add or change a user-facing feature or shortcut, and add a line under *Unreleased* in [CHANGELOG.md](CHANGELOG.md).
 
 ## Pull request checklist
 
@@ -157,7 +157,7 @@ Before you ask for a review:
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean (CI also runs it with `--all-features`, which needs `libkrb5-dev` and `unixodbc-dev` on Linux)
 - [ ] `cargo build --release` builds without new warnings
 - [ ] UI changes include screenshots in dark and light themes
-- [ ] README and CHANGELOG are updated where it matters
+- [ ] README, docs and CHANGELOG are updated where it matters
 - [ ] The title follows Conventional Commits
 
 CI runs whenever commits are pushed to a branch of this repository (not on pull request events): it tests against live Postgres 16 and MySQL 8.4 on Linux, and builds and tests on macOS and Windows. A pull request shows the result for its latest commit, and a newer push cancels the older run. All checks must pass, and a maintainer must approve, before a pull request can merge. Draft pull requests are welcome for early feedback.

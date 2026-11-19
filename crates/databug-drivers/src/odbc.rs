@@ -118,7 +118,7 @@ impl OdbcConn {
             Ok(env.connect_with_connection_string(&cs, ConnectionOptions::default())?)
         })
         .await?
-        .map_err(|e| anyhow::anyhow!("{e:#}\n\nCheck that the {} ODBC driver is installed and registered with the ODBC driver manager (see the README).", if kind == DbKind::Db2 { "IBM Db2" } else { "Spark" }))?;
+        .map_err(|e| anyhow::anyhow!("{e:#}\n\nCheck that the {} ODBC driver is installed and registered with the ODBC driver manager (see https://github.com/hayes-roach/DataBug/blob/main/docs/databases.md).", if kind == DbKind::Db2 { "IBM Db2" } else { "Spark" }))?;
         Ok(OdbcConn { conn: Arc::new(Mutex::new(conn)), kind, in_tx: false })
     }
 

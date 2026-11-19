@@ -19,5 +19,5 @@ Fixes #
 - [ ] Branch is up to date with `main`
 - [ ] `cargo test --workspace` passes
 - [ ] No new build warnings
-- [ ] README updated for user-facing changes
+- [ ] README and docs/ updated for user-facing changes
 - [ ] Line added under *Unreleased* in `CHANGELOG.md`

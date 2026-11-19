@@ -3813,7 +3813,7 @@ impl DataBugApp {
                 plan.step = 1;
                 plan.wait_frames = 0;
                 // `couch…` scenes: the first connection is a CouchDB server with a
-                // `store` database (see the scene list in the README)
+                // `store` database (see the scene list in docs/development.md)
                 let couch = plan.scene.starts_with("couch") || plan.scene.starts_with("redis");
                 let couch_sql = if plan.scene.starts_with("redis") {
                     "# the top players, a user and the newest orders\nZREVRANGE leaderboard 0 4 WITHSCORES"

@@ -13,6 +13,7 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 ### Changed
 
 - Connections start disconnected when DataBug opens, including right after an update, and an update disconnects every database before the old version quits. In the explorer, expanding a disconnected connection connects it and opens it once that works (or shows why it couldn't); its tables aren't shown while it's disconnected
+- A shorter README with badges and the demo playing in place (an animated GIF); the detailed reference moved to [docs/](docs): features and shortcuts, databases, installing and updating, development, the roadmap and the disclaimer
 - Upgrading keeps one DataBug: the installers and the in-app updater remove copies in other folders (the other Applications folder on macOS, the old folder on Linux, a second install for all users or for one user on Windows), backups from an interrupted update, and the downloads of earlier updates
 
 ### Fixed

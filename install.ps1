@@ -9,6 +9,11 @@
 # Options (set before running):
 #   $env:DATABUG_VERSION = "v0.3.0"   install that release instead of the latest
 #   $env:DATABUG_FORCE = "1"          reinstall even if already up to date
+#   $env:DATABUG_INSTALL_DIR = "D:\Apps\DataBug"   install there without asking
+#   $env:DATABUG_YES = "1"            take the default folder without asking
+#
+# A first install asks which folder to use (press Enter for the default);
+# updates keep DataBug where it is.
 
 function Install-DataBug {
     $ErrorActionPreference = 'Stop'
@@ -97,6 +102,32 @@ function Install-DataBug {
         }
     }
 
+    # --- where a first install goes ---------------------------------------------
+    $chosen = $null
+    if (-not $installed) {
+        $default = Join-Path $env:LOCALAPPDATA 'Programs\DataBug'
+        $chosen = $env:DATABUG_INSTALL_DIR
+        $canAsk = -not $env:DATABUG_YES -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+        if (-not $chosen -and $canAsk) {
+            Write-Host "Install DataBug in which folder? Press Enter for $default"
+            try { $chosen = Read-Host ' Folder' } catch { $chosen = $null }
+        }
+        if ($chosen) {
+            $chosen = [Environment]::ExpandEnvironmentVariables($chosen.Trim().Trim('"'))
+            $chosen = [IO.Path]::GetFullPath($chosen)
+            # a per-user install can only write where this account can
+            try {
+                New-Item -ItemType Directory -Force -Path $chosen | Out-Null
+                $probe = Join-Path $chosen ".databug-write-test-$PID"
+                Set-Content -Path $probe -Value '' -ErrorAction Stop
+                Remove-Item $probe -Force
+            } catch {
+                Fail "You can't write to $chosen without admin rights. Pick a folder under your user profile, or another drive you can write to."
+                return
+            }
+        }
+    }
+
     # --- run the setup ---------------------------------------------------------
     $log = Join-Path $dir 'setup.log'
     $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', "/LOG=`"$log`"")
@@ -110,6 +141,7 @@ function Install-DataBug {
     } else {
         $setupArgs += '/CURRENTUSER'
         if (-not $installed) { $setupArgs += '/TASKS=desktopicon' }
+        if ($chosen) { $setupArgs += "/DIR=`"$chosen`"" }
     }
     try {
         $p = if ($elevate) {
@@ -143,6 +175,32 @@ function Install-DataBug {
         return
     }
     Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+
+    # --- keep one copy: remove a DataBug installed the other way ---------------
+    # (the setup removes a per-user copy itself; an all-users copy needs admin
+    # rights, so ask Windows for them here)
+    $mine = if ($installed) { $installed.AllUsers } else { $false }
+    $myDir = $null
+    foreach ($k in $keys) {
+        if ($k.AllUsers -ne $mine) { continue }
+        $e = Get-ItemProperty -Path $k.Path -ErrorAction SilentlyContinue
+        if ($e -and $e.InstallLocation) { $myDir = $e.InstallLocation.TrimEnd('\'); break }
+    }
+    foreach ($k in $keys) {
+        if ($k.AllUsers -eq $mine) { continue }
+        $other = Get-ItemProperty -Path $k.Path -ErrorAction SilentlyContinue
+        if (-not $other -or -not $other.UninstallString) { continue }
+        if ($myDir -and $other.InstallLocation -and ($other.InstallLocation.TrimEnd('\') -eq $myDir)) { continue }
+        $uninstaller = $other.UninstallString.Trim('"')
+        if (-not (Test-Path $uninstaller)) { continue }
+        Say "Removing the older copy of DataBug in $($other.InstallLocation)..."
+        try {
+            $quiet = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+            if ($k.AllUsers) { Start-Process -FilePath $uninstaller -ArgumentList $quiet -Verb RunAs -Wait } else { Start-Process -FilePath $uninstaller -ArgumentList $quiet -Wait }
+        } catch {
+            Fail "Couldn't remove the older copy in $($other.InstallLocation): $($_.Exception.Message). Remove it from Settings > Apps."
+        }
+    }
 
     # --- start the new version ------------------------------------------------
     $exe = $null

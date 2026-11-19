@@ -22,6 +22,10 @@ AppPublisher=DataBug
 AppPublisherURL=https://github.com/hayes-roach/DataBug
 AppSupportURL=https://github.com/hayes-roach/DataBug/issues
 DefaultDirName={autopf}\DataBug
+; first install: show the "Select Destination Location" page; updates reuse
+; the folder of the existing install and skip it
+DisableDirPage=auto
+UsePreviousAppDir=yes
 DefaultGroupName=DataBug
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -76,7 +80,57 @@ Filename: "{app}\DataBug.exe"; Description: "{cm:LaunchProgram,DataBug}"; Flags:
 Filename: "{app}\DataBug.exe"; Flags: nowait; Check: ShouldRelaunch
 
 [Code]
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F0C1D8E-3B7A-4E52-9C1D-DA7ABA6B0001}_is1';
+
 function ShouldRelaunch: Boolean;
 begin
   Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;
+
+{ The uninstaller of a DataBug installed the other way (for all users when
+  this install is for the current user, or the reverse) in another folder. }
+function OtherUninstaller(var Uninstaller: String): Boolean;
+var
+  Roots: array of Integer;
+  I: Integer;
+  Dir: String;
+begin
+  Result := False;
+  if IsAdminInstallMode then begin
+    SetArrayLength(Roots, 1);
+    Roots[0] := HKEY_CURRENT_USER;
+  end else begin
+    SetArrayLength(Roots, 2);
+    Roots[0] := HKEY_LOCAL_MACHINE_64;
+    Roots[1] := HKEY_LOCAL_MACHINE_32;
+  end;
+  for I := 0 to GetArrayLength(Roots) - 1 do
+    if RegQueryStringValue(Roots[I], UninstallKey, 'UninstallString', Uninstaller) then begin
+      Uninstaller := RemoveQuotes(Uninstaller);
+      if RegQueryStringValue(Roots[I], UninstallKey, 'InstallLocation', Dir)
+        and (CompareText(AddBackslash(Dir), AddBackslash(ExpandConstant('{app}'))) = 0) then
+        Continue;
+      if FileExists(Uninstaller) then begin
+        Result := True;
+        Exit;
+      end;
+    end;
+end;
+
+{ Keep a single DataBug: after installing, remove the other one. Removing an
+  all-users copy needs admin rights, so a per-user setup asks for them, except
+  during a silent update (install.ps1 removes it then, asking first). }
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Uninstaller: String;
+  Code: Integer;
+begin
+  if (CurStep <> ssPostInstall) or not OtherUninstaller(Uninstaller) then
+    Exit;
+  Log('Removing the other DataBug install: ' + Uninstaller);
+  if IsAdminInstallMode then
+    Exec(Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code)
+  else if not WizardSilent then
+    ShellExec('runas', Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;

@@ -123,7 +123,8 @@ pub enum InstallKind {
     MacApp(PathBuf),
     /// Installed by the Windows setup; `true` when installed for all users.
     WindowsSetup(bool),
-    /// `~/.local/bin/databug` from the Linux install script
+    /// `databug` from the Linux install script (`~/.local/bin` or the folder
+    /// chosen on first install)
     LinuxLocal(PathBuf),
     /// Built from source or run from somewhere else: update by hand.
     Manual(String),
@@ -143,17 +144,52 @@ pub fn install_kind() -> InstallKind {
     if cfg!(windows) {
         let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         if dir.join("unins000.exe").exists() {
+            // the setup registers a per-user install under HKCU, wherever its folder is
             let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-            let per_user = local.map(|l| dir.starts_with(l)).unwrap_or(false);
+            let per_user = local.map(|l| dir.starts_with(l)).unwrap_or(false) || windows_per_user_install();
             return InstallKind::WindowsSetup(!per_user);
         }
         return InstallKind::Manual("This copy wasn't installed with the DataBug setup (portable zip), so update it by downloading the new version.".into());
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    if exe == home.join(".local/bin/databug") {
+    if exe == home.join(".local/bin/databug") || linux_install_dir(&home).is_some_and(|d| exe == d.join("databug")) {
         return InstallKind::LinuxLocal(exe);
     }
     InstallKind::Manual("DataBug wasn't installed with install.sh, so update it the way you installed it.".into())
+}
+
+/// The folder install.sh put DataBug in on Linux, when it wasn't the default.
+fn linux_install_dir(home: &Path) -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config"));
+    let text = std::fs::read_to_string(config.join("databug").join("install-dir")).ok()?;
+    let dir = text.lines().next()?.trim();
+    (!dir.is_empty()).then(|| PathBuf::from(dir))
+}
+
+/// Whether the Windows setup registered DataBug for this user only.
+fn windows_per_user_install() -> bool {
+    cfg!(windows)
+        && Command::new("reg")
+            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F0C1D8E-3B7A-4E52-9C1D-DA7ABA6B0001}_is1"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
+/// Delete what earlier updates left in the temp folder (`databug-update-*`:
+/// the download, the unpacked app and the swap script). Run at startup, when
+/// any update has finished; a file still in use is skipped and goes next time.
+pub fn remove_old_downloads() {
+    remove_old_downloads_in(&std::env::temp_dir());
+}
+
+fn remove_old_downloads_in(tmp: &Path) {
+    let Ok(entries) = std::fs::read_dir(tmp) else { return };
+    for e in entries.flatten() {
+        if e.file_name().to_string_lossy().starts_with("databug-update-") && e.path().is_dir() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 fn asset_name() -> Option<&'static str> {
@@ -269,6 +305,12 @@ else
   rm -rf "$APP"; mv "$OLD" "$APP"
 fi
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+# keep one DataBug: remove other copies in the Applications folders
+for other in /Applications/DataBug.app "$HOME/Applications/DataBug.app"; do
+  [ -d "$other" ] && [ "$other" != "$APP" ] || continue
+  id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$other/Contents/Info.plist" 2>/dev/null || true)
+  [ "$id" = "dev.databug.DataBug" ] && rm -rf "$other"
+done
 [ "$OPEN" = 1 ] && open "$APP"
 exit 0
 "#,
@@ -357,6 +399,22 @@ pub fn open_page(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_downloads_are_removed() {
+        let tmp = std::env::temp_dir().join(format!("databug-cleanup-test-{}", std::process::id()));
+        for d in ["databug-update-0.8.2/unpacked", "databug-update-0.9.0", "other-app"] {
+            std::fs::create_dir_all(tmp.join(d)).unwrap();
+        }
+        std::fs::write(tmp.join("databug-update-0.9.0/DataBug.zip"), b"x").unwrap();
+        std::fs::write(tmp.join("databug-update-note.txt"), b"x").unwrap();
+        remove_old_downloads_in(&tmp);
+        assert!(!tmp.join("databug-update-0.8.2").exists());
+        assert!(!tmp.join("databug-update-0.9.0").exists());
+        assert!(tmp.join("other-app").exists());
+        assert!(tmp.join("databug-update-note.txt").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn versions() {

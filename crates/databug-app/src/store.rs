@@ -100,6 +100,10 @@ pub struct Store {
     /// Passwords for this session when the keychain isn't available or the
     /// user chose not to save them.
     memory_secrets: HashMap<String, String>,
+    /// Passwords read from the system keychain this run (`None`: none saved).
+    /// Each keychain read can show a macOS permission prompt, and a
+    /// connection opens several sessions, so it's read once and kept here.
+    keychain_cache: std::cell::RefCell<HashMap<String, Option<String>>>,
     /// The latest error saving something to disk, until the app shows it.
     error: std::cell::RefCell<Option<String>>,
 }
@@ -118,7 +122,7 @@ impl Store {
         };
         // engine libraries downloaded on demand (DuckDB)
         databug_drivers::set_runtime_dir(data_dir.join("runtimes"));
-        let store = Store { config_dir: config_dir.clone(), data_dir: data_dir.clone(), memory_secrets: HashMap::new(), error: Default::default() };
+        let store = Store { config_dir: config_dir.clone(), data_dir: data_dir.clone(), memory_secrets: HashMap::new(), keychain_cache: Default::default(), error: Default::default() };
         for dir in [&config_dir, &data_dir.join("catalogs")] {
             if let Err(e) = std::fs::create_dir_all(dir) {
                 store.report(&format!("Couldn't create {}", dir.display()), &e);
@@ -246,12 +250,18 @@ impl Store {
         if std::env::var_os("DATABUG_NO_KEYRING").is_some() {
             return None;
         }
-        keyring::Entry::new("databug", id).ok()?.get_password().ok()
+        if let Some(cached) = self.keychain_cache.borrow().get(id) {
+            return cached.clone();
+        }
+        let found = keyring::Entry::new("databug", id).ok().and_then(|e| e.get_password().ok());
+        self.keychain_cache.borrow_mut().insert(id.to_string(), found.clone());
+        found
     }
 
     /// Store a password. Returns false when it could only be kept in memory.
     pub fn set_password(&mut self, id: &str, password: &str, persist: bool) -> bool {
         self.memory_secrets.insert(id.to_string(), password.to_string());
+        self.keychain_cache.borrow_mut().remove(id);
         if !persist || std::env::var_os("DATABUG_NO_KEYRING").is_some() {
             return !persist;
         }
@@ -263,6 +273,7 @@ impl Store {
 
     pub fn forget_password(&mut self, id: &str) {
         self.memory_secrets.remove(id);
+        self.keychain_cache.borrow_mut().remove(id);
         if std::env::var_os("DATABUG_NO_KEYRING").is_none() {
             if let Ok(e) = keyring::Entry::new("databug", id) {
                 let _ = e.delete_credential();
@@ -329,7 +340,7 @@ mod tests {
         // a file where the config directory should be makes every save fail
         let blocker = dir.join("config");
         std::fs::write(&blocker, b"not a directory").unwrap();
-        let store = Store { config_dir: blocker, data_dir: dir.join("data"), memory_secrets: HashMap::new(), error: Default::default() };
+        let store = Store { config_dir: blocker, data_dir: dir.join("data"), memory_secrets: HashMap::new(), keychain_cache: Default::default(), error: Default::default() };
         store.save_settings(&Settings::default());
         let err = store.take_error().expect("the failed save is reported");
         assert!(err.contains("settings.json"), "{err}");

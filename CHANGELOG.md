@@ -10,6 +10,18 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ### Added
 
+- Choose where DataBug goes on a first install: the Windows setup shows its folder page (updates reuse the folder), and the one-line installers ask for a folder (Enter keeps the default; `DATABUG_INSTALL_DIR` and `--yes` skip the question). The folder is remembered, so updates and `--uninstall` find it
+
+### Changed
+
+- Upgrading keeps one DataBug: the installers and the in-app updater remove copies in other folders (the other Applications folder on macOS, the old folder on Linux, a second install for all users or for one user on Windows), backups from an interrupted update, and the downloads of earlier updates
+
+### Fixed
+
+- macOS asked for keychain access again and again for one connection (CouchDB attachments, consoles and the explorer each read the password). DataBug now reads a saved password once per run
+
+### Added
+
 - Document view for CouchDB and MongoDB results (**Documents** / **Table** above the result): a list of the documents and, for the selected one, every field (`_id` and `_rev` included) as an expandable tree or raw JSON. CouchDB attachments show their content type, size, revision, digest and link, with **Open**, **Save…**, **Copy link** and an inline preview for images
 - Redis support: connect with a password or ACL user, a database number and optional TLS; run commands one per line as in redis-cli, with replies shown as tables shaped for each command (`HGETALL`, `ZRANGE … WITHSCORES`, `XRANGE`, `SCAN`, `INFO` …); browse keys in the explorer with their type and expiry, and open a key's value by double-clicking it. Completion covers 185 commands with their arguments and summaries, keys, hash fields and option words. Read-only connections allow only reading commands, and `FLUSHDB`, `FLUSHALL` and multi-key `DEL` ask for confirmation on production connections
 - MongoDB and CouchDB completion from their documentation: methods with signatures, query and update operators, aggregation stages and expressions, each with a short description, ranked by the method you're in

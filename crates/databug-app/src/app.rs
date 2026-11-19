@@ -530,6 +530,10 @@ impl DataBugApp {
         app.rebuild_virtuals();
         // look for a newer release: at startup (at most every 6 hours) and then once a day
         let testing = (app.screenshot.is_some() || app.demo.is_some()) && std::env::var_os("DATABUG_UPDATE_URL").is_none();
+        if !testing {
+            // only one version on disk: drop the downloads of earlier updates
+            std::thread::spawn(crate::update::remove_old_downloads);
+        }
         if app.settings.check_updates && !testing {
             if now_secs().saturating_sub(app.settings.last_update_check) > 6 * 3600 {
                 app.check_updates(false);

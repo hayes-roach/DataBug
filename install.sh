@@ -8,10 +8,19 @@
 # Already on the latest version? It says so and stops; pass --force to
 # reinstall anyway. Pass --uninstall to remove DataBug.
 #
+# A first install asks which folder to use (press Enter for the default);
+# updates and --uninstall find it again. DATABUG_INSTALL_DIR=/some/folder
+# picks the folder without asking; --yes (or DATABUG_YES=1) takes the
+# default without asking.
+#
 # Options for testing and mirrors: DATABUG_VERSION=v0.2.0 picks a release;
 # DATABUG_DOWNLOAD_BASE points at a mirror; DATABUG_UPDATE_URL is the
-# release-info URL; DATABUG_INSTALL_DIR overrides the macOS install folder;
-# DATABUG_NO_OPEN=1 skips launching it.
+# release-info URL; DATABUG_NO_OPEN=1 skips launching it; on macOS,
+# DATABUG_APP_DIRS lists the folders searched for copies, separated by
+# colons (default /Applications:$HOME/Applications).
+#
+# After installing or updating, other copies of DataBug that this script
+# can find are removed, so only the new one is left.
 set -eu
 
 REPO="hayes-roach/DataBug"
@@ -32,6 +41,7 @@ for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
     --uninstall) ACTION=uninstall ;;
+    --yes | -y) DATABUG_YES=1 ;;
     *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -49,6 +59,62 @@ fetch_quiet() {
   elif command -v wget >/dev/null 2>&1; then wget -qO- "$1"
   else return 1; fi
 }
+
+# Ask which folder to install into, showing the default; Enter keeps it.
+# Asks only on a terminal (it reads /dev/tty, so `curl … | sh` works);
+# otherwise, or with DATABUG_YES, it takes the default. DATABUG_INSTALL_DIR
+# answers without asking.
+choose_dir() {
+  default="$1"
+  what="$2"
+  if [ -n "${DATABUG_INSTALL_DIR:-}" ]; then
+    answer="$DATABUG_INSTALL_DIR"
+  elif [ -z "${DATABUG_YES:-}" ] && (: </dev/tty) 2>/dev/null && [ -w /dev/tty ]; then
+    printf '%s\n  [%s]: ' "$what" "$default" >/dev/tty
+    IFS= read -r answer </dev/tty || answer=""
+  else
+    answer=""
+  fi
+  [ -n "$answer" ] || answer="$default"
+  # a typed ~ arrives as text, so expand it here
+  # shellcheck disable=SC2088
+  case "$answer" in
+    "~") answer="$HOME" ;;
+    "~/"*) answer="$HOME/${answer#\~/}" ;;
+  esac
+  case "$answer" in
+    /*) ;;
+    *) answer="$(pwd)/$answer" ;;
+  esac
+  mkdir -p "$answer" 2>/dev/null || fail "Couldn't create $answer"
+  [ -w "$answer" ] || fail "You can't write to $answer. Pick a folder in your home folder, or run with sudo."
+  printf '%s' "$answer"
+}
+
+# Remove copies of DataBug.app other than $1: in the usual folders, the
+# folder an earlier run remembered ($2), and backups left by an interrupted
+# update. Only bundles that really are DataBug (by bundle id) are touched.
+app_dirs() {
+  if [ -n "${DATABUG_APP_DIRS:-}" ]; then printf '%s\n' "$DATABUG_APP_DIRS" | tr ':' '\n'
+  else printf '%s\n%s\n' /Applications "$HOME/Applications"; fi
+}
+remove_other_apps() {
+  keep="$1"
+  { app_dirs; printf '%s\n' "$2"; } | while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    for app in "$d/DataBug.app" "$d/DataBug.app.previous"; do
+      [ -d "$app" ] || continue
+      [ "$app" = "$keep" ] && continue
+      id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null || true)
+      [ "$id" = "dev.databug.DataBug" ] || continue
+      if rm -rf "$app" 2>/dev/null; then note "Removed an older copy: $app"; else note "Couldn't remove an older copy at $app (remove it by hand)."; fi
+    done
+  done
+}
+
+# Where an earlier run of this script installed DataBug (empty if unknown).
+remembered() { [ -f "$1" ] && head -n 1 "$1" || true; }
+remember() { mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" > "$1"; }
 
 # Version of the release being installed, e.g. 0.2.0 (empty if unknown).
 target_version() {
@@ -81,13 +147,26 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 
 case "$(uname -s)" in
   Darwin)
-    if [ -n "${DATABUG_INSTALL_DIR:-}" ]; then DEST="$DATABUG_INSTALL_DIR"; mkdir -p "$DEST"
-    elif [ -d /Applications/DataBug.app ] || [ -w /Applications ]; then DEST=/Applications
-    else DEST="$HOME/Applications"; mkdir -p "$DEST"; fi
+    MEMO="$HOME/Library/Application Support/dev.DataBug.DataBug/install-dir"
+    SAVED=$(remembered "$MEMO")
+    # an existing copy is updated where it is; a first install asks where to go
+    if [ -n "${DATABUG_INSTALL_DIR:-}" ]; then DEST=$(choose_dir "$DATABUG_INSTALL_DIR" "") || exit 1
+    elif [ -n "$SAVED" ] && [ -d "$SAVED/DataBug.app" ]; then DEST="$SAVED"
+    else
+      DEST=$(app_dirs | while IFS= read -r d; do if [ -d "$d/DataBug.app" ]; then printf '%s' "$d"; break; fi; done)
+    fi
+    if [ -n "$DEST" ]; then :
+    elif [ "$ACTION" = uninstall ]; then DEST=""
+    else
+      if [ -w /Applications ]; then DEFAULT=/Applications; else DEFAULT="$HOME/Applications"; fi
+      DEST=$(choose_dir "$DEFAULT" "Install DataBug in which folder?") || exit 1
+    fi
     TARGET="$DEST/DataBug.app"
     if [ "$ACTION" = uninstall ]; then
-      rm -rf "/Applications/DataBug.app" "$HOME/Applications/DataBug.app"
-      say "DataBug removed. Settings are kept in ~/Library/Application Support/dev.DataBug.DataBug."
+      [ -n "$DEST" ] || fail "DataBug isn't installed (no DataBug.app in /Applications, ~/Applications or a folder this script installed to)."
+      rm -rf "$TARGET"
+      rm -f "$MEMO"
+      say "DataBug removed from $DEST. Settings are kept in ~/Library/Application Support/dev.DataBug.DataBug."
       exit 0
     fi
     CURRENT=""
@@ -131,6 +210,8 @@ case "$(uname -s)" in
     fi
     # downloaded with curl, so not quarantined; clear it anyway in case
     xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+    remove_other_apps "$TARGET" "$SAVED"
+    remember "$MEMO" "$DEST"
     # tell macOS about the new copy before opening it
     LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
     [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$TARGET" >/dev/null 2>&1 || true
@@ -152,10 +233,15 @@ case "$(uname -s)" in
     [ "$WAS_RUNNING" = 1 ] && [ -n "${DATABUG_NO_OPEN:-}" ] && note "DataBug was closed for the update; open it again from Applications."
     ;;
   Linux)
+    # the package's own install.sh remembers the folder in this file
+    MEMO="${XDG_CONFIG_HOME:-$HOME/.config}/databug/install-dir"
+    BIN=$(remembered "$MEMO")
+    [ -n "$BIN" ] && [ -x "$BIN/databug" ] || BIN="$HOME/.local/bin"
+    [ -n "${DATABUG_INSTALL_DIR:-}" ] && { BIN=$(choose_dir "$DATABUG_INSTALL_DIR" "") || exit 1; }
     if [ "$ACTION" = uninstall ]; then
-      rm -f "$HOME/.local/bin/databug" "$HOME/.local/share/applications/databug.desktop" "$HOME/.local/share/icons/hicolor/256x256/apps/databug.png"
-      rm -rf "$HOME/.local/bin/logos"
-      say "DataBug removed. Settings are kept in ~/.config/databug."
+      rm -f "$BIN/databug" "$HOME/.local/share/applications/databug.desktop" "$HOME/.local/share/icons/hicolor/256x256/apps/databug.png" "$MEMO"
+      rm -rf "$BIN/logos"
+      say "DataBug removed from $BIN. Settings are kept in ~/.config/databug."
       exit 0
     fi
     case "$(uname -m)" in
@@ -163,13 +249,15 @@ case "$(uname -s)" in
       *) fail "prebuilt DataBug downloads are x86_64 only; build from source with: cargo build --release" ;;
     esac
     CURRENT=""
-    if [ -x "$HOME/.local/bin/databug" ]; then
-      CURRENT=$("$HOME/.local/bin/databug" --version 2>/dev/null | sed -n 's/^databug //p' || true)
+    if [ -x "$BIN/databug" ]; then
+      CURRENT=$("$BIN/databug" --version 2>/dev/null | sed -n 's/^databug //p' || true)
+    else
+      BIN=$(choose_dir "$HOME/.local/bin" "Install the databug program in which folder?") || exit 1
     fi
     plan "$CURRENT"
     fetch "$BASE/DataBug-linux-x86_64.tar.gz" "$TMP/databug.tar.gz"
     tar xzf "$TMP/databug.tar.gz" -C "$TMP"
-    sh "$TMP/DataBug/install.sh"
+    DATABUG_BIN_DIR="$BIN" sh "$TMP/DataBug/install.sh"
     [ -n "$CURRENT" ] && say "Updated from $CURRENT. Restart DataBug if it's open to use the new version."
     ;;
   *)

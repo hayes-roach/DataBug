@@ -244,6 +244,9 @@ pub fn classify(stmt: &str, dialect: Dialect) -> StatementKind {
     if dialect == Dialect::Mongo {
         return crate::mongo::classify(stmt);
     }
+    if dialect == Dialect::Redis {
+        return crate::redis::classify(stmt);
+    }
     let toks = significant(&tokenize(stmt, dialect));
     let Some(first) = toks.first() else { return StatementKind::Other };
     let w = first.text(stmt).to_ascii_uppercase();
@@ -313,6 +316,9 @@ pub fn dangers(stmt: &str, dialect: Dialect) -> Vec<Danger> {
     if dialect == Dialect::Mongo {
         return crate::mongo::dangers(stmt);
     }
+    if dialect == Dialect::Redis {
+        return crate::redis::dangers(stmt);
+    }
     let toks = significant(&tokenize(stmt, dialect));
     let mut out = Vec::new();
     let first = toks.iter().find(|t| t.kind == TokKind::Keyword).map(|t| t.text(stmt).to_ascii_uppercase());
@@ -351,7 +357,7 @@ pub fn dangers(stmt: &str, dialect: Dialect) -> Vec<Danger> {
 /// If the statement is a plain single-table SELECT (so its rows can be edited
 /// in the grid), return that table.
 pub fn single_table_source(stmt: &str, dialect: Dialect) -> Option<TableRef> {
-    if classify(stmt, dialect) != StatementKind::Read || dialect == Dialect::Mongo {
+    if classify(stmt, dialect) != StatementKind::Read || matches!(dialect, Dialect::Mongo | Dialect::Redis) {
         return None;
     }
     let toks = significant(&tokenize(stmt, dialect));
@@ -387,7 +393,7 @@ pub struct Diagnostic {
 /// catalog is loaded) and risky statements.
 pub fn inspect(src: &str, catalog: Option<&Catalog>, dialect: Dialect) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    if dialect == Dialect::Mongo {
+    if matches!(dialect, Dialect::Mongo | Dialect::Redis) {
         return out;
     }
     for range in split_statements(src, dialect) {

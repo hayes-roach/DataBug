@@ -26,6 +26,7 @@ pub fn engine_color(kind: DbKind) -> Color32 {
         DbKind::InfluxDb => Color32::from_rgb(0x4F, 0x46, 0xE5),
         DbKind::Spark => Color32::from_rgb(0xE2, 0x5A, 0x1C),
         DbKind::H2 => Color32::from_rgb(0x5C, 0x6B, 0x7A),
+        DbKind::Redis => Color32::from_rgb(0xD8, 0x2C, 0x20),
     }
 }
 
@@ -47,6 +48,7 @@ fn monogram(kind: DbKind) -> &'static str {
         DbKind::InfluxDb => "Ix",
         DbKind::Spark => "Sp",
         DbKind::H2 => "H2",
+        DbKind::Redis => "Rd",
     }
 }
 
@@ -68,13 +70,14 @@ pub fn file_stem(kind: DbKind) -> &'static str {
         DbKind::InfluxDb => "influxdb",
         DbKind::Spark => "spark",
         DbKind::H2 => "h2",
+        DbKind::Redis => "redis",
     }
 }
 
 /// Logos compiled into the binary; a file of the same name in the `logos`
 /// folder next to the app replaces them. Where each one comes from, and its
 /// license, is in `assets/logos/SOURCES.md`.
-const BUILT_IN: [(DbKind, &str, &[u8]); 16] = [
+const BUILT_IN: [(DbKind, &str, &[u8]); 17] = [
     (DbKind::Postgres, "postgresql.svg", include_bytes!("../assets/logos/postgresql.svg")),
     (DbKind::MySql, "mysql.svg", include_bytes!("../assets/logos/mysql.svg")),
     (DbKind::MsSql, "sqlserver.png", include_bytes!("../assets/logos/sqlserver.png")),
@@ -91,6 +94,7 @@ const BUILT_IN: [(DbKind, &str, &[u8]); 16] = [
     (DbKind::InfluxDb, "influxdb.svg", include_bytes!("../assets/logos/influxdb.svg")),
     (DbKind::Spark, "spark.svg", include_bytes!("../assets/logos/spark.svg")),
     (DbKind::H2, "h2.svg", include_bytes!("../assets/logos/h2.svg")),
+    (DbKind::Redis, "redis.svg", include_bytes!("../assets/logos/redis.svg")),
 ];
 
 /// Logo images found on disk, by engine.
@@ -216,6 +220,7 @@ pub fn kind_color(kind: ObjectKind, p: &Palette) -> Color32 {
         ObjectKind::Sequence => p.syn_number,
         ObjectKind::Synonym | ObjectKind::Event => p.muted,
         ObjectKind::Assembly => p.syn_quoted,
+        ObjectKind::Key => p.danger,
     }
 }
 
@@ -286,6 +291,17 @@ pub fn paint_kind(painter: &Painter, rect: Rect, kind: ObjectKind, p: &Palette) 
             }).collect();
             painter.add(egui::Shape::closed_line(pts, Stroke::new(1.2_f32, c)));
             painter.text(cx, egui::Align2::CENTER_CENTER, ".N", FontId::proportional(7.0), c);
+        }
+        ObjectKind::Key => {
+            // a small key: ring and shaft with two teeth
+            let s = Stroke::new(1.3_f32, c);
+            let ring = rect.center() + egui::vec2(-3.0, 0.0);
+            painter.circle_stroke(ring, 2.8, s);
+            let x0 = ring.x + 2.8;
+            let y = ring.y;
+            painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + 6.0, y)], s);
+            painter.line_segment([Pos2::new(x0 + 3.5, y), Pos2::new(x0 + 3.5, y + 2.5)], s);
+            painter.line_segment([Pos2::new(x0 + 6.0, y), Pos2::new(x0 + 6.0, y + 2.5)], s);
         }
     }
 }

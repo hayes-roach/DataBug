@@ -1,3 +1,6 @@
+#[path = "demo.rs"]
+mod demo;
+
 use crate::compare::{CompareAction, CompareView, Phase};
 use crate::csv_import::{CsvImport, ImportOutcome};
 use crate::dialogs::{ConnDialog, DialogOutcome};
@@ -243,6 +246,8 @@ pub struct DataBugApp {
     /// The connection button was clicked while signed out: open its menu
     /// once this connection is signed in.
     menu_after_connect: Option<String>,
+    /// The scripted video tour (`DATABUG_SHOT_SCENE=demo`).
+    demo: Option<demo::Demo>,
     /// Attachment downloads in flight, by request id.
     attachment_reqs: HashMap<u64, AttachmentReq>,
     attachments_done: Vec<(u64, Result<Vec<u8>, String>)>,
@@ -326,7 +331,36 @@ pub fn select_top(dialect: Dialect, schema: &str, table: &str, default_schema: &
     }
 }
 
+/// A Redis argument, quoted when it has spaces, quotes or is empty.
+pub fn redis_arg(s: &str) -> String {
+    if !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '"' || c == '\'' || c == '\\') {
+        return s.to_string();
+    }
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"))
+}
+
+/// The command that shows a Redis key's value, by its type.
+pub fn redis_view(key: &str, ty: &str) -> String {
+    let k = redis_arg(key);
+    match ty {
+        "string" => format!("GET {k}"),
+        "hash" => format!("HGETALL {k}"),
+        "list" => format!("LRANGE {k} 0 99"),
+        "set" => format!("SMEMBERS {k}"),
+        "zset" => format!("ZRANGE {k} 0 99 WITHSCORES"),
+        "stream" => format!("XRANGE {k} - + COUNT 100"),
+        "ReJSON-RL" => format!("JSON.GET {k}"),
+        _ => format!("TYPE {k}"),
+    }
+}
+
 pub fn ddl(dialect: Dialect, schema: &str, t: &TableInfo) -> String {
+    if dialect == Dialect::Redis {
+        let ty = t.columns.first().map(|c| c.data_type.as_str()).unwrap_or("");
+        let ttl = t.columns.get(1).map(|c| c.data_type.as_str()).unwrap_or("");
+        let k = redis_arg(&t.name);
+        return format!("# {} · {ty} · {ttl}\n{}\nTTL {k}\nMEMORY USAGE {k}\nOBJECT ENCODING {k}", t.name, redis_view(&t.name, ty));
+    }
     if dialect == Dialect::Mongo {
         let fields: Vec<String> = t.columns.iter().map(|c| format!("//   {}: {}", c.name, c.data_type)).collect();
         return format!("// Collection {} — fields seen in a sample of documents:\n{}\ndb.{}.find({{}}).limit(20)", t.name, fields.join("\n"), t.name);
@@ -459,7 +493,8 @@ impl DataBugApp {
             editing_conn: None,
             confirm: None,
             toasts: Vec::new(),
-            screenshot: screenshot.map(|path| ScreenshotPlan { path, step: 0, wait_frames: 0, scene: std::env::var("DATABUG_SHOT_SCENE").unwrap_or_else(|_| "main".into()) }),
+            demo: screenshot.as_ref().filter(|_| std::env::var("DATABUG_SHOT_SCENE").as_deref() == Ok("demo")).map(|dir| demo::Demo::new(dir.clone())),
+            screenshot: screenshot.filter(|_| std::env::var("DATABUG_SHOT_SCENE").as_deref() != Ok("demo")).map(|path| ScreenshotPlan { path, step: 0, wait_frames: 0, scene: std::env::var("DATABUG_SHOT_SCENE").unwrap_or_else(|_| "main".into()) }),
             mem: (Instant::now() - Duration::from_secs(10), None),
             applied_theme: None,
             applied_zoom: None,
@@ -494,7 +529,7 @@ impl DataBugApp {
         }
         app.rebuild_virtuals();
         // look for a newer release: at startup (at most every 6 hours) and then once a day
-        let testing = app.screenshot.is_some() && std::env::var_os("DATABUG_UPDATE_URL").is_none();
+        let testing = (app.screenshot.is_some() || app.demo.is_some()) && std::env::var_os("DATABUG_UPDATE_URL").is_none();
         if app.settings.check_updates && !testing {
             if now_secs().saturating_sub(app.settings.last_update_check) > 6 * 3600 {
                 app.check_updates(false);
@@ -1036,7 +1071,7 @@ impl DataBugApp {
             return;
         }
         // manual transaction mode: open a transaction before the first change
-        if tab.manual_tx && !tab.in_tx && (tab.caps.transactions || d != Dialect::Mongo) && stmts.iter().any(|(s, _)| classify(s, d).modifies()) {
+        if tab.manual_tx && !tab.in_tx && (tab.caps.transactions || !matches!(d, Dialect::Mongo | Dialect::Redis)) && stmts.iter().any(|(s, _)| classify(s, d).modifies()) {
             let r = stmts[0].1.start..stmts[0].1.start;
             stmts.insert(0, (d.begin_sql().to_string(), r));
         }
@@ -1355,7 +1390,12 @@ impl DataBugApp {
             Action::SelectTop(id, schema, table) => {
                 let Some(cfg) = self.conn(&id).cloned() else { return };
                 let default = self.catalog(&id).map(|c| c.default_schema.clone()).unwrap_or_default();
-                let sql = select_top(cfg.kind.dialect(), &schema, &table, &default);
+                let sql = if cfg.kind.dialect() == Dialect::Redis {
+                    let ty = self.catalog(&id).and_then(|c| c.find_table(Some(&schema), &table)).and_then(|t| t.columns.first()).map(|c| c.data_type.clone()).unwrap_or_default();
+                    redis_view(&table, &ty)
+                } else {
+                    select_top(cfg.kind.dialect(), &schema, &table, &default)
+                };
                 // run it without writing it into the editor: only the results show up
                 let stmt = sql.trim_end_matches(';').to_string();
                 self.run_quietly(&id, stmt, ctx);
@@ -2133,7 +2173,7 @@ impl DataBugApp {
     fn data_search_script(&self, conn_id: &str, query: &str) -> Option<String> {
         let cfg = self.conn(conn_id)?;
         let d = cfg.kind.dialect();
-        if d == Dialect::Mongo {
+        if matches!(d, Dialect::Mongo | Dialect::Redis) {
             return None;
         }
         let cat = self.catalog(conn_id)?;
@@ -2815,7 +2855,7 @@ impl DataBugApp {
                     dbs.extend(self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == base).filter_map(|v| v.id.split_once('@').map(|(_, db)| (v.id.clone(), db.to_string()))));
                     let db_now = dbs.iter().find(|(id, _)| *id == t.conn_id).map(|(_, d)| d.clone());
                     let show_db = dbs.len() > 1;
-                    let pickable = cfg.kind.dialect() != Dialect::Mongo && (!schemas.is_empty() || show_db);
+                    let pickable = !matches!(cfg.kind.dialect(), Dialect::Mongo | Dialect::Redis) && (!schemas.is_empty() || show_db);
                     let detail = match (&db_now, show_db) {
                         (Some(db), true) if !current.is_empty() => format!("{db} · {current}"),
                         (Some(db), true) => db.clone(),
@@ -3483,6 +3523,7 @@ impl DataBugApp {
                         Dialect::MsSql => "T-SQL",
                         Dialect::Sqlite => "SQLite",
                         Dialect::Mongo => "Mongo shell",
+                        Dialect::Redis => "Redis",
                     }.into(), p.muted));
                 }
             });
@@ -3752,12 +3793,21 @@ impl DataBugApp {
                 if plan.scene == "light" {
                     self.settings.theme = ThemeKind::Light;
                 }
+                // scenes against a live server: its password, kept in memory only
+                if let (Ok(pw), Some(c)) = (std::env::var("DATABUG_SHOT_PASSWORD"), self.connections.first()) {
+                    let id = c.id.clone();
+                    self.store.set_password(&id, &pw, false);
+                }
                 plan.step = 1;
                 plan.wait_frames = 0;
                 // `couch…` scenes: the first connection is a CouchDB server with a
                 // `store` database (see the scene list in the README)
-                let couch = plan.scene.starts_with("couch");
-                let couch_sql = "// photos and products\ndb.store.find({type: {$in: [\"photo\", \"product\"]}})";
+                let couch = plan.scene.starts_with("couch") || plan.scene.starts_with("redis");
+                let couch_sql = if plan.scene.starts_with("redis") {
+                    "# the top players, a user and the newest orders\nZREVRANGE leaderboard 0 4 WITHSCORES"
+                } else {
+                    "// photos and products\ndb.store.find({type: {$in: [\"photo\", \"product\"]}})"
+                };
                 if plan.scene.starts_with("pg") {
                     let id = self.connections.first().map(|c| c.id.clone()).unwrap_or_default();
                     self.open_console(&id, Some(DEMO_SQL.into()), ctx);
@@ -3896,6 +3946,12 @@ impl DataBugApp {
                                 t.editor.cursor = 40;
                             }
                             self.request_run(false, Some(true), ctx);
+                        }
+                        "redis" => {
+                            // keep the console's Redis commands (step 2 adds a line and completes it)
+                            let id = self.tabs[self.active].conn_id.clone();
+                            self.explorer.open_key(format!("c:{id}"));
+                            self.explorer.open_key(format!("g:{id}:db0:Key"));
                         }
                         "couch-docs" | "couch-fields" => {
                             let id = if scene == "couch-docs" { "photo:0001" } else { "product:001" };
@@ -4183,6 +4239,16 @@ impl DataBugApp {
             2 if (plan.scene == "pg-compare" || plan.scene == "compare") && plan.wait_frames < 400 && !compare_done => {
                 plan.wait_frames = plan.wait_frames.min(5);
             }
+            2 if plan.wait_frames == 4 && plan.scene == "redis" => {
+                // type a command whose last argument is a hash field and complete it
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    let text = format!("{}\nHGET user:1 ", t.editor.text);
+                    let end = text.len();
+                    t.editor.set_text(text);
+                    t.editor.cursor = end;
+                    t.editor.complete_now = true;
+                }
+            }
             2 if plan.wait_frames == 4 && (plan.scene == "main" || plan.scene == "light") => {
                 // open completion the way Ctrl+Space would (directly, so a stray
                 // key press while the window is up can't change the shot)
@@ -4356,6 +4422,7 @@ impl DataBugApp {
             }
         }
         self.drive_screenshot(ctx);
+        self.drive_demo(ctx);
         self.shortcuts(ctx);
         if self.tabs.iter().any(|t| t.running.is_some()) {
             ctx.request_repaint_after(Duration::from_millis(100));

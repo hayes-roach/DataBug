@@ -23,14 +23,17 @@ pub enum ObjectKind {
     ClrAggregate,
     ClrTrigger,
     Assembly,
+    /// A Redis key.
+    Key,
 }
 
 impl ObjectKind {
-    pub const DISPLAY_ORDER: [ObjectKind; 18] = [
+    pub const DISPLAY_ORDER: [ObjectKind; 19] = [
         ObjectKind::Table,
         ObjectKind::View,
         ObjectKind::MaterializedView,
         ObjectKind::Collection,
+        ObjectKind::Key,
         ObjectKind::Procedure,
         ObjectKind::Function,
         ObjectKind::TableFunction,
@@ -48,7 +51,7 @@ impl ObjectKind {
     ];
 
     pub fn is_relation(self) -> bool {
-        matches!(self, ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView | ObjectKind::Collection)
+        matches!(self, ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView | ObjectKind::Collection | ObjectKind::Key)
     }
 
     pub fn is_clr(self) -> bool {
@@ -57,7 +60,7 @@ impl ObjectKind {
 
     /// Objects whose definition is SQL text that can be fetched and edited.
     pub fn has_source(self) -> bool {
-        !matches!(self, ObjectKind::Table | ObjectKind::Collection)
+        !matches!(self, ObjectKind::Table | ObjectKind::Collection | ObjectKind::Key)
     }
 
     pub fn group_label(self) -> &'static str {
@@ -80,6 +83,7 @@ impl ObjectKind {
             ObjectKind::ClrAggregate => "CLR aggregates",
             ObjectKind::ClrTrigger => "CLR triggers",
             ObjectKind::Assembly => "assemblies",
+            ObjectKind::Key => "keys",
         }
     }
 
@@ -103,6 +107,7 @@ impl ObjectKind {
             ObjectKind::ClrAggregate => "CLR aggregate",
             ObjectKind::ClrTrigger => "CLR trigger",
             ObjectKind::Assembly => "assembly",
+            ObjectKind::Key => "key",
         }
     }
 }

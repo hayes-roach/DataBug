@@ -18,6 +18,7 @@ pub enum DbKind {
     InfluxDb,
     Spark,
     H2,
+    Redis,
 }
 
 /// What kind of database an engine is, for grouping engines in the UI.
@@ -27,12 +28,13 @@ pub enum DbCategory {
     Analytical,
     Document,
     WideColumn,
+    KeyValue,
     TimeSeries,
     Distributed,
 }
 
 impl DbCategory {
-    pub const ALL: [DbCategory; 6] = [DbCategory::Relational, DbCategory::Analytical, DbCategory::Document, DbCategory::WideColumn, DbCategory::TimeSeries, DbCategory::Distributed];
+    pub const ALL: [DbCategory; 7] = [DbCategory::Relational, DbCategory::Analytical, DbCategory::Document, DbCategory::WideColumn, DbCategory::KeyValue, DbCategory::TimeSeries, DbCategory::Distributed];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -40,6 +42,7 @@ impl DbCategory {
             DbCategory::Analytical => "Analytical",
             DbCategory::Document => "NoSQL · Document",
             DbCategory::WideColumn => "NoSQL · Wide-column",
+            DbCategory::KeyValue => "NoSQL · Key-value",
             DbCategory::TimeSeries => "Time series",
             DbCategory::Distributed => "Big data / distributed",
         }
@@ -52,7 +55,7 @@ impl DbCategory {
 }
 
 impl DbKind {
-    pub const ALL: [DbKind; 16] = [
+    pub const ALL: [DbKind; 17] = [
         DbKind::Postgres,
         DbKind::MySql,
         DbKind::MsSql,
@@ -64,6 +67,7 @@ impl DbKind {
         DbKind::DuckDb,
         DbKind::CouchDb,
         DbKind::Cassandra,
+        DbKind::Redis,
         DbKind::TimescaleDb,
         DbKind::QuestDb,
         DbKind::InfluxDb,
@@ -89,6 +93,7 @@ impl DbKind {
             DbKind::InfluxDb => "InfluxDB",
             DbKind::Spark => "Spark SQL",
             DbKind::H2 => "H2",
+            DbKind::Redis => "Redis",
         }
     }
 
@@ -110,6 +115,7 @@ impl DbKind {
             DbKind::InfluxDb => "IX",
             DbKind::Spark => "SP",
             DbKind::H2 => "H2",
+            DbKind::Redis => "RD",
         }
     }
 
@@ -134,6 +140,7 @@ impl DbKind {
             DbKind::Spark => 10000,
             // H2's PostgreSQL server mode (`-pg`)
             DbKind::H2 => 5435,
+            DbKind::Redis => 6379,
         }
     }
 
@@ -153,6 +160,7 @@ impl DbKind {
             DbKind::Oracle | DbKind::Db2 | DbKind::DuckDb | DbKind::Cassandra | DbKind::CockroachDb | DbKind::TimescaleDb | DbKind::QuestDb | DbKind::InfluxDb | DbKind::H2 => Dialect::Postgres,
             DbKind::Spark => Dialect::MySql,
             DbKind::CouchDb => Dialect::Mongo,
+            DbKind::Redis => Dialect::Redis,
         }
     }
 
@@ -162,6 +170,7 @@ impl DbKind {
             DbKind::DuckDb => DbCategory::Analytical,
             DbKind::MongoDb | DbKind::CouchDb => DbCategory::Document,
             DbKind::Cassandra => DbCategory::WideColumn,
+            DbKind::Redis => DbCategory::KeyValue,
             DbKind::TimescaleDb | DbKind::QuestDb | DbKind::InfluxDb => DbCategory::TimeSeries,
             DbKind::CockroachDb | DbKind::Spark => DbCategory::Distributed,
         }
@@ -180,7 +189,7 @@ impl DbKind {
             DbKind::Oracle => Some(format!("ALTER SESSION SET CURRENT_SCHEMA = {q}")),
             DbKind::Db2 | DbKind::H2 => Some(format!("SET SCHEMA {q}")),
             DbKind::DuckDb => Some(format!("SET schema = {}", Dialect::Postgres.quote_literal(schema))),
-            DbKind::MsSql | DbKind::Sqlite | DbKind::MongoDb | DbKind::CouchDb | DbKind::QuestDb | DbKind::InfluxDb => None,
+            DbKind::MsSql | DbKind::Sqlite | DbKind::MongoDb | DbKind::CouchDb | DbKind::QuestDb | DbKind::InfluxDb | DbKind::Redis => None,
         }
     }
 
@@ -215,6 +224,8 @@ pub enum Dialect {
     MsSql,
     Sqlite,
     Mongo,
+    /// Redis commands, one per line, as typed in redis-cli.
+    Redis,
 }
 
 impl Dialect {

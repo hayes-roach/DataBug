@@ -12,7 +12,7 @@ const BREAK_BEFORE: &[&str] = &[
 ];
 
 pub fn format_sql(src: &str, dialect: Dialect) -> String {
-    if dialect == Dialect::Mongo {
+    if matches!(dialect, Dialect::Mongo | Dialect::Redis) {
         return src.to_string();
     }
     let mut out = String::with_capacity(src.len() + 64);

@@ -4,7 +4,6 @@
 
 use crate::analyze::{significant, table_refs, unquote, TableRef};
 use crate::lexer::{tokenize, TokKind, Token};
-use crate::mongo;
 use crate::split::statement_at;
 use databug_core::{Catalog, Dialect, ObjectKind, TableInfo};
 
@@ -64,7 +63,7 @@ fn dialect_functions(d: Dialect) -> &'static [&'static str] {
         Dialect::MySql => &["IFNULL", "GROUP_CONCAT", "DATE_FORMAT", "DATEDIFF", "JSON_EXTRACT", "CURDATE"],
         Dialect::MsSql => &["GETDATE", "ISNULL", "DATEADD", "DATEDIFF", "FORMAT", "STRING_AGG", "TRY_CAST", "SYSDATETIME"],
         Dialect::Sqlite => &["IFNULL", "GROUP_CONCAT", "DATE", "DATETIME", "STRFTIME", "JSON_EXTRACT"],
-        Dialect::Mongo => &[],
+        Dialect::Mongo | Dialect::Redis => &[],
     }
 }
 
@@ -121,6 +120,9 @@ pub fn complete(src: &str, cursor: usize, catalog: Option<&Catalog>, dialect: Di
     let cursor = cursor.min(src.len());
     if dialect == Dialect::Mongo {
         return complete_mongo(src, cursor, catalog);
+    }
+    if dialect == Dialect::Redis {
+        return complete_redis(src, cursor, catalog);
     }
     let range = statement_at(src, cursor, dialect).filter(|r| r.start <= cursor).unwrap_or(cursor..cursor);
     let stmt_start = range.start.min(cursor);
@@ -408,7 +410,25 @@ fn finish(mut b: Builder<'_>, replace: std::ops::Range<usize>, prefix: &str) -> 
     Completion { items: b.items, replace, prefix: prefix.to_string() }
 }
 
+/// The method whose parentheses hold the cursor (`find`, `aggregate`, …).
+fn enclosing_call(stmt: &str) -> Option<&str> {
+    let mut depth = 0i32;
+    for (i, ch) in stmt.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' if depth == 0 => {
+                let name_start = stmt[..i].rfind(|c: char| !(c.is_alphanumeric() || c == '_')).map(|p| p + 1).unwrap_or(0);
+                return Some(&stmt[name_start..i]);
+            }
+            '(' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 fn complete_mongo(src: &str, cursor: usize, catalog: Option<&Catalog>) -> Completion {
+    use crate::mongo_docs as docs;
     let before = &src[..cursor];
     let word_start = before
         .char_indices()
@@ -426,40 +446,133 @@ fn complete_mongo(src: &str, cursor: usize, catalog: Option<&Catalog>) -> Comple
 
     let collections: Vec<&TableInfo> = catalog.map(|c| c.tables().map(|(_, t)| t).collect()).unwrap_or_default();
     let open = stmt.matches('(').count() > stmt.matches(')').count();
+    let detail = |sig: &str, doc: &str| format!("{sig} — {doc}");
 
     if !open && stmt.trim() == "db." {
         for t in &collections {
             b.add(&t.name, &t.name, "collection", ItemKind::Table, 50);
         }
-        b.add("getCollection", "getCollection(\"", "db method", ItemKind::Method, 0);
-        b.add("runCommand", "runCommand({", "db method", ItemKind::Method, 0);
+        for (m, sig, doc) in docs::DB_METHODS {
+            b.add(*m, format!("{m}("), detail(sig, doc), ItemKind::Method, 0);
+        }
     } else if !open && stmt.ends_with('.') {
-        let chained = stmt.ends_with(").");
-        if chained {
-            for m in mongo::CURSOR_METHODS {
-                b.add(*m, format!("{m}("), "cursor", ItemKind::Method, 20);
+        if stmt.ends_with(").") {
+            for (m, sig, doc) in docs::CURSOR_METHODS {
+                b.add(*m, format!("{m}("), detail(sig, doc), ItemKind::Method, 20);
             }
         } else {
-            for (m, sig) in mongo::COLLECTION_METHODS {
-                b.add(*m, format!("{m}("), *sig, ItemKind::Method, 20);
+            for (m, sig, doc) in docs::COLLECTION_METHODS {
+                b.add(*m, format!("{m}("), detail(sig, doc), ItemKind::Method, 20);
             }
         }
     } else if open || stmt.is_empty() {
         if stmt.is_empty() {
-            b.add("db", "db.", "database", ItemKind::Keyword, 0);
-            b.add("show collections", "show collections", "list collections", ItemKind::Keyword, 0);
+            b.add("db", "db.", "the current database", ItemKind::Keyword, 0);
+            b.add("show collections", "show collections", "list collections (databases on CouchDB)", ItemKind::Keyword, 0);
+            b.add("show dbs", "show dbs", "list databases", ItemKind::Keyword, 0);
         }
         // fields of the collection in this statement
         let coll = stmt.trim_start().strip_prefix("db.").and_then(|r| r.split(['.', '(']).next()).unwrap_or("");
         if let Some(t) = collections.iter().find(|t| t.name == coll) {
             for c in &t.columns {
                 b.add(&c.name, &c.name, c.data_type.clone(), ItemKind::Column, 40);
+                // "$field" references inside aggregation expressions
+                if prefix.starts_with('$') {
+                    b.add(format!("${}", c.name), format!("${}", c.name), format!("field path · {}", c.data_type), ItemKind::Column, 30);
+                }
             }
         }
-        if prefix.starts_with('$') || open {
-            for op in mongo::OPERATORS {
-                if prefix.starts_with('$') {
-                    b.add(*op, *op, "operator", ItemKind::Operator, 0);
+        if prefix.starts_with('$') && open {
+            // operators that fit the method being called rank first
+            let call = enclosing_call(stmt).unwrap_or("");
+            let (query, update, stages) = match call {
+                "aggregate" => (10, 0, 40),
+                "updateOne" | "updateMany" => (20, 40, 0),
+                "insertOne" | "insertMany" | "replaceOne" => (0, 0, 0),
+                _ => (40, 0, 0),
+            };
+            for (op, sig, doc) in docs::QUERY_OPERATORS {
+                b.add(*op, *op, detail(sig, doc), ItemKind::Operator, query);
+            }
+            if update > 0 {
+                for (op, sig, doc) in docs::UPDATE_OPERATORS {
+                    b.add(*op, *op, detail(sig, doc), ItemKind::Operator, update);
+                }
+            }
+            if stages > 0 {
+                for (op, sig, doc) in docs::STAGES {
+                    b.add(*op, *op, detail(sig, doc), ItemKind::Operator, stages);
+                }
+                for (op, sig, doc) in docs::EXPRESSIONS {
+                    b.add(*op, *op, detail(sig, doc), ItemKind::Function, 20);
+                }
+            }
+        }
+    }
+    finish(b, word_start..word_end, prefix)
+}
+
+/// Redis: commands (with their arguments and summary from the Redis docs),
+/// then keys where a command takes one, hash fields, and option words.
+fn complete_redis(src: &str, cursor: usize, catalog: Option<&Catalog>) -> Completion {
+    use crate::redis;
+    let line_start = src[..cursor].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line = &src[line_start..cursor];
+    let ctx = redis::line_context(line);
+    let prefix = ctx.prefix;
+    let word_start = cursor - prefix.len();
+    let word_end = cursor + src[cursor..].chars().take_while(|c| !c.is_whitespace()).map(|c| c.len_utf8()).sum::<usize>();
+    let mut b = Builder { prefix, items: Vec::new() };
+    if line.trim_start().starts_with(['#', '/']) || line.trim_start().starts_with("--") {
+        return finish(b, word_start..word_end, prefix);
+    }
+    let keys: Vec<&TableInfo> = catalog.map(|c| c.tables().map(|(_, t)| t).filter(|t| t.kind == ObjectKind::Key).collect()).unwrap_or_default();
+    let key_type = |t: &TableInfo| t.columns.first().map(|c| c.data_type.clone()).unwrap_or_default();
+    match ctx.before.first() {
+        None => {
+            if !prefix.is_empty() {
+                for c in redis::COMMANDS {
+                    let detail = if c.args.is_empty() { c.summary.to_string() } else { format!("{} {} — {}", c.name, c.args, c.summary) };
+                    let insert = if c.args.is_empty() { c.name.to_string() } else { format!("{} ", c.name) };
+                    b.add(c.name, insert, detail, ItemKind::Keyword, 0);
+                }
+            }
+        }
+        Some(cmd) => {
+            let pos = ctx.before.len();
+            let upper = cmd.to_ascii_uppercase();
+            if redis::takes_key(&upper, pos) {
+                // keys of the type this command works on rank first
+                let wants = match upper.chars().next() {
+                    Some('H') if upper != "HELLO" => "hash",
+                    Some('L') if upper != "LCS" => "list",
+                    Some('S') if upper.starts_with("SET") || upper == "STRLEN" => "string",
+                    Some('S') => "set",
+                    Some('Z') => "zset",
+                    Some('X') => "stream",
+                    _ if matches!(upper.as_str(), "GET" | "MGET" | "INCR" | "DECR" | "APPEND" | "GETRANGE" | "INCRBY" | "DECRBY" | "GETDEL" | "GETEX") => "string",
+                    _ => "",
+                };
+                for t in &keys {
+                    let ty = key_type(t);
+                    let bonus = if !wants.is_empty() && ty == wants { 60 } else { 40 };
+                    b.add(&t.name, &t.name, if ty.is_empty() { "key".to_string() } else { format!("{ty} key") }, ItemKind::Table, bonus);
+                }
+            }
+            // fields of the hash named in the previous argument
+            if upper.starts_with('H') && pos >= 2 {
+                if let Some(t) = keys.iter().find(|t| t.name == ctx.before[1]) {
+                    for c in t.columns.iter().skip(2) {
+                        b.add(&c.name, &c.name, "hash field", ItemKind::Column, 50);
+                    }
+                }
+            }
+            // option words from the command's documented arguments: NX, EX, WITHSCORES, MATCH …
+            if let Some(c) = redis::command(&upper) {
+                for w in c.args.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+                    if w.len() >= 2 && w.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_') {
+                        b.add(w, format!("{w} "), format!("{} option", c.name), ItemKind::Keyword, 10);
+                    }
                 }
             }
         }
@@ -557,5 +670,58 @@ mod tests {
         let src = "db.orders.fi";
         let c = complete(src, src.len(), Some(&cat()), Dialect::Mongo);
         assert_eq!(c.items[0].label, "find");
+        assert!(c.items[0].detail.contains("filter"));
+    }
+
+    #[test]
+    fn mongo_operators_fit_the_method() {
+        let src = "db.orders.find({total: {$g";
+        let c = complete(src, src.len(), Some(&cat()), Dialect::Mongo);
+        assert!(c.items[0].label == "$gt" || c.items[0].label == "$gte");
+        let src = "db.orders.updateMany({}, {$s";
+        let c = complete(src, src.len(), Some(&cat()), Dialect::Mongo);
+        assert_eq!(c.items[0].label, "$set");
+        assert!(c.items[0].detail.contains("Set fields"));
+        let src = "db.orders.aggregate([{$gro";
+        let c = complete(src, src.len(), Some(&cat()), Dialect::Mongo);
+        assert_eq!(c.items[0].label, "$group");
+        let src = "db.orders.find({}).so";
+        let c = complete(src, src.len(), Some(&cat()), Dialect::Mongo);
+        assert_eq!(c.items[0].label, "sort");
+    }
+
+    fn redis_cat() -> Catalog {
+        let key = |name: &str, ty: &str, fields: &[&str]| {
+            let mut t = TableInfo::new(name, ObjectKind::Key);
+            t.columns.push(ColumnInfo { name: "type".into(), data_type: ty.into(), nullable: false, primary_key: false, default: None });
+            t.columns.push(ColumnInfo { name: "ttl".into(), data_type: "no expiry".into(), nullable: false, primary_key: false, default: None });
+            for f in fields {
+                t.columns.push(ColumnInfo { name: (*f).into(), data_type: "field".into(), nullable: true, primary_key: false, default: None });
+            }
+            t
+        };
+        Catalog { default_schema: "db0".into(), introspected_at: 0, schemas: vec![SchemaInfo { name: "db0".into(), tables: vec![key("user:1", "hash", &["name", "email"]), key("counter", "string", &[]), key("queue", "list", &[])], objects: vec![] }] }
+    }
+
+    #[test]
+    fn redis_commands_keys_fields_and_options() {
+        let src = "hgeta";
+        let c = complete(src, src.len(), Some(&redis_cat()), Dialect::Redis);
+        assert_eq!(c.items[0].label, "HGETALL");
+        assert!(c.items[0].detail.contains("Every field"));
+        assert_eq!(c.items[0].insert, "HGETALL ");
+        let src = "HGET ";
+        let c = complete(src, src.len(), Some(&redis_cat()), Dialect::Redis);
+        assert_eq!(c.items[0].label, "user:1");
+        let src = "HGET user:1 em";
+        let c = complete(src, src.len(), Some(&redis_cat()), Dialect::Redis);
+        assert_eq!(c.items[0].label, "email");
+        let src = "SET counter 1 E";
+        let c = complete(src, src.len(), Some(&redis_cat()), Dialect::Redis);
+        assert!(c.items.iter().any(|i| i.label == "EX"));
+        let src = "GET counter\nLRA";
+        let c = complete(src, src.len(), Some(&redis_cat()), Dialect::Redis);
+        assert_eq!(c.items[0].label, "LRANGE");
+        assert_eq!(c.replace, 12..15);
     }
 }

@@ -9,6 +9,13 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 ### Added
 
 - Document view for CouchDB and MongoDB results (**Documents** / **Table** above the result): a list of the documents and, for the selected one, every field (`_id` and `_rev` included) as an expandable tree or raw JSON. CouchDB attachments show their content type, size, revision, digest and link, with **Open**, **Save…**, **Copy link** and an inline preview for images
+- Redis support: connect with a password or ACL user, a database number and optional TLS; run commands one per line as in redis-cli, with replies shown as tables shaped for each command (`HGETALL`, `ZRANGE … WITHSCORES`, `XRANGE`, `SCAN`, `INFO` …); browse keys in the explorer with their type and expiry, and open a key's value by double-clicking it. Completion covers 185 commands with their arguments and summaries, keys, hash fields and option words. Read-only connections allow only reading commands, and `FLUSHDB`, `FLUSHALL` and multi-key `DEL` ask for confirmation on production connections
+- MongoDB and CouchDB completion from their documentation: methods with signatures, query and update operators, aggregation stages and expressions, each with a short description, ranked by the method you're in
+- A one-minute demo video (`docs/demo.mp4`), recorded live by the new `demo` screenshot scene
+
+### Changed
+
+- The README shows the demo video instead of a gallery of screenshots
 
 ## [0.8.2] - 2026-11-19
 

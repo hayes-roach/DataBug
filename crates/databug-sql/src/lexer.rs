@@ -105,7 +105,7 @@ pub fn tokenize(src: &str, dialect: Dialect) -> Vec<Token> {
                 i += char_at(i).len_utf8();
             }
             kind = TokKind::Whitespace;
-        } else if (c == '-' && next == '-') || (c == '#' && dialect == Dialect::MySql) || (c == '/' && next == '/' && dialect == Dialect::Mongo) {
+        } else if (c == '-' && next == '-') || (c == '#' && matches!(dialect, Dialect::MySql | Dialect::Redis)) || (c == '/' && next == '/' && matches!(dialect, Dialect::Mongo | Dialect::Redis)) {
             while i < n && bytes[i] != b'\n' {
                 i += 1;
             }
@@ -117,9 +117,24 @@ pub fn tokenize(src: &str, dialect: Dialect) -> Vec<Token> {
             }
             i = (i + 2).min(n);
             kind = TokKind::Comment;
-        } else if c == '\'' || (c == '"' && matches!(dialect, Dialect::MySql | Dialect::Mongo)) {
-            i = scan_quoted(bytes, i, c as u8, dialect == Dialect::MySql || dialect == Dialect::Mongo);
+        } else if c == '\'' || (c == '"' && matches!(dialect, Dialect::MySql | Dialect::Mongo | Dialect::Redis)) {
+            i = scan_quoted(bytes, i, c as u8, matches!(dialect, Dialect::MySql | Dialect::Mongo | Dialect::Redis));
             kind = TokKind::String;
+        } else if dialect == Dialect::Redis && !c.is_whitespace() {
+            // a Redis argument runs to the next space: `user:1`, `-1`, `+inf`
+            let line_start = src[..i].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            while i < n && !char_at(i).is_whitespace() {
+                i += char_at(i).len_utf8();
+            }
+            let word = &src[start..i];
+            let first = src[line_start..start].trim().is_empty();
+            kind = if first && crate::redis::command(word).is_some() {
+                TokKind::Keyword
+            } else if word.parse::<f64>().is_ok() {
+                TokKind::Number
+            } else {
+                TokKind::Ident
+            };
         } else if (c == 'E' || c == 'e' || c == 'N' || c == 'n') && next == '\'' {
             i = scan_quoted(bytes, i + 1, b'\'', c == 'E' || c == 'e');
             kind = TokKind::String;

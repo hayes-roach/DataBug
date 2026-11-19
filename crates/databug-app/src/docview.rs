@@ -262,18 +262,15 @@ fn attachment_card(ui: &mut egui::Ui, p: &Palette, dv: &mut DocView, doc: &Value
         if image && can_fetch {
             let key = preview_key(doc, name);
             let small = length.is_none_or(|n| n <= PREVIEW_MAX_BYTES);
-            match dv.previews.get(&key) {
-                None if small => {
-                    dv.previews.insert(key.clone(), Preview::Loading);
-                    actions.push(DocAction::Fetch { doc_id: doc_id.to_string(), name: name.to_string(), purpose: Purpose::Preview(key.clone()) });
-                }
-                None => {
-                    if ui.button("Preview").clicked() {
-                        dv.previews.insert(key.clone(), Preview::Loading);
-                        actions.push(DocAction::Fetch { doc_id: doc_id.to_string(), name: name.to_string(), purpose: Purpose::Preview(key.clone()) });
-                    }
-                }
-                _ => {}
+            // small images load on their own; big ones wait for a click
+            let fetch = match dv.previews.get(&key) {
+                None if small => true,
+                None => ui.button("Preview").clicked(),
+                Some(_) => false,
+            };
+            if fetch {
+                dv.previews.insert(key.clone(), Preview::Loading);
+                actions.push(DocAction::Fetch { doc_id: doc_id.to_string(), name: name.to_string(), purpose: Purpose::Preview(key.clone()) });
             }
             if let Some(Preview::Bytes(bytes)) = dv.previews.get(&key) {
                 let decoded = image::load_from_memory(bytes).map_err(|e| format!("Can't preview: {e}")).map(|img| {

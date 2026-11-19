@@ -30,13 +30,15 @@ mod cassandra;
 mod couch;
 #[cfg(feature = "influxdb")]
 mod influx;
+#[cfg(feature = "redis")]
+mod redis_conn;
 #[cfg(feature = "oracle")]
 mod oracle;
 #[cfg(any(feature = "db2", feature = "spark"))]
 mod odbc;
 #[cfg(any(feature = "couchdb", feature = "influxdb", feature = "duckdb"))]
 mod http;
-#[cfg(any(feature = "postgres", feature = "cassandra-tls", feature = "couchdb", feature = "influxdb"))]
+#[cfg(any(feature = "postgres", feature = "cassandra-tls", feature = "couchdb", feature = "influxdb", feature = "redis"))]
 mod tls;
 #[cfg(any(feature = "postgres", feature = "duckdb", feature = "oracle", feature = "db2", feature = "spark"))]
 mod infoschema;
@@ -236,6 +238,7 @@ pub fn available() -> Vec<DbKind> {
         (cfg!(feature = "influxdb"), DbKind::InfluxDb),
         (cfg!(feature = "spark"), DbKind::Spark),
         (cfg!(feature = "h2"), DbKind::H2),
+        (cfg!(feature = "redis"), DbKind::Redis),
     ]
     .into_iter()
     .filter_map(|(compiled, kind)| compiled.then_some(kind))
@@ -274,6 +277,8 @@ pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> anyhow::
             DbKind::CouchDb => Ok(Box::new(couch::CouchConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
             #[cfg(feature = "influxdb")]
             DbKind::InfluxDb => Ok(Box::new(influx::InfluxConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
+            #[cfg(feature = "redis")]
+            DbKind::Redis => Ok(Box::new(redis_conn::RedisConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
             #[cfg(feature = "oracle")]
             DbKind::Oracle => Ok(Box::new(oracle::OraConn::connect(cfg, pw).await?) as Box<dyn DbConnection>),
             #[cfg(feature = "db2")]
@@ -293,7 +298,7 @@ pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> anyhow::
 /// Several dependencies enable different rustls crypto backends; pick one
 /// process-wide so none of them panic.
 fn init_crypto() {
-    #[cfg(any(feature = "postgres", feature = "mysql", feature = "cassandra", feature = "couchdb", feature = "influxdb"))]
+    #[cfg(any(feature = "postgres", feature = "mysql", feature = "cassandra", feature = "couchdb", feature = "influxdb", feature = "redis"))]
     {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {

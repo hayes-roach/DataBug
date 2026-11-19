@@ -447,7 +447,7 @@ pub fn exec_template(d: Dialect, schema: &str, name: &str, kind: ObjectKind, par
     if !is_proc && !is_fn {
         return None;
     }
-    if matches!(d, Dialect::Sqlite | Dialect::Mongo) {
+    if matches!(d, Dialect::Sqlite | Dialect::Mongo | Dialect::Redis) {
         return None;
     }
     if is_fn {

@@ -18,34 +18,6 @@ pub enum MongoStatement {
     Command { collection: Option<String>, calls: Vec<MongoCall> },
 }
 
-pub const COLLECTION_METHODS: &[(&str, &str)] = &[
-    ("find", "find(filter, projection)"),
-    ("findOne", "findOne(filter)"),
-    ("aggregate", "aggregate([pipeline])"),
-    ("countDocuments", "countDocuments(filter)"),
-    ("estimatedDocumentCount", "estimatedDocumentCount()"),
-    ("distinct", "distinct(field, filter)"),
-    ("insertOne", "insertOne(document)"),
-    ("insertMany", "insertMany([documents])"),
-    ("updateOne", "updateOne(filter, update)"),
-    ("updateMany", "updateMany(filter, update)"),
-    ("replaceOne", "replaceOne(filter, document)"),
-    ("deleteOne", "deleteOne(filter)"),
-    ("deleteMany", "deleteMany(filter)"),
-    ("createIndex", "createIndex(keys)"),
-    ("getIndexes", "getIndexes()"),
-    ("drop", "drop()"),
-];
-
-pub const CURSOR_METHODS: &[&str] = &["sort", "limit", "skip", "projection"];
-
-pub const OPERATORS: &[&str] = &[
-    "$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$in", "$nin", "$and", "$or", "$not", "$nor",
-    "$exists", "$type", "$regex", "$elemMatch", "$size", "$all", "$set", "$unset", "$inc", "$push",
-    "$pull", "$addToSet", "$match", "$group", "$project", "$sort", "$limit", "$skip", "$lookup",
-    "$unwind", "$count", "$sum", "$avg", "$min", "$max", "$first", "$last",
-];
-
 const READ_METHODS: &[&str] = &[
     "find", "findOne", "aggregate", "countDocuments", "estimatedDocumentCount", "distinct",
     "getIndexes", "explain", "stats", "listCollections", "getCollectionNames",

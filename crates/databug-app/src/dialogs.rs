@@ -178,6 +178,8 @@ impl ConnDialog {
                                         "only for InfluxDB 1.x; leave empty to use a token"
                                     } else if matches!(kind, DbKind::Cassandra | DbKind::CouchDb) {
                                         "optional"
+                                    } else if kind == DbKind::Redis {
+                                        "optional; an ACL user (Redis 6+), or leave empty for default"
                                     } else {
                                         ""
                                     };
@@ -399,6 +401,7 @@ impl ConnDialog {
             DbKind::CouchDb | DbKind::InfluxDb if self.cfg.uri.contains('@') => Some("Put the user and password in their fields, not the URI, so they stay out of the config file".into()),
             DbKind::Oracle if self.cfg.uri.trim().is_empty() && self.cfg.database.trim().is_empty() => Some(if self.cfg.oracle_sid { "Enter the SID".into() } else { "Enter the service name".into() }),
             DbKind::Db2 if self.cfg.database.trim().is_empty() => Some("Enter the database name".into()),
+            DbKind::Redis if !self.cfg.database.trim().trim_start_matches("db").is_empty() && self.cfg.database.trim().trim_start_matches("db").parse::<u32>().is_err() => Some("The database should be a number such as 0".into()),
             DbKind::Db2 | DbKind::Spark if self.cfg.odbc_options.to_ascii_uppercase().contains("PWD=") => Some("Put the password in the Password field, not the ODBC options".into()),
             DbKind::MongoDb if !self.cfg.uri.is_empty() && !self.cfg.uri.starts_with("mongodb") => Some("The URI should start with mongodb:// or mongodb+srv://".into()),
             DbKind::MongoDb if self.cfg.uri.contains('@') && self.cfg.uri.split('@').next().map(|s| s.contains(':') && s.matches(':').count() > 1).unwrap_or(false) => {
@@ -420,7 +423,7 @@ impl ConnDialog {
 /// Engines whose servers listen for either TLS or plain text: DataBug signs
 /// in once, so they offer Off / Require without Prefer.
 fn tls_on_or_off(kind: DbKind) -> bool {
-    matches!(kind, DbKind::Cassandra | DbKind::CouchDb | DbKind::InfluxDb | DbKind::Oracle | DbKind::Db2 | DbKind::Spark)
+    matches!(kind, DbKind::Cassandra | DbKind::CouchDb | DbKind::InfluxDb | DbKind::Oracle | DbKind::Db2 | DbKind::Spark | DbKind::Redis)
 }
 
 /// Engines with an optional URI that replaces host and port, with its hint.
@@ -450,6 +453,7 @@ fn database_field(kind: DbKind, sid: bool) -> (&'static str, &'static str) {
         DbKind::InfluxDb => ("Bucket", "the bucket (or 1.x database) to query"),
         DbKind::Spark => ("Database", "default"),
         DbKind::H2 => ("Database path", "~/store, as the H2 server sees it"),
+        DbKind::Redis => ("Database", "0 (Redis databases are numbered)"),
         _ => ("Database", ""),
     }
 }
@@ -465,6 +469,7 @@ fn engine_note(kind: DbKind) -> Option<&'static str> {
         DbKind::InfluxDb => Some("Runs InfluxQL, Flux (InfluxDB 2.x) and INSERT <line protocol>."),
         DbKind::Cassandra => Some("Runs CQL. Keyspaces appear as schemas."),
         DbKind::QuestDb => Some("Connects to QuestDB's PostgreSQL port (8812 by default)."),
+        DbKind::Redis => Some("Runs Redis commands, one per line, as in redis-cli: HGETALL user:1"),
         _ => None,
     }
 }

@@ -16,6 +16,9 @@ pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
     if dialect == Dialect::Mongo {
         return split_mongo(src);
     }
+    if dialect == Dialect::Redis {
+        return crate::redis::split(src);
+    }
     let parts = split_parts(src, dialect);
     if dialect != Dialect::MsSql {
         return parts.into_iter().map(|p| p.range).collect();
@@ -62,6 +65,9 @@ pub fn split_batches(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
 pub fn statement_parts(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
     if dialect == Dialect::Mongo {
         return split_mongo(src);
+    }
+    if dialect == Dialect::Redis {
+        return crate::redis::split(src);
     }
     split_parts(src, dialect).into_iter().map(|p| p.range).collect()
 }

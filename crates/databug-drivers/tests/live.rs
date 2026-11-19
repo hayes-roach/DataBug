@@ -758,6 +758,62 @@ async fn cassandra_end_to_end() {
 }
 
 /// `DATABUG_TEST_COUCHDB=host:port:user:password`
+/// `DATABUG_TEST_REDIS=host:port:user:password` (user may be empty). Uses
+/// database 15 and only keys starting with `databug:`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redis_end_to_end() {
+    let Some(p) = env_parts("DATABUG_TEST_REDIS") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::Redis);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.user = p.get(2).cloned().unwrap_or_default();
+    cfg.database = "15".into();
+    cfg.ssl = databug_core::SslMode::Disable;
+    // a wrong password is refused with a clear message
+    let bad = connect(&cfg, Some("not-the-password")).await.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(bad.contains("didn't accept"), "{bad}");
+    let mut conn = connect(&cfg, p.get(3).map(String::as_str)).await.unwrap();
+    for k in ["databug:user", "databug:n", "databug:lb", "databug:q", "databug:ev", "databug:s"] {
+        run(&mut conn, &format!("DEL {k}"), 10).await.unwrap();
+    }
+    let c = run(&mut conn, r#"HSET databug:user name "Avery Brooks" plan pro"#, 10).await.unwrap();
+    assert_eq!(c.messages, vec!["(integer) 2"]);
+    let c = run(&mut conn, "HGETALL databug:user", 10).await.unwrap();
+    assert_eq!(c.columns, vec!["field", "value"]);
+    assert_eq!(c.rows.cell(0, 1), Some("Avery Brooks"));
+    run(&mut conn, "SET databug:n 41 EX 600", 10).await.unwrap();
+    run(&mut conn, "INCR databug:n", 10).await.unwrap();
+    let c = run(&mut conn, "GET databug:n", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("42"));
+    run(&mut conn, "ZADD databug:lb 10 a 30 c 20 b", 10).await.unwrap();
+    let c = run(&mut conn, "ZREVRANGE databug:lb 0 -1 WITHSCORES", 10).await.unwrap();
+    assert_eq!(c.columns, vec!["member", "score"]);
+    assert_eq!(c.rows.cell(0, 0), Some("c"));
+    run(&mut conn, "RPUSH databug:q one two three", 10).await.unwrap();
+    let c = run(&mut conn, "LRANGE databug:q 0 -1", 2).await.unwrap();
+    assert_eq!(c.rows.rows(), 2);
+    assert!(c.truncated);
+    run(&mut conn, "XADD databug:ev * order o1 status paid", 10).await.unwrap();
+    let c = run(&mut conn, "XRANGE databug:ev - +", 10).await.unwrap();
+    assert_eq!(c.columns, vec!["id", "order", "status"]);
+    let c = run(&mut conn, "GET databug:missing", 10).await.unwrap();
+    assert_eq!(c.messages, vec!["(nil)"]);
+    let c = run(&mut conn, "INFO server", 10).await.unwrap();
+    assert_eq!(c.columns, vec!["section", "key", "value"]);
+    assert!(run(&mut conn, "NOSUCHCOMMAND x", 10).await.is_err());
+    assert!(run(&mut conn, "SUBSCRIBE ch", 10).await.err().map(|e| e.to_string()).unwrap_or_default().contains("redis-cli"));
+    let cat = conn.introspect().await.unwrap();
+    assert_eq!(cat.default_schema, "db15");
+    let user = cat.find_table(None, "databug:user").unwrap();
+    assert_eq!(user.kind, ObjectKind::Key);
+    assert_eq!(user.columns[0].data_type, "hash");
+    assert!(user.columns.iter().any(|c| c.name == "plan"));
+    assert!(cat.find_table(None, "databug:n").unwrap().columns[1].data_type.starts_with("expires in"));
+    for k in ["databug:user", "databug:n", "databug:lb", "databug:q", "databug:ev"] {
+        run(&mut conn, &format!("DEL {k}"), 10).await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn couchdb_end_to_end() {
     let Some(p) = env_parts("DATABUG_TEST_COUCHDB") else { return };

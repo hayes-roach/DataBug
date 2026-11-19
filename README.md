@@ -2,27 +2,9 @@
 
 A fast, memory-light, free and open source database client written in Rust for macOS, Windows and Linux: a schema explorer that shows every kind of object, a SQL editor that understands your schema, a virtualized results grid, query plans, table and routine editing, schema compare, ER diagrams, CSV import, rename refactoring, and guard rails for production.
 
-![DataBug editor with schema-aware completion](docs/screenshot-editor.png)
+[![DataBug running SQL, Redis and CouchDB queries (1-minute demo)](docs/demo-poster.jpg)](https://hayes-roach.github.io/DataBug/#demo)
 
-| Several databases per server, projects, disconnected connections | Find and replace (`Ctrl/⌘ + F`) | Six themes and custom colors |
-|---|---|---|
-| ![explorer with several databases](docs/screenshot-explorer.png) | ![find and replace](docs/screenshot-find.png) | ![themes](docs/screenshot-themes.png) |
-
-| Schema compare with migration DDL | ER diagram | Modify table |
-|---|---|---|
-| ![compare](docs/screenshot-compare.png) | ![er](docs/screenshot-er.png) | ![table editor](docs/screenshot-table-editor.png) |
-
-| CSV import | Rename refactoring | Query plan |
-|---|---|---|
-| ![csv](docs/screenshot-csv.png) | ![rename](docs/screenshot-rename.png) | ![plan](docs/screenshot-plan.png) |
-
-| Connection dialog | Every engine, with its logo | Light theme |
-|---|---|---|
-| ![connection](docs/screenshot-connection.png) | ![engine dropdown](docs/screenshot-engines.png) | ![light](docs/screenshot-light.png) |
-
-| Your consoles on a connection | Go to definition (`Ctrl/⌘ + B`) | |
-|---|---|---|
-| ![consoles](docs/screenshot-consoles.png) | ![go to definition](docs/screenshot-go-to-definition.png) | |
+**[▶ Watch the 1-minute demo](https://hayes-roach.github.io/DataBug/#demo)**, recorded live: SQL with schema-aware completion on SQLite, Redis keys and commands, CouchDB documents with their attachments, the engine list and the light theme. The website is [hayes-roach.github.io/DataBug](https://hayes-roach.github.io/DataBug/).
 
 ## Install
 
@@ -75,12 +57,13 @@ The in-app updater reads the latest GitHub release, so every release must includ
 | DuckDB | official `libduckdb` 2.0.0, downloaded on demand and loaded at run time | ✔ | ✔ (information_schema, macros, sequences) | text, `ANALYZE` | ✔ (interrupt) | ✔ DuckDB 2.0.0 |
 | Apache Cassandra | `scylla` | ✔ CQL | ✔ (system_schema; keyspaces as schemas) | — | drops connection | ✔ Cassandra 5 (Docker) |
 | CouchDB | `reqwest` (HTTP API) | ✔ Mango in shell syntax | ✔ (databases as collections, sampled fields, indexes) | `_explain` JSON | drops connection | ✔ CouchDB 3 (Docker) |
+| Redis | `redis` (RESP2; TLS through rustls) | ✔ commands as in redis-cli, replies shaped per command | ✔ (keys with type, expiry and sampled hash fields) | — | drops connection | ✔ Redis 8 (Docker) |
 | InfluxDB | `reqwest` (HTTP API) | ✔ InfluxQL, Flux (2.x), line-protocol `INSERT` | ✔ (measurements, tags, fields) | — | drops connection | ✔ InfluxDB 2.7 (Docker) |
 | Oracle | `oracle` (ODPI-C; Oracle Instant Client when connecting) | ✔ | ✔ (ALL_* views) | `DBMS_XPLAN` text | ✔ (break) | compiles, not yet run against a server |
 | IBM Db2 | `odbc-api` (driver manager built in; IBM Db2 ODBC driver when connecting) | ✔ | ✔ (SYSCAT) | — | drops connection | compiles, not yet run against a server |
 | Spark SQL | `odbc-api` (Thrift server through a Spark ODBC driver) | ✔ | ✔ (`SHOW` / `DESCRIBE`) | `EXPLAIN FORMATTED` text | drops connection | compiles, not yet run against a server |
 
-The new-connection dialog picks the engine from a dropdown that shows each engine's logo and groups them by type: **Relational / SQL** (PostgreSQL, MySQL, SQL Server, SQLite, Oracle, Db2, H2), **Analytical** (DuckDB), **NoSQL · Document** (MongoDB, CouchDB), **NoSQL · Wide-column** (Cassandra), **Time series** (TimescaleDB, QuestDB, InfluxDB) and **Big data / distributed** (CockroachDB, Spark SQL).
+The new-connection dialog picks the engine from a dropdown that shows each engine's logo and groups them by type: **Relational / SQL** (PostgreSQL, MySQL, SQL Server, SQLite, Oracle, Db2, H2), **Analytical** (DuckDB), **NoSQL · Document** (MongoDB, CouchDB), **NoSQL · Wide-column** (Cassandra), **NoSQL · Key-value** (Redis), **Time series** (TimescaleDB, QuestDB, InfluxDB) and **Big data / distributed** (CockroachDB, Spark SQL).
 
 ### What the explorer shows
 
@@ -109,11 +92,15 @@ Each driver is a cargo feature (`postgres`, `mysql`, `mssql`, `sqlite`, `mongodb
 
 **DuckDB is downloaded, not built in.** Choosing DuckDB in the new-connection dialog offers **Download DuckDB**: DataBug fetches DuckDB's official library for your platform (about 40 MB on macOS, 28 MB on Linux, 20 MB on Windows) from [DuckDB's GitHub releases](https://github.com/duckdb/duckdb/releases/tag/v2.0.0) over verified HTTPS, checks it against a SHA-256 pinned in the source, keeps only the library (in DataBug's data folder under `runtimes/duckdb-2.0.0`) and loads it when you connect. Nothing is downloaded unless you click the button. To use a DuckDB library you already have, set `DATABUG_DUCKDB_LIB=/path/to/libduckdb.dylib` (`.so`, `duckdb.dll`).
 
-Engines without a dialect of their own borrow the closest one for highlighting, completion and generated SQL: the PostgreSQL-compatible engines, Oracle, Db2, DuckDB, Cassandra and InfluxDB use the Postgres one (double-quoted identifiers), Spark SQL the MySQL one (backticks), and CouchDB the MongoDB shell syntax. Oracle gets `LIMIT n` rewritten to `FETCH FIRST n ROWS ONLY`. PL/SQL and SQL PL blocks run as one statement (packages up to a `/` line).
+Engines without a dialect of their own borrow the closest one for highlighting, completion and generated SQL: the PostgreSQL-compatible engines, Oracle, Db2, DuckDB, Cassandra and InfluxDB use the Postgres one (double-quoted identifiers), Spark SQL the MySQL one (backticks), and CouchDB the MongoDB shell syntax. Redis has its own: one command per line, as in redis-cli. Oracle gets `LIMIT n` rewritten to `FETCH FIRST n ROWS ONLY`. PL/SQL and SQL PL blocks run as one statement (packages up to a `/` line).
 
 CouchDB consoles take Mango queries in shell form: `db.orders.find({status: "open"}, {total: 1}).sort({total: -1}).limit(20)`, `findOne`, `countDocuments`, `insertOne/Many`, `createIndex`, `getIndexes`, `drop()`, `db.createCollection('name')`, `show dbs`, and `GET /path` for any read-only API call. Updates and deletes (which need the document's `_rev`) aren't supported yet.
 
 Results from CouchDB and MongoDB open in a **document view** (switch with **Documents** / **Table** above the result): the documents are listed on the left, and the selected one shows every field, `_id` and `_rev` included, as a tree you can expand, or as raw JSON. CouchDB attachments are listed with their content type, size, revision and digest, and with their link (copy it with **Copy link**; the link never includes credentials). **Open** downloads an attachment through the connection and opens it with the system's default app, **Save…** saves it, and images (PNG, JPEG, GIF) are previewed inline. Downloads are capped at 200 MB. InfluxDB consoles take InfluxQL (`SHOW MEASUREMENTS`, `SELECT mean("total") FROM "orders" GROUP BY time(1h)`), Flux on 2.x (anything starting with `from(` or using `|>`; needs the organization) and `INSERT <line protocol>`; the API token goes in the password field. Cassandra (TLS needs the `cassandra-tls` feature), CouchDB, InfluxDB, Oracle, Db2 and Spark offer TLS *Off* or *Require* only: DataBug signs in once and never retries over the other transport. Cassandra connections all go through the host you enter (nodes often advertise internal addresses that aren't reachable through Docker, NAT or port-forwards); any node can coordinate a request.
+
+Redis consoles run one command per line, written as in redis-cli (`HGETALL user:1`, `SET greeting "hello world" EX 60`; `#` starts a comment). Replies come back as tables shaped for the command: `HGETALL` as field / value, `ZRANGE … WITHSCORES` as member / score, `XRANGE` as one row per entry with each field as a column, `SCAN` with its next cursor, `INFO` as section / key / value, `LRANGE` with indexes, and other replies as values. The explorer lists the database's keys (up to 5,000, found with `SCAN`) with their type and expiry; double-click a key to show its value with the right command for its type, or *Show DDL* for a small script with `TTL`, `MEMORY USAGE` and `OBJECT ENCODING`. Completion knows 185 commands with their arguments and a summary from the Redis documentation, offers keys (those of the type the command works on first), hash fields, and option words like `EX`, `NX` and `WITHSCORES`. The Database field is the logical database number (`0` by default); the user is an ACL user (Redis 6+) or empty. Read-only connections allow only commands that don't write; `FLUSHDB`, `FLUSHALL` and multi-key `DEL` ask for confirmation on production connections. Commands that stream forever (`SUBSCRIBE`, `MONITOR`) aren't allowed in a console.
+
+MongoDB and CouchDB completion follows their documentation: collection and cursor methods with their signatures, query operators (`$gt`, `$in`, `$elemMatch`, and CouchDB's `$beginsWith` and `$allMatch`), update operators in `updateOne` / `updateMany`, and pipeline stages and expressions in `aggregate`, each with a one-line description. The ones that fit the method you're in come first.
 
 MongoDB consoles accept shell-style statements: `db.orders.find({status: "open"}).sort({total: -1}).limit(20)`, `aggregate([...])`, `countDocuments`, `distinct`, `insertOne/Many`, `updateOne/Many`, `deleteOne/Many`, `createIndex`, `getIndexes`, `db.runCommand({...})`, `show collections`, `show dbs`. `ObjectId("…")` and `ISODate("…")` work inside filters.
 
@@ -300,12 +287,13 @@ The other engines have live tests that run when their variable is set; with Dock
 | `DATABUG_TEST_H2=localhost:5435:~/store:sa:sa` | `java -cp h2.jar org.h2.tools.Server -pg -ifNotExists` |
 | `DATABUG_TEST_CASSANDRA=localhost:9042` | `docker run -d -p 9042:9042 cassandra:5` |
 | `DATABUG_TEST_COUCHDB=localhost:5984:admin:pw` | `docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=pw couchdb:3` |
+| `DATABUG_TEST_REDIS=localhost:6379::pw` (host:port:user:password; the user may be empty) | `docker run -d -p 6379:6379 redis:8 redis-server --requirepass pw` (uses database 15 and `databug:` keys only) |
 | `DATABUG_TEST_INFLUXDB=localhost:8086:example:store:dev-token` | `docker run -d -p 8086:8086 -e DOCKER_INFLUXDB_INIT_MODE=setup -e DOCKER_INFLUXDB_INIT_USERNAME=admin -e DOCKER_INFLUXDB_INIT_PASSWORD=password123 -e DOCKER_INFLUXDB_INIT_ORG=example -e DOCKER_INFLUXDB_INIT_BUCKET=store -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=dev-token influxdb:2.7` |
 | `DATABUG_TEST_ORACLE`, `DATABUG_TEST_DB2`, `DATABUG_TEST_SPARK` | need the client software above |
 
 The live tests cover streaming, NULLs, row limits, affected-row counts, server messages, error messages, introspection, explain (including rolled-back `EXPLAIN ANALYZE` of a write) and cancelling a running query. They also check every object kind: procedures, overloaded functions, materialized views, triggers, sequences, indexes and foreign keys are introspected, and each definition is fetched and **run back** against the server. Generated `ALTER` scripts (rename, type change, add column, index, table rename, SQLite rebuild) are executed and the schema reloaded to confirm the result, and a Postgres schema compare migration is applied and re-compared to zero differences. CI (`.github/workflows/ci.yml`) runs them against Postgres 16 and MySQL 8.4 and builds on macOS and Windows.
 
-`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `dialog-engines` (engine list open), `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`, `editors` (the toolbar's consoles list), `goto` (go to definition), `usages` (other uses of the name at the cursor), `tabmenu`, and `couch-docs` / `couch-fields` (the document view; these need `DATABUG_HOME` whose first connection is a CouchDB server with a `store` database holding `photo:0001` and `product:001`). `DATABUG_CUSTOM_FRAME=1` shows the Linux title bar on any platform. The README screenshots come from `main` (editor), `multidb`, `find`, `theme`, `compare`, `er`, `table`, `csv`, `rename`, `plan`, `dialog`, `dialog-engines`, `light`, `editors` and `goto`, run with `DATABUG_HOME` set to an empty folder (sample data only), captured at the default window size and scaled to 1440×900.
+`databug --screenshot out.png` drives the UI headlessly (open sample, run a query, open completion) and saves a PNG. `DATABUG_SHOT_SCENE` picks other scenes: `plan`, `dialog`, `dialog-engines` (engine list open), `light`, `flow` (types a query with completion and runs it), `error`, `confirm`, `tx`, `edit`, `ms-dialog`, `pg-schemas`, `find`, `theme`, `multidb`, `compare`, `editors` (the toolbar's consoles list), `goto` (go to definition), `usages` (other uses of the name at the cursor), `tabmenu`, `couch-docs` / `couch-fields` (the document view; these need `DATABUG_HOME` whose first connection is a CouchDB server with a `store` database holding `photo:0001` and `product:001`) and `redis` (a Redis console with field completion; the first connection is a Redis server with the sample keys). Scenes against a live server take its password from `DATABUG_SHOT_PASSWORD`, kept in memory for that run. `DATABUG_CUSTOM_FRAME=1` shows the Linux title bar on any platform. The demo video comes from `DATABUG_SHOT_SCENE=demo databug --screenshot <folder>`, which plays a scripted tour and saves every frame; `src/demo.rs` explains the connections it expects and the `ffmpeg` command that turns the frames into `docs/demo.mp4`.
 
 `DATABUG_TEST_KRB="user@REALM:password"` with `--features databug-drivers/kerberos` adds a test that signs in to a Kerberos realm through the SQL Server Windows-credentials path.
 
@@ -322,7 +310,7 @@ The live tests cover streaming, NULLs, row limits, affected-row counts, server m
 - A `databug-lsp` crate and an MCP server for AI agents.
 - Oracle, IBM Db2 and Spark SQL ship in every build but haven't been run against a server: they need Oracle Instant Client or an ODBC driver that couldn't be tested here. Reports are welcome.
 - CouchDB updates and deletes, InfluxDB 3 SQL (InfluxQL works through its v1 API), Cassandra materialized-view editing and TimescaleDB policies and jobs in the explorer.
-- More engines (Redis, ClickHouse) behind the same `DbConnection` trait.
+- More engines (ClickHouse, Valkey and Redis Cluster) behind the same `DbConnection` trait. Redis connects to a single server; cluster and Sentinel setups aren't supported yet.
 - The UI is pinned to egui 0.31; moving to the current egui release is a mechanical upgrade.
 
 ## Contributing
@@ -339,7 +327,7 @@ DataBug is free and built in spare time. If it saves you time and you'd like to 
 
 DataBug runs the SQL and commands you give it, including statements that change or delete data. Guard rails like the read-only and production flags and the confirmations help, but they don't replace care: review what you run, keep backups, and test against non-production databases first. Follow the policies of the systems you connect to.
 
-DataBug is an independent project and is not affiliated with, endorsed by, or sponsored by JetBrains, Oracle, IBM, Microsoft, MongoDB, Inc., the PostgreSQL Global Development Group, the SQLite developers, the Apache Software Foundation, DuckDB Labs, Cockroach Labs, Timescale, QuestDB, InfluxData, the H2 project, or any other database vendor. DataGrip, PostgreSQL, MySQL, MariaDB, SQL Server, MongoDB, SQLite, CouchDB, Oracle, Db2, DuckDB, Cassandra, CockroachDB, TimescaleDB, QuestDB, InfluxDB, Spark, H2 and other names and logos are trademarks of their respective owners. They're used only to identify databases and comparable tools, and their use doesn't imply endorsement. See [NOTICE](NOTICE) and [the logo notice](crates/databug-app/assets/logos/NOTICE.md).
+DataBug is an independent project and is not affiliated with, endorsed by, or sponsored by JetBrains, Oracle, IBM, Microsoft, MongoDB, Inc., the PostgreSQL Global Development Group, the SQLite developers, the Apache Software Foundation, DuckDB Labs, Cockroach Labs, Timescale, QuestDB, InfluxData, Redis Ltd., the H2 project, or any other database vendor. DataGrip, PostgreSQL, MySQL, MariaDB, SQL Server, MongoDB, SQLite, CouchDB, Oracle, Db2, DuckDB, Cassandra, CockroachDB, TimescaleDB, QuestDB, InfluxDB, Redis, Spark, H2 and other names and logos are trademarks of their respective owners. They're used only to identify databases and comparable tools, and their use doesn't imply endorsement. See [NOTICE](NOTICE) and [the logo notice](crates/databug-app/assets/logos/NOTICE.md).
 
 ## License
 

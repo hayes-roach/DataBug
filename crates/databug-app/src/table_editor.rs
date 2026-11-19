@@ -70,7 +70,7 @@ fn types(d: Dialect) -> &'static [&'static str] {
         Dialect::MySql => &["INT", "BIGINT", "SMALLINT", "TINYINT(1)", "DECIMAL(12,2)", "DOUBLE", "VARCHAR(255)", "TEXT", "DATE", "DATETIME", "TIMESTAMP", "JSON", "BLOB"],
         Dialect::MsSql => &["int", "bigint", "smallint", "bit", "decimal(12,2)", "float", "nvarchar(255)", "nvarchar(max)", "varchar(255)", "uniqueidentifier", "date", "datetime2", "datetimeoffset", "varbinary(max)"],
         Dialect::Sqlite => &["INTEGER", "REAL", "TEXT", "NUMERIC", "BLOB"],
-        Dialect::Mongo => &[],
+        Dialect::Mongo | Dialect::Redis => &[],
     }
 }
 

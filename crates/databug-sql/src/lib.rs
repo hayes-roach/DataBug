@@ -11,6 +11,8 @@ pub mod diff;
 pub mod format;
 pub mod lexer;
 pub mod mongo;
+pub mod mongo_docs;
+pub mod redis;
 pub mod rename;
 pub mod split;
 

@@ -557,7 +557,11 @@ impl Editor {
         let start = self.text[..a].rfind('\n').map(|p| p + 1).unwrap_or(0);
         let end = self.text[b..].find('\n').map(|p| b + p).unwrap_or(self.text.len());
         let block = &self.text[start..end];
-        let marker = if self.dialect == Dialect::Mongo { "//" } else { "--" };
+        let marker = match self.dialect {
+            Dialect::Mongo => "//",
+            Dialect::Redis => "#",
+            _ => "--",
+        };
         let all_commented = block.lines().filter(|l| !l.trim().is_empty()).all(|l| l.trim_start().starts_with(marker));
         let new: Vec<String> = block
             .split('\n')

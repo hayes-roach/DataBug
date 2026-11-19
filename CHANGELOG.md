@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-19
+
 ### Changed
 
 - macOS builds are signed with DataBug's own certificate instead of an ad-hoc signature, so every version has the same identity: keychain access you allow once (with **Always Allow**) carries over to updates, and passwords saved from now on don't ask at all. Gatekeeper still warns on a first download, since the certificate isn't Apple's

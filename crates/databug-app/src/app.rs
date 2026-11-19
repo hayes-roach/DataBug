@@ -248,6 +248,9 @@ pub struct DataBugApp {
     menu_after_connect: Option<String>,
     /// The scripted video tour (`DATABUG_SHOT_SCENE=demo`).
     demo: Option<demo::Demo>,
+    /// After an edit in the document view: select this document (tab, `_id`)
+    /// in the next document result of that tab.
+    doc_reselect: Option<(u64, String)>,
     /// Attachment downloads in flight, by request id.
     attachment_reqs: HashMap<u64, AttachmentReq>,
     attachments_done: Vec<(u64, Result<Vec<u8>, String>)>,
@@ -503,6 +506,7 @@ impl DataBugApp {
             databases: HashMap::new(),
             disconnected: HashSet::new(),
             menu_after_connect: None,
+            doc_reselect: None,
             attachment_reqs: HashMap::new(),
             attachments_done: Vec::new(),
             failed: HashMap::new(),
@@ -1253,7 +1257,12 @@ impl DataBugApp {
                                         _ => None,
                                     };
                                     let has_id = view.columns.iter().any(|c| c.name == "_id");
-                                    view.docs = Some(crate::docview::DocView::new(collection, couch, has_id));
+                                    let mut dv = crate::docview::DocView::new(collection, couch, has_id);
+                                    dv.source = sql.trim().trim_end_matches(';').to_string();
+                                    if let Some((_, id)) = self.doc_reselect.take_if(|(t, _)| *t == tab.id) {
+                                        dv.select_id(&id);
+                                    }
+                                    view.docs = Some(dv);
                                 }
                                 if let (Some(src), Some(cat)) = (src, catalog) {
                                     if let Some(t) = cat.find_table(src.schema.as_deref(), &src.name) {
@@ -3251,6 +3260,7 @@ impl DataBugApp {
         let mut insert: Option<String> = None;
         let mut toast: Option<String> = None;
         let mut fetches = Vec::new();
+        let mut doc_runs: Vec<(u64, Vec<String>, String, Option<String>)> = Vec::new();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -3309,6 +3319,10 @@ impl DataBugApp {
                             toast = Some("Copied".into());
                         }
                         crate::docview::DocAction::Fetch { doc_id, name, purpose } => fetches.push((tab.id, i, doc_id, name, purpose)),
+                        crate::docview::DocAction::Run { stmts, reselect } => {
+                            let source = tab.results[i].docs.as_ref().map(|d| d.source.clone()).unwrap_or_default();
+                            doc_runs.push((tab.id, stmts, source, reselect));
+                        }
                     }
                 }
             }
@@ -3413,6 +3427,18 @@ impl DataBugApp {
         }
         for (tab_id, i, doc_id, name, purpose) in fetches {
             self.fetch_attachment(tab_id, i, doc_id, name, purpose, ctx);
+        }
+        // a document edited or deleted in the document view: run the change,
+        // then the result's query again, and select the same document
+        for (tab_id, stmts, source, reselect) in doc_runs {
+            let Some(t) = self.tabs.iter().find(|t| t.id == tab_id) else { continue };
+            let r = t.editor.cursor..t.editor.cursor;
+            let mut all: Vec<(String, Range<usize>)> = stmts.into_iter().map(|s| (s, r.clone())).collect();
+            if !source.is_empty() {
+                all.push((source, r.clone()));
+            }
+            self.doc_reselect = reselect.map(|id| (tab_id, id));
+            self.check_and_dispatch(tab_id, all, None, None, ctx);
         }
         if let Some(s) = insert {
             if let Some(t) = self.tabs.get_mut(self.active) {
@@ -3965,8 +3991,8 @@ impl DataBugApp {
                             self.explorer.open_key(format!("c:{id}"));
                             self.explorer.open_key(format!("g:{id}:db0:Key"));
                         }
-                        "couch-docs" | "couch-fields" => {
-                            let id = if scene == "couch-docs" { "photo:0001" } else { "product:001" };
+                        "couch-docs" | "couch-fields" | "couch-edit" => {
+                            let id = if scene == "couch-fields" { "product:001" } else { "photo:0001" };
                             if let Some(d) = self.tabs.get_mut(self.active).and_then(|t| t.results.first_mut()).and_then(|r| r.docs.as_mut()) {
                                 d.select_id(id);
                             }
@@ -4251,6 +4277,11 @@ impl DataBugApp {
             2 if (plan.scene == "pg-compare" || plan.scene == "compare") && plan.wait_frames < 400 && !compare_done => {
                 plan.wait_frames = plan.wait_frames.min(5);
             }
+            2 if plan.wait_frames == 20 && plan.scene == "couch-edit" => {
+                if let Some(d) = self.tabs.get_mut(self.active).and_then(|t| t.results.first_mut()).and_then(|r| r.docs.as_mut()) {
+                    d.begin_edit();
+                }
+            }
             2 if plan.wait_frames == 4 && plan.scene == "redis" => {
                 // type a command whose last argument is a hash field and complete it
                 if let Some(t) = self.tabs.get_mut(self.active) {
@@ -4268,7 +4299,7 @@ impl DataBugApp {
                     t.editor.complete_now = true;
                 }
             }
-            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, "couch-docs" | "couch-fields" => 60, "perf" => 400, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
+            2 if plan.wait_frames > match plan.scene.as_str() { "flow" | "edit" | "csv-run" | "table-exec" | "rename-apply" | "edit-object" | "rows" | "rows-submit" | "retry" => 70, "pg-compare" | "compare" => 30, "couch-docs" | "couch-fields" | "couch-edit" => 60, "perf" => 400, _ => 14 } && self.tabs.get(self.active).map(|t| t.running.is_none()).unwrap_or(true) => {
                 plan.step = 3;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }

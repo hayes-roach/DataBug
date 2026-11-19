@@ -28,13 +28,27 @@
 </p>
 
 <p align="center">
-  <a href="https://hayes-roach.github.io/DataBug/#demo"><img src="docs/demo.gif" width="100%" alt="DataBug running SQL with completion, Redis commands and CouchDB documents"></a>
-  <br><sub>Recorded live. <a href="https://hayes-roach.github.io/DataBug/#demo">Watch it in full quality</a>.</sub>
+  <img src="docs/screenshot-editor.png" width="100%" alt="The SQL editor completing columns from the live schema">
 </p>
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/screenshot-documents.png" alt="CouchDB documents with an attachment preview"></td>
+    <td width="33%"><img src="docs/screenshot-redis.png" alt="A Redis console completing hash fields"></td>
+    <td width="33%"><img src="docs/screenshot-er.png" alt="An ER diagram"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Documents and attachments</sub></td>
+    <td align="center"><sub>Redis, with key and field completion</sub></td>
+    <td align="center"><sub>ER diagrams</sub></td>
+  </tr>
+</table>
+
+<p align="center"><a href="https://hayes-roach.github.io/DataBug/#demo">▶ Watch the one-minute demo</a></p>
 
 ## Why DataBug
 
-- **Native and light.** Written in Rust and drawn on the GPU. It starts fast and stays small.
+- **Native and light.** A real desktop app written in Rust. It starts fast and stays small.
 - **SQL and NoSQL in one place.** Relational, document, key-value, wide-column, time-series and analytical databases.
 - **An editor that knows your schema.** Completion for tables, columns and joins, go to definition, rename refactoring.
 - **Tools you reach for.** Query plans, schema compare, ER diagrams, table editing, CSV import and a document view.
@@ -86,7 +100,6 @@ Needs Rust 1.89+ and a C compiler. Tests, architecture and the screenshot harnes
 - [Databases](docs/databases.md): engines, drivers and console languages
 - [Installing and updating](docs/install.md)
 - [Development](docs/development.md): building, architecture and tests
-- [Roadmap](docs/roadmap.md): what isn't done yet
 
 ## Contributing
 

@@ -26,6 +26,12 @@ pub struct DocView {
     docs: Vec<Value>,
     parsed_rows: usize,
     pending_select: Option<String>,
+    /// The statement that produced the result, re-run after an edit or delete.
+    pub source: String,
+    /// The selected document's JSON while it's being edited.
+    edit: Option<String>,
+    edit_error: Option<String>,
+    confirm_delete: bool,
 }
 
 pub enum Preview {
@@ -48,6 +54,64 @@ pub enum Purpose {
 pub enum DocAction {
     Fetch { doc_id: String, name: String, purpose: Purpose },
     Copy(String),
+    /// Run these statements (an update or delete of one document), then the
+    /// result's own query again, selecting `reselect` in the new result.
+    Run { stmts: Vec<String>, reselect: Option<String> },
+}
+
+/// `db.orders` for a plain name, `db.getCollection("…")` otherwise.
+fn collection_ref(name: &str) -> String {
+    let plain = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if plain { format!("db.{name}") } else { format!("db.getCollection({})", Value::String(name.into())) }
+}
+
+/// A filter matching exactly this document: its `_id` (as an ObjectId when
+/// MongoDB stored one) and, for CouchDB, its `_rev`, so a document changed by
+/// someone else in the meantime isn't overwritten.
+pub fn document_filter(doc: &Value, couch: bool, object_id: bool) -> Option<String> {
+    let id = doc.get("_id")?;
+    if couch {
+        let rev = doc.get("_rev")?;
+        return Some(format!("{{\"_id\": {id}, \"_rev\": {rev}}}"));
+    }
+    match (object_id, id.as_str()) {
+        (true, Some(hex)) if hex.len() == 24 && hex.chars().all(|c| c.is_ascii_hexdigit()) => Some(format!("{{_id: ObjectId(\"{hex}\")}}")),
+        _ => Some(format!("{{\"_id\": {id}}}")),
+    }
+}
+
+/// The top-level changes from `old` to `new` as an update document
+/// (`$set` for new and changed fields, `$unset` for removed ones), or `None`
+/// when nothing changed. `_id`, `_rev` and `_attachments` are left alone.
+pub fn update_document(old: &Value, new: &Value) -> Result<Option<Value>, String> {
+    let (Some(o), Some(n)) = (old.as_object(), new.as_object()) else { return Err("The document must be a JSON object".into()) };
+    let keep = |k: &str| !matches!(k, "_id" | "_rev" | "_attachments");
+    if n.get("_id").is_some_and(|id| Some(id) != o.get("_id")) {
+        return Err("_id can't be changed".into());
+    }
+    let mut set = serde_json::Map::new();
+    let mut unset = serde_json::Map::new();
+    for (k, v) in n.iter().filter(|(k, _)| keep(k)) {
+        if o.get(k) != Some(v) {
+            set.insert(k.clone(), v.clone());
+        }
+    }
+    for k in o.keys().filter(|k| keep(k)) {
+        if !n.contains_key(k) {
+            unset.insert(k.clone(), Value::String(String::new()));
+        }
+    }
+    if set.is_empty() && unset.is_empty() {
+        return Ok(None);
+    }
+    let mut u = serde_json::Map::new();
+    if !set.is_empty() {
+        u.insert("$set".into(), Value::Object(set));
+    }
+    if !unset.is_empty() {
+        u.insert("$unset".into(), Value::Object(unset));
+    }
+    Ok(Some(Value::Object(u)))
 }
 
 impl DocView {
@@ -56,8 +120,15 @@ impl DocView {
         self.pending_select = Some(id.to_string());
     }
 
+    /// Open the selected document for editing (screenshot scenes).
+    pub fn begin_edit(&mut self) {
+        if let Some(d) = self.docs.get(self.selected) {
+            self.edit = Some(serde_json::to_string_pretty(d).unwrap_or_default());
+        }
+    }
+
     pub fn new(collection: Option<String>, attachments: bool, showing: bool) -> Self {
-        DocView { showing, collection, attachments, selected: 0, filter: String::new(), raw: false, previews: HashMap::new(), docs: Vec::new(), parsed_rows: 0, pending_select: None }
+        DocView { showing, collection, attachments, selected: 0, filter: String::new(), raw: false, previews: HashMap::new(), docs: Vec::new(), parsed_rows: 0, pending_select: None, source: String::new(), edit: None, edit_error: None, confirm_delete: false }
     }
 }
 
@@ -126,6 +197,8 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
         }
     }
     dv.selected = dv.selected.min(dv.docs.len() - 1);
+    let object_id = view.columns.iter().any(|c| c.name == "_id" && c.type_name == "objectId");
+    let dv = view.docs.as_mut().unwrap();
     let id = ui.id().with("docview");
     egui::SidePanel::left(id.with("list")).resizable(true).default_width(260.0).width_range(160.0..=520.0).frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 8, top: 6, bottom: 0 })).show_inside(ui, |ui| {
         crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut dv.filter).hint_text("Filter documents…"), ui.available_width(), crate::theme::FIELD_H_COMPACT);
@@ -158,8 +231,11 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
                     painter.text(egui::pos2(rect.right() - 10.0, rect.top() + 11.0), egui::Align2::RIGHT_CENTER, right, FontId::proportional(11.0), p.muted);
                 }
                 painter.text(egui::pos2(rect.left() + 10.0, rect.top() + 27.0), egui::Align2::LEFT_CENTER, summary(doc), FontId::proportional(11.0), p.faint);
-                if resp.clicked() {
+                if resp.clicked() && dv.selected != i {
                     dv.selected = i;
+                    dv.edit = None;
+                    dv.edit_error = None;
+                    dv.confirm_delete = false;
                 }
             }
         });
@@ -173,7 +249,49 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
                 ui.add_space(6.0);
                 ui.add(egui::Label::new(RichText::new(format!("rev {rev}")).font(FontId::monospace(11.0)).color(p.muted)).selectable(true));
             }
+            let couch = dv.attachments;
+            let filter = document_filter(&doc, couch, object_id);
+            let target = dv.collection.as_deref().map(collection_ref);
+            let editable = filter.is_some() && target.is_some() && !dv.source.is_empty();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if dv.edit.is_some() {
+                    // editing: save the changes as one update, or drop them
+                    if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(p.accent)).clicked() {
+                        let text = dv.edit.clone().unwrap_or_default();
+                        match serde_json::from_str::<Value>(&text).map_err(|e| format!("Not valid JSON: {e}")).and_then(|new| update_document(&doc, &new)) {
+                            Ok(None) => {
+                                dv.edit = None;
+                                dv.edit_error = None;
+                            }
+                            Ok(Some(update)) => {
+                                if let (Some(t), Some(f)) = (&target, &filter) {
+                                    actions.push(DocAction::Run { stmts: vec![format!("{t}.updateOne({f}, {update})")], reselect: Some(doc_id.clone()) });
+                                }
+                                dv.edit = None;
+                                dv.edit_error = None;
+                            }
+                            Err(e) => dv.edit_error = Some(e),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        dv.edit = None;
+                        dv.edit_error = None;
+                    }
+                    return;
+                }
+                if dv.confirm_delete {
+                    if ui.add(egui::Button::new(RichText::new("Delete").color(Color32::WHITE)).fill(p.danger)).clicked() {
+                        if let (Some(t), Some(f)) = (&target, &filter) {
+                            actions.push(DocAction::Run { stmts: vec![format!("{t}.deleteOne({f})")], reselect: None });
+                        }
+                        dv.confirm_delete = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        dv.confirm_delete = false;
+                    }
+                    ui.label(RichText::new("Delete this document?").color(p.danger));
+                    return;
+                }
                 if ui.button("Copy JSON").clicked() {
                     actions.push(DocAction::Copy(serde_json::to_string_pretty(&doc).unwrap_or_default()));
                 }
@@ -183,11 +301,21 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
                 if ui.selectable_label(!dv.raw, "Tree").clicked() {
                     dv.raw = false;
                 }
+                ui.add_space(8.0);
+                let why = "Needs a result from a find() on one collection, with documents that have an _id";
+                if ui.add_enabled(editable, egui::Button::new(RichText::new("Delete").color(p.danger))).on_disabled_hover_text(why).clicked() {
+                    dv.confirm_delete = true;
+                }
+                if ui.add_enabled(editable, egui::Button::new("Edit")).on_hover_text("Edit the document as JSON; saving sends only what changed").on_disabled_hover_text(why).clicked() {
+                    dv.edit = Some(serde_json::to_string_pretty(&doc).unwrap_or_default());
+                    dv.edit_error = None;
+                }
             });
         });
         ui.add_space(4.0);
         egui::ScrollArea::vertical().id_salt(id.with(("detail", dv.selected))).auto_shrink([false, false]).show(ui, |ui| {
-            if let Some(atts) = doc.get("_attachments").and_then(|a| a.as_object()).filter(|a| !a.is_empty()) {
+            // while editing, the JSON comes first; attachments return after saving
+            if let Some(atts) = doc.get("_attachments").and_then(|a| a.as_object()).filter(|a| !a.is_empty() && dv.edit.is_none()) {
                 section(ui, p, &format!("Attachments  {}", atts.len()));
                 for (name, meta) in atts {
                     attachment_card(ui, p, dv, &doc, &doc_id, name, meta, url_for, &mut actions);
@@ -195,7 +323,13 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
                 ui.add_space(8.0);
             }
             section(ui, p, "Fields");
-            if dv.raw {
+            if let Some(text) = dv.edit.as_mut() {
+                if let Some(e) = &dv.edit_error {
+                    ui.label(RichText::new(e).color(p.danger));
+                }
+                ui.add(egui::TextEdit::multiline(text).font(FontId::monospace(12.5)).desired_width(f32::INFINITY).desired_rows(16).code_editor());
+                ui.label(RichText::new("_id, _rev and _attachments stay as they are. Fields you remove are unset.").size(11.0).color(p.faint));
+            } else if dv.raw {
                 let pretty = serde_json::to_string_pretty(&doc).unwrap_or_default();
                 ui.add(egui::TextEdit::multiline(&mut pretty.as_str()).font(FontId::monospace(12.5)).desired_width(f32::INFINITY).frame(false));
             } else if let Some(o) = doc.as_object() {
@@ -389,6 +523,26 @@ mod tests {
         assert_eq!(d["_attachments"]["x.png"]["length"], 10);
         assert!(d.get("note").is_none());
         assert_eq!(preview_key(&d, "x.png"), "photo:1\u{1}\u{1}x.png");
+    }
+
+    #[test]
+    fn edit_filters_and_changes() {
+        use serde_json::json;
+        let couch = json!({"_id": "order:1", "_rev": "3-abc", "n": 1});
+        assert_eq!(document_filter(&couch, true, false).unwrap(), r#"{"_id": "order:1", "_rev": "3-abc"}"#);
+        let mongo = json!({"_id": "65a1b2c3d4e5f60718293a4b"});
+        assert_eq!(document_filter(&mongo, false, true).unwrap(), r#"{_id: ObjectId("65a1b2c3d4e5f60718293a4b")}"#);
+        assert_eq!(document_filter(&json!({"_id": 7}), false, false).unwrap(), r#"{"_id": 7}"#);
+        assert!(document_filter(&json!({"n": 1}), false, false).is_none());
+        assert_eq!(collection_ref("orders"), "db.orders");
+        assert_eq!(collection_ref("my-orders"), r#"db.getCollection("my-orders")"#);
+
+        let old = json!({"_id": "a", "_rev": "1-x", "_attachments": {}, "keep": 1, "change": "a", "drop": true});
+        let new = json!({"_id": "a", "keep": 1, "change": "b", "add": [1]});
+        assert_eq!(update_document(&old, &new).unwrap().unwrap(), json!({"$set": {"change": "b", "add": [1]}, "$unset": {"drop": ""}}));
+        assert!(update_document(&old, &old).unwrap().is_none());
+        assert!(update_document(&old, &json!({"_id": "b"})).is_err());
+        assert!(update_document(&old, &json!([1])).is_err());
     }
 
     #[test]

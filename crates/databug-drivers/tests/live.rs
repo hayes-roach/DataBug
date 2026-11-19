@@ -846,6 +846,35 @@ async fn couchdb_end_to_end() {
     assert!(t.indexes.iter().any(|i| i.columns == vec!["total".to_string()]));
     let plan = conn.explain("db.databug_orders.find({total: {$gt: 30}})", false).await.unwrap();
     assert!(plan.raw.contains("index"));
+
+    // updates and deletes: read with _rev, change, write back
+    let c = run(&mut conn, "db.databug_orders.updateOne({_id: 'order-1'}, {$set: {status: 'refunded', 'note.by': 'test'}, $inc: {total: 1}})", 10).await.unwrap();
+    assert_eq!(c.affected, Some(1));
+    let c = run(&mut conn, "db.databug_orders.findOne({_id: 'order-1'})", 10).await.unwrap();
+    let col = |c: &Collected, n: &str| c.columns.iter().position(|x| x == n).unwrap();
+    assert_eq!(c.rows.cell(0, col(&c, "status")), Some("refunded"));
+    assert_eq!(c.rows.cell(0, col(&c, "total")), Some("12.5"));
+    assert_eq!(c.rows.cell(0, col(&c, "note")), Some(r#"{"by":"test"}"#));
+    let rev = c.rows.cell(0, col(&c, "_rev")).unwrap().to_string();
+    let c = run(&mut conn, "db.databug_orders.updateMany({status: 'pending'}, {$set: {flagged: true}})", 10).await.unwrap();
+    assert_eq!(c.affected, Some(10));
+    // the document view's filter: _id and _rev; a stale _rev matches nothing
+    let c = run(&mut conn, &format!(r#"db.databug_orders.updateOne({{"_id": "order-1", "_rev": "{rev}"}}, {{"$unset": {{"note": ""}}}})"#), 10).await.unwrap();
+    assert_eq!(c.affected, Some(1));
+    let c = run(&mut conn, &format!(r#"db.databug_orders.updateOne({{"_id": "order-1", "_rev": "{rev}"}}, {{"$set": {{"x": 1}}}})"#), 10).await.unwrap();
+    assert_eq!(c.affected, Some(0));
+    assert_eq!(c.messages, vec!["No documents matched"]);
+    let c = run(&mut conn, "db.databug_orders.replaceOne({_id: 'order-2'}, {status: 'replaced', total: 1})", 10).await.unwrap();
+    assert_eq!(c.affected, Some(1));
+    let c = run(&mut conn, "db.databug_orders.findOne({_id: 'order-2'})", 10).await.unwrap();
+    assert!(!c.columns.contains(&"customer_id".to_string()));
+    assert!(run(&mut conn, "db.databug_orders.updateOne({_id: 'order-3'}, {status: 'x'})", 10).await.err().unwrap().to_string().contains("replaceOne"));
+    let c = run(&mut conn, "db.databug_orders.deleteOne({_id: 'order-3'})", 10).await.unwrap();
+    assert_eq!(c.affected, Some(1));
+    let c = run(&mut conn, "db.databug_orders.deleteMany({flagged: true})", 10).await.unwrap();
+    assert_eq!(c.affected, Some(10));
+    let c = run(&mut conn, "db.databug_orders.countDocuments({})", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("29"));
     run(&mut conn, "db.databug_orders.drop()", 10).await.unwrap();
     if !cfg.user.is_empty() {
         let err = connect(&cfg, Some("not-the-password")).await.err().unwrap();

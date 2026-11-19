@@ -6,6 +6,19 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Added
+
+- CouchDB updates and deletes: `updateOne`, `updateMany`, `replaceOne`, `deleteOne` and `deleteMany`, with MongoDB's update operators (`$set`, `$inc`, `$push` …) and dotted paths; a document changed in the meantime is reported as a conflict
+- **Edit** and **Delete** in the document view (MongoDB and CouchDB): edit a document as JSON and save only what changed, or delete it after a confirmation; the result reloads afterwards
+
+### Changed
+
+- The README shows screenshots instead of the animated demo (the video stays on the website), and the roadmap page is gone
+
+### Fixed
+
+- `countDocuments({})` on CouchDB counted design documents (indexes) as documents
+
 ## [0.10.0] - 2026-11-19
 
 ### Added

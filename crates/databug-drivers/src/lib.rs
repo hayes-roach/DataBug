@@ -28,6 +28,8 @@ mod duck_lib;
 mod cassandra;
 #[cfg(feature = "couchdb")]
 mod couch;
+#[cfg(feature = "couchdb")]
+mod couch_update;
 #[cfg(feature = "influxdb")]
 mod influx;
 #[cfg(feature = "redis")]

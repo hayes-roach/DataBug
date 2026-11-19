@@ -136,7 +136,10 @@ impl CouchConn {
             "countDocuments" | "estimatedDocumentCount" => {
                 let filter = relaxed_json(split_args(&c.args).first().copied().unwrap_or(""))?;
                 let n = if filter.as_object().map(|o| o.is_empty()).unwrap_or(false) {
-                    self.get(&path).await?.get("doc_count").and_then(|n| n.as_u64()).unwrap_or(0)
+                    // doc_count includes design documents (indexes, views); they aren't documents here
+                    let all = self.get(&path).await?.get("doc_count").and_then(|n| n.as_u64()).unwrap_or(0);
+                    let design = self.get(&format!("{path}/_design_docs")).await.ok().and_then(|v| v.get("rows").and_then(|r| r.as_array()).map(|r| r.len() as u64)).unwrap_or(0);
+                    all.saturating_sub(design)
                 } else {
                     // page through matching ids with bookmarks
                     let mut n = 0u64;
@@ -187,12 +190,68 @@ impl CouchConn {
                 let res = self.send(reqwest::Method::POST, &format!("{path}/_index"), &json!({ "index": { "fields": fields }, "type": "json" })).await?;
                 sink(QueryEvent::Message(format!("Index {} {}", res.get("name").and_then(|v| v.as_str()).unwrap_or("?"), res.get("result").and_then(|v| v.as_str()).unwrap_or("created"))));
             }
+            "updateOne" | "updateMany" | "replaceOne" | "deleteOne" | "deleteMany" => {
+                let args = split_args(&c.args);
+                let filter = relaxed_json(args.first().copied().unwrap_or(""))?;
+                if !filter.is_object() {
+                    anyhow::bail!("{}() takes a filter first, like {{_id: \"order-1\"}}", c.name);
+                }
+                let one = c.name.ends_with("One");
+                let docs = self.matching(&path, &filter, one).await?;
+                let changes: Vec<Value> = match c.name.as_str() {
+                    "deleteOne" | "deleteMany" => docs.iter().map(|d| json!({ "_id": d["_id"], "_rev": d["_rev"], "_deleted": true })).collect(),
+                    "replaceOne" => {
+                        let mut new = relaxed_json(args.get(1).copied().unwrap_or(""))?;
+                        let o = new.as_object_mut().ok_or_else(|| anyhow::anyhow!("replaceOne() takes the new document second"))?;
+                        o.retain(|k, _| k != "_rev");
+                        if let (Some(old), Some(id)) = (docs.first(), o.get("_id")) {
+                            if *id != old["_id"] {
+                                anyhow::bail!("replaceOne() can't change a document's _id");
+                            }
+                        }
+                        docs.first().map(|d| {
+                            let mut n = o.clone();
+                            n.insert("_id".into(), d["_id"].clone());
+                            n.insert("_rev".into(), d["_rev"].clone());
+                            // attachments stay unless the new document lists them
+                            if !n.contains_key("_attachments") {
+                                if let Some(a) = d.get("_attachments") {
+                                    n.insert("_attachments".into(), a.clone());
+                                }
+                            }
+                            Value::Object(n)
+                        }).into_iter().collect()
+                    }
+                    _ => {
+                        let update = relaxed_json(args.get(1).copied().unwrap_or(""))?;
+                        let mut out = Vec::with_capacity(docs.len());
+                        for d in &docs {
+                            let mut m = d.as_object().cloned().unwrap_or_default();
+                            crate::couch_update::apply(&mut m, &update).map_err(|e| anyhow::anyhow!(e))?;
+                            out.push(Value::Object(m));
+                        }
+                        out
+                    }
+                };
+                if changes.is_empty() {
+                    sink(QueryEvent::Message("No documents matched".into()));
+                    sink(QueryEvent::Affected(0));
+                    return Ok(());
+                }
+                let res = self.send(reqwest::Method::POST, &format!("{path}/_bulk_docs"), &json!({ "docs": changes })).await?;
+                let results = res.as_array().cloned().unwrap_or_default();
+                let failed: Vec<String> = results.iter().filter_map(|r| r.get("error").map(|e| format!("{}: {}{}", r.get("id").and_then(|v| v.as_str()).unwrap_or("?"), e.as_str().unwrap_or("error"), if e == "conflict" { " (it changed since it was read; run the command again)" } else { "" }))).collect();
+                for f in &failed {
+                    sink(QueryEvent::Message(format!("Not changed: {f}")));
+                }
+                sink(QueryEvent::Affected((results.len() - failed.len()) as u64));
+            }
             "drop" => {
                 check(self.req(reqwest::Method::DELETE, &path).send().await?).await?;
                 sink(QueryEvent::Message(format!("Dropped database {db}")));
             }
             other => anyhow::bail!(
-                "`{other}()` isn't supported for CouchDB. Supported: find, findOne, countDocuments, estimatedDocumentCount, insertOne, insertMany, getIndexes, createIndex, drop. Updates and deletes need the document's _rev; send them with Fauxton or curl for now."
+                "`{other}()` isn't supported for CouchDB. Supported: find, findOne, countDocuments, estimatedDocumentCount, insertOne, insertMany, updateOne, updateMany, replaceOne, deleteOne, deleteMany, getIndexes, createIndex, drop."
             ),
         }
         Ok(())
@@ -220,6 +279,34 @@ pub(crate) fn attachment_url(cfg: &ConnectionConfig, db: &str, doc_id: &str, nam
         }
     }
     format!("{base}{}/{}/{}", CouchConn::db_path(db), doc_path(doc_id), urlencode(name))
+}
+
+impl CouchConn {
+    /// Full documents (with `_rev`) matching a Mango selector: the first one,
+    /// or every one (paged with bookmarks). Design documents are left out.
+    async fn matching(&self, path: &str, selector: &Value, one: bool) -> anyhow::Result<Vec<Value>> {
+        let mut out = Vec::new();
+        let mut bookmark: Option<String> = None;
+        let page = if one { 1 } else { 1000 };
+        loop {
+            let mut body = json!({ "selector": selector, "limit": page });
+            if let Some(b) = &bookmark {
+                body["bookmark"] = json!(b);
+            }
+            let res = self.send(reqwest::Method::POST, &format!("{path}/_find"), &body).await?;
+            let docs = res.get("docs").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+            let got = docs.len();
+            out.extend(docs.into_iter().filter(|d| !d.get("_id").and_then(|i| i.as_str()).unwrap_or("").starts_with("_design/")));
+            bookmark = res.get("bookmark").and_then(|b| b.as_str()).map(str::to_string);
+            if one || got < page || bookmark.is_none() {
+                break;
+            }
+        }
+        if one {
+            out.truncate(1);
+        }
+        Ok(out)
+    }
 }
 
 fn urlencode(s: &str) -> String {

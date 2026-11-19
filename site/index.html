@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataBug: a fast database client</title>
+<meta name="description" content="DataBug is a fast, memory-light, free and open source database client written in Rust for macOS, Windows and Linux. SQL, Redis, MongoDB, CouchDB and 13 more databases.">
+<meta property="og:title" content="DataBug: a fast database client">
+<meta property="og:description" content="A fast, memory-light, free and open source database client for macOS, Windows and Linux. 17 databases, from PostgreSQL to Redis.">
+<meta property="og:image" content="https://hayes-roach.github.io/DataBug/demo-poster.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0f1013;
+  --bg-2: #15171b;
+  --card: #1b1d22;
+  --border: #2a2d34;
+  --text: #e7e9ee;
+  --muted: #9aa0ab;
+  --faint: #6b717c;
+  --accent: #4c8dff;
+  --accent-2: #7aa9ff;
+  --green: #4cc38a;
+  --code: #121418;
+  --shadow: 0 30px 80px -30px rgba(0, 0, 0, .7);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f7f8fa;
+    --bg-2: #ffffff;
+    --card: #ffffff;
+    --border: #e3e6eb;
+    --text: #15171c;
+    --muted: #5b6270;
+    --faint: #8a909b;
+    --accent: #2f6fe8;
+    --accent-2: #2f6fe8;
+    --green: #1f9d63;
+    --code: #f1f3f6;
+    --shadow: 0 30px 80px -40px rgba(20, 30, 60, .35);
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent-2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+code, pre { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 13.5px; }
+
+/* nav */
+nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(12px); background: color-mix(in srgb, var(--bg) 82%, transparent); border-bottom: 1px solid var(--border); }
+nav .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; color: var(--text); }
+.brand img { width: 26px; height: 26px; }
+.brand:hover { text-decoration: none; }
+nav .links { display: flex; gap: 22px; margin-left: auto; font-size: 14.5px; }
+nav .links a { color: var(--muted); }
+nav .links a:hover { color: var(--text); text-decoration: none; }
+@media (max-width: 720px) { nav .links a.optional { display: none; } nav .links { gap: 14px; } }
+@media (max-width: 480px) { nav .links a.small-hide { display: none; } }
+
+/* hero */
+.hero { padding: 80px 0 36px; text-align: center; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 13.5px; background: var(--bg-2); }
+.pill b { color: var(--green); font-weight: 600; }
+h1 { font-size: clamp(36px, 6vw, 62px); line-height: 1.05; letter-spacing: -0.03em; margin: 22px auto 18px; max-width: 900px; font-weight: 800; }
+h1 span { background: linear-gradient(90deg, var(--accent), #a26bff 60%, #ff6b8b); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 720px; margin: 0 auto 30px; }
+.cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: 10px; font-weight: 600; font-size: 15px; border: 1px solid var(--border); color: var(--text); background: var(--card); }
+.btn:hover { text-decoration: none; border-color: var(--faint); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn svg { width: 18px; height: 18px; }
+.sub { margin-top: 14px; color: var(--faint); font-size: 13.5px; }
+.sub a { color: var(--muted); }
+
+/* demo */
+#demo { padding: 28px 0 70px; scroll-margin-top: 70px; }
+.frame { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); background: #000; }
+.frame video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 10; }
+.caption { text-align: center; color: var(--faint); font-size: 14px; margin-top: 14px; }
+
+/* sections */
+section { padding: 64px 0; }
+section.alt { background: var(--bg-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -0.02em; margin: 0 0 10px; font-weight: 750; }
+.section-lede { color: var(--muted); margin: 0 0 34px; max-width: 680px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.card h3 { margin: 0 0 6px; font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 9px; }
+.card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-2); flex: none; }
+.ico svg { width: 17px; height: 17px; }
+
+/* databases */
+.dbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.dbgroup { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+.dbgroup h3 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { padding: 6px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); font-size: 14px; font-weight: 500; }
+.chip.new::after { content: "new"; margin-left: 7px; font-size: 11px; color: var(--green); font-weight: 600; }
+
+/* install */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.tab { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--muted); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.tab[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
+.cmd { display: flex; align-items: center; gap: 12px; background: var(--code); border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 14px 18px; overflow: hidden; }
+.cmd pre { margin: 0; flex: 1; overflow-x: auto; white-space: pre; }
+.copy { flex: none; padding: 7px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.copy:hover { color: var(--text); }
+.note { color: var(--faint); font-size: 14px; margin-top: 12px; }
+
+footer { padding: 40px 0 60px; color: var(--faint); font-size: 13.5px; }
+footer .row { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+footer p { margin: 6px 0; max-width: 760px; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt="" width="26" height="26">DataBug</a>
+    <div class="links">
+      <a class="small-hide" href="#demo">Demo</a>
+      <a class="optional" href="#features">Features</a>
+      <a class="optional" href="#databases">Databases</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/hayes-roach/DataBug">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="pill"><b>●</b> Free and open source · macOS, Windows and Linux</span>
+    <h1>One fast client for <span>every database</span> you use</h1>
+    <p class="lede">DataBug is a memory-light database client written in Rust. SQL with completion that knows your schema, Redis commands, MongoDB and CouchDB documents, query plans, schema compare and more, for 17 databases.</p>
+    <div class="cta">
+      <a class="btn primary" id="download" href="https://github.com/hayes-roach/DataBug/releases/latest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+        <span id="download-label">Download DataBug</span>
+      </a>
+      <a class="btn" href="https://github.com/hayes-roach/DataBug">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.56-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+        Source on GitHub
+      </a>
+    </div>
+    <p class="sub" id="other-downloads">Also for <a href="https://github.com/hayes-roach/DataBug/releases/latest">macOS, Windows and Linux</a> · Apache-2.0</p>
+  </div>
+</header>
+
+<div id="demo" class="wrap">
+  <div class="frame">
+    <video src="demo.mp4" poster="demo-poster.jpg" controls autoplay muted loop playsinline preload="metadata" aria-label="DataBug demo: SQL with completion, Redis commands and CouchDB documents"></video>
+  </div>
+  <p class="caption">Recorded live, nothing sped up: SQL completion on SQLite, Redis keys and commands, CouchDB documents with attachments.</p>
+</div>
+
+<section id="features" class="alt">
+  <div class="wrap">
+    <h2>Everything you reach for, without the weight</h2>
+    <p class="section-lede">Native, GPU-drawn and quick to start. Results stream into a virtualized grid that only draws the rows on screen, so large results scroll smoothly.</p>
+    <div class="grid">
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9-4 3 4 3m8-6 4 3-4 3m-2-9-4 14"/></svg></span>An editor that knows your schema</h3><p>Completion for tables, columns, joins and aliases; go to definition, rename refactoring, find and replace, and inspections that flag unknown names.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h7"/></svg></span>Every object in the explorer</h3><p>Tables, views, materialized views, routines, triggers, sequences, indexes and keys, across several databases per server and grouped into projects.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg></span>A fast results grid</h3><p>Sort, filter, edit rows in place with a reviewed script, and export to CSV, JSON or SQL. Big results stay smooth.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6m0 0-6 5v7m6-12 6 5v7"/></svg></span>Query plans you can read</h3><p>Explain and explain-analyze as a tree with costs and timings, for PostgreSQL, MySQL, SQL Server, SQLite and more.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"/></svg></span>Redis, the way you type it</h3><p>Commands as in redis-cli with completion for 185 commands, your keys and hash fields. Replies come back as tables shaped for the command.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/></svg></span>Documents and attachments</h3><p>MongoDB and CouchDB results as documents: every field as a tree, attachments with previews, links and downloads.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h7v10H4zM13 7h7v10h-7z"/><path d="M11 12h2"/></svg></span>Schema compare and ER diagrams</h3><p>Diff two schemas and get the migration script. See tables and their relationships as a diagram you can arrange.</p></div>
+      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg></span>Guard rails for production</h3><p>Read-only and production connections, confirmations for risky statements, manual transactions, and no automatic sign-in retries that lock accounts.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="databases">
+  <div class="wrap">
+    <h2>17 databases, one window</h2>
+    <p class="section-lede">Each with its own driver, introspection and console language. PostgreSQL, MySQL, SQLite, CockroachDB, TimescaleDB, QuestDB, Cassandra, CouchDB, InfluxDB, DuckDB and Redis are tested against live servers.</p>
+    <div class="dbs">
+      <div class="dbgroup"><h3>Relational / SQL</h3><div class="chips"><span class="chip">PostgreSQL</span><span class="chip">MySQL / MariaDB</span><span class="chip">SQL Server</span><span class="chip">SQLite</span><span class="chip">Oracle</span><span class="chip">IBM Db2</span><span class="chip">H2</span></div></div>
+      <div class="dbgroup"><h3>NoSQL</h3><div class="chips"><span class="chip">MongoDB</span><span class="chip">CouchDB</span><span class="chip new">Redis</span><span class="chip">Cassandra</span></div></div>
+      <div class="dbgroup"><h3>Analytics and time series</h3><div class="chips"><span class="chip">DuckDB</span><span class="chip">TimescaleDB</span><span class="chip">QuestDB</span><span class="chip">InfluxDB</span></div></div>
+      <div class="dbgroup"><h3>Distributed</h3><div class="chips"><span class="chip">CockroachDB</span><span class="chip">Spark SQL</span></div></div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="alt">
+  <div class="wrap">
+    <h2>Install in one line</h2>
+    <p class="section-lede">The scripts download the latest release, check it against its published checksums and install it. Run them again to update.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-os="mac" aria-selected="true">macOS</button>
+      <button class="tab" role="tab" data-os="linux" aria-selected="false">Linux</button>
+      <button class="tab" role="tab" data-os="win" aria-selected="false">Windows</button>
+    </div>
+    <div class="cmd"><pre id="cmd">curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh | sh</pre><button class="copy" id="copy">Copy</button></div>
+    <p class="note" id="cmd-note">Or download the <a href="https://github.com/hayes-roach/DataBug/releases/latest">.dmg from the latest release</a> and drag DataBug to Applications.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <div>
+        <p><strong>DataBug</strong> is free and open source under the Apache-2.0 license, built in spare time. <a href="https://github.com/sponsors/hayes-roach">Sponsor it on GitHub</a> if it saves you time.</p>
+        <p>Provided as is, without warranty. DataBug is an independent project, not affiliated with or endorsed by any database vendor; product names are trademarks of their owners.</p>
+      </div>
+      <p><a href="https://github.com/hayes-roach/DataBug">GitHub</a> · <a href="https://github.com/hayes-roach/DataBug/releases">Releases</a> · <a href="https://github.com/hayes-roach/DataBug/blob/main/CHANGELOG.md">Changelog</a></p>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var base = "https://github.com/hayes-roach/DataBug/releases/latest/download/";
+  var ua = navigator.userAgent || "";
+  var platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+  var os = /Win/i.test(platform) || /Windows/i.test(ua) ? "win" : /Mac/i.test(platform) || /Mac OS X/i.test(ua) ? "mac" : /Linux/i.test(platform) && !/Android/i.test(ua) ? "linux" : null;
+  var files = {
+    mac: ["DataBug-macos-universal.dmg", "Download for macOS"],
+    win: ["DataBug-windows-x86_64-setup.exe", "Download for Windows"],
+    linux: ["DataBug-linux-x86_64.tar.gz", "Download for Linux"]
+  };
+  if (os && files[os]) {
+    document.getElementById("download").href = base + files[os][0];
+    document.getElementById("download-label").textContent = files[os][1];
+  }
+
+  var cmds = {
+    mac: ["curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh | sh", 'Or download the <a href="https://github.com/hayes-roach/DataBug/releases/latest">.dmg from the latest release</a> and drag DataBug to Applications.'],
+    linux: ["curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh | sh", 'Installs the app, its icon and a menu entry in ~/.local. The <a href="https://github.com/hayes-roach/DataBug/releases/latest">.tar.gz</a> works too.'],
+    win: ["irm https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.ps1 | iex", 'Run it in PowerShell; it installs for your user, no admin needed. Or use the <a href="https://github.com/hayes-roach/DataBug/releases/latest">setup .exe</a>.']
+  };
+  var tabs = document.querySelectorAll(".tab");
+  function pick(name) {
+    tabs.forEach(function (t) { t.setAttribute("aria-selected", t.dataset.os === name ? "true" : "false"); });
+    document.getElementById("cmd").textContent = cmds[name][0];
+    document.getElementById("cmd-note").innerHTML = cmds[name][1];
+  }
+  tabs.forEach(function (t) { t.addEventListener("click", function () { pick(t.dataset.os); }); });
+  if (os) pick(os);
+
+  document.getElementById("copy").addEventListener("click", function () {
+    var b = this;
+    var text = document.getElementById("cmd").textContent;
+    var done = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1500); };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(done, function () {});
+    }
+  });
+})();
+</script>
+</body>
+</html>

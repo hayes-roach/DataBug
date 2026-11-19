@@ -1,0 +1,46 @@
+# Publishes the website (site/) to GitHub Pages, with the demo video and
+# poster from docs/ and the app icon. Runs when any of them change on main,
+# or by hand from the Actions tab.
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "docs/demo.mp4"
+      - "docs/demo-poster.jpg"
+      - "crates/databug-app/assets/icon/icon.png"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deployment at a time; a newer push replaces a queued one
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp -r site/. _site/
+          cp docs/demo.mp4 docs/demo-poster.jpg _site/
+          cp crates/databug-app/assets/icon/icon.png _site/icon.png
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v5

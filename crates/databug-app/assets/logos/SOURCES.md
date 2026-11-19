@@ -12,4 +12,5 @@ their owners and are used only to identify the database a connection uses.
 | `oracle.svg`, `cockroachdb.svg`, `timescaledb.svg`, `duckdb.svg` | [Simple Icons](https://github.com/simple-icons/simple-icons) 13.21.0: `oracle`, `cockroachlabs`, `timescale`, `duckdb`, filled with each brand color from Simple Icons' data | CC0-1.0 (the icon set); the marks remain trademarks of their owners |
 | `h2.svg` | Simple Icons 15.0.0: `h2database`, filled with its brand color | CC0-1.0 |
 | `db2.svg` | Simple Icons 11.15.0: `ibm` (removed from later Simple Icons releases), filled with IBM blue `#0F62FE` | CC0-1.0; IBM's logo guidelines restrict use of the 8-bar mark, so replace it if IBM asks |
+| `redis.svg` | [Devicon](https://github.com/devicons/devicon) v2.16.0: `redis-original` | MIT (the icon set); the mark remains a trademark of Redis Ltd. |
 | `questdb.png` | The "Q" mark cropped from `.github/logo-readme.png` in [questdb/questdb](https://github.com/questdb/questdb), scaled to 128×128 | Apache-2.0 (the QuestDB repository); the mark remains QuestDB's trademark |

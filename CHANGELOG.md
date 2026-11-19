@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- The macOS app and disk image are signed with an Apple Developer ID and notarized by Apple, so they open without a Gatekeeper warning. The app's identity stays the same across versions, so keychain access allowed once carries over to updates (expect one more keychain prompt after this update)
+
 ## [0.11.1] - 2026-11-19
 
 ### Changed

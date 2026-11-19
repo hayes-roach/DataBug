@@ -69,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.sh
 irm https://raw.githubusercontent.com/hayes-roach/DataBug/main/install.ps1 | iex
 ```
 
-Or grab the `.dmg`, setup `.exe` or `.tar.gz` from the [latest release](https://github.com/hayes-roach/DataBug/releases/latest). DataBug updates itself; see [installing and updating](docs/install.md) for folders, uninstalling and unsigned-app prompts.
+Or grab the `.dmg`, setup `.exe` or `.tar.gz` from the [latest release](https://github.com/hayes-roach/DataBug/releases/latest). DataBug updates itself; see [installing and updating](docs/install.md) for folders, uninstalling and the Windows SmartScreen prompt.
 
 ## Databases
 

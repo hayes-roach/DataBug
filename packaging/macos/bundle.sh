@@ -62,24 +62,55 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Sign with DataBug's certificate when the release provides it
-# (MACOS_SIGN_IDENTITY, MACOS_SIGN_KEYCHAIN): every version then has the
-# same code identity, so macOS keychain access granted with "Always Allow"
-# carries over to updates. Without it, an ad-hoc signature (needed to run on
-# Apple silicon) that changes with every build.
-if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+# Signing and notarization, when the release provides them:
+#   MACOS_SIGN_IDENTITY (and MACOS_SIGN_KEYCHAIN): DataBug's Developer ID
+#     certificate. The app gets the hardened runtime and Apple's timestamp,
+#     and keeps the same code identity across versions, so keychain access
+#     granted with "Always Allow" carries over to updates.
+#   APPLE_API_KEY_PATH, APPLE_API_KEY_ID, APPLE_API_ISSUER_ID: an App Store
+#     Connect API key. The app and the disk image are notarized by Apple and
+#     the tickets stapled, so Gatekeeper opens them without a warning.
+# Without them: an ad-hoc signature (needed to run on Apple silicon).
+sign() {
   if [ -n "${MACOS_SIGN_KEYCHAIN:-}" ]; then
-    codesign --force --deep --timestamp=none --keychain "$MACOS_SIGN_KEYCHAIN" --sign "$MACOS_SIGN_IDENTITY" "$APP"
+    codesign --force --timestamp --keychain "$MACOS_SIGN_KEYCHAIN" --sign "$MACOS_SIGN_IDENTITY" "$@"
   else
-    codesign --force --deep --timestamp=none --sign "$MACOS_SIGN_IDENTITY" "$APP"
+    codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$@"
   fi
-  codesign --verify --deep "$APP"
+}
+notarize() {
+  out=$(xcrun notarytool submit "$1" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --wait --timeout 30m --output-format json) || true
+  echo "$out"
+  if ! printf '%s' "$out" | grep -q '"status":"Accepted"'; then
+    id=$(printf '%s' "$out" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+    [ -n "$id" ] && xcrun notarytool log "$id" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" || true
+    echo "Apple didn't notarize $1" >&2
+    exit 1
+  fi
+}
+NOTARIZE=0
+if [ -n "${MACOS_SIGN_IDENTITY:-}" ] && [ -n "${APPLE_API_KEY_PATH:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER_ID:-}" ]; then
+  NOTARIZE=1
+fi
+
+if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+  sign --deep --options runtime --entitlements packaging/macos/entitlements.plist "$APP"
+  codesign --verify --deep --strict "$APP"
   codesign -d -r- "$APP" 2>&1 | grep designated
 else
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 fi
-rm -f "dist/DataBug-macos-$ARCH.zip"
+ZIP="dist/DataBug-macos-$ARCH.zip"
+rm -f "$ZIP"
 (cd dist && ditto -c -k --keepParent DataBug.app "DataBug-macos-$ARCH.zip")
+if [ "$NOTARIZE" = 1 ]; then
+  notarize "$ZIP"
+  xcrun stapler staple "$APP"
+  # zip again, now with the ticket stapled to the app
+  rm -f "$ZIP"
+  (cd dist && ditto -c -k --keepParent DataBug.app "DataBug-macos-$ARCH.zip")
+  spctl --assess --type execute --verbose=2 "$APP"
+fi
 # installer disk image: the app next to a link to /Applications
 STAGE=$(mktemp -d)/DataBug
 mkdir -p "$STAGE"
@@ -88,8 +119,9 @@ ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/Install DataBug.txt" <<TXT
 To install DataBug, drag DataBug.app onto the Applications folder.
 
-First launch: if macOS says the app is from an unidentified developer,
-right-click DataBug in Applications and choose Open, then Open again.
+First launch: if macOS says the app is from an unidentified developer
+(builds you make yourself aren't notarized), right-click DataBug in
+Applications and choose Open, then Open again.
 
 DataBug is free and open source under the Apache License 2.0. Use it at
 your own risk: it is provided "as is", without warranty of any kind, and
@@ -103,4 +135,11 @@ cp NOTICE "$STAGE/NOTICE.txt"
 DMG="dist/DataBug-macos-$ARCH.dmg"
 rm -f "$DMG"
 hdiutil create -volname "DataBug $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+  sign "$DMG"
+fi
+if [ "$NOTARIZE" = 1 ]; then
+  notarize "$DMG"
+  xcrun stapler staple "$DMG"
+fi
 echo "Built $ROOT/$APP, $ROOT/dist/DataBug-macos-$ARCH.zip and $ROOT/$DMG"

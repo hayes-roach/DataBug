@@ -6,8 +6,6 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-11-19
-
 ### Added
 
 - Choose where DataBug goes on a first install: the Windows setup shows its folder page (updates reuse the folder), and the one-line installers ask for a folder (Enter keeps the default; `DATABUG_INSTALL_DIR` and `--yes` skip the question). The folder is remembered, so updates and `--uninstall` find it
@@ -19,6 +17,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 ### Fixed
 
 - macOS asked for keychain access again and again for one connection (CouchDB attachments, consoles and the explorer each read the password). DataBug now reads a saved password once per run
+
+## [0.9.0] - 2026-11-19
 
 ### Added
 

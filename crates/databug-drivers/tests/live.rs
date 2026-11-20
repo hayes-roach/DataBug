@@ -1009,3 +1009,57 @@ async fn duckdb_download_and_load() {
     drop(conn);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `DATABUG_TEST_MSSQL=host:port:user:password`. Date and time values show
+/// as text that converts back to the same value, so the grid can match rows
+/// on them (a datetime in the primary key) whatever the session's
+/// DATEFORMAT is. Uses a table of its own in tempdb.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mssql_dates_round_trip() {
+    let Some(p) = env_parts("DATABUG_TEST_MSSQL") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::MsSql);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.user = p[2].clone();
+    cfg.database = "tempdb".into();
+    cfg.trust_server_cert = true;
+    let mut conn = connect(&cfg, Some(&p[3])).await.unwrap();
+    run(&mut conn, "DROP TABLE IF EXISTS dbo.databug_dates", 10).await.unwrap();
+    run(
+        &mut conn,
+        "CREATE TABLE dbo.databug_dates (at datetime NOT NULL, small smalldatetime NOT NULL, at2 datetime2 NOT NULL, t time NOT NULL, o datetimeoffset NOT NULL, d date NOT NULL, PRIMARY KEY (at, small, at2, t, o, d))",
+        10,
+    )
+    .await
+    .unwrap();
+    run(
+        &mut conn,
+        "INSERT INTO dbo.databug_dates VALUES ('2026-11-03T09:15:00.003', '2026-11-03T09:15:00', '2026-11-03 09:15:00.1234567', '09:15:00.1234567', '2026-11-03 09:15:00.1234567 +05:30', '2026-11-03'), ('2026-11-03T09:15:59.997', '2026-11-03T10:00:00', '2026-11-03 09:15:00', '09:15:00', '2026-11-03 09:15:00 +00:00', '2026-11-04')",
+        10,
+    )
+    .await
+    .unwrap();
+    let c = run(&mut conn, "SELECT at, small, at2, t, o, d FROM dbo.databug_dates ORDER BY d", 10).await.unwrap();
+    assert_eq!(c.types, vec!["datetime", "smalldatetime", "datetime2", "time", "datetimeoffset", "date"]);
+    let row = |r: usize| (0..6).map(|i| c.rows.cell(r, i).unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(row(0), vec!["2026-11-03 09:15:00.003", "2026-11-03 09:15:00", "2026-11-03 09:15:00.1234567", "09:15:00.1234567", "2026-11-03 09:15:00.1234567 +05:30", "2026-11-03"]);
+    assert_eq!(row(1)[0], "2026-11-03 09:15:59.997");
+    // what the grid writes: the shown text, with a T in datetime and smalldatetime
+    run(&mut conn, "SET DATEFORMAT dmy", 10).await.unwrap();
+    for r in 0..2 {
+        let v = row(r);
+        let iso = |s: &str| s.replacen(' ', "T", 1);
+        let sql = format!(
+            "DELETE FROM dbo.databug_dates WHERE at = N'{}' AND small = N'{}' AND at2 = N'{}' AND t = N'{}' AND o = N'{}' AND d = N'{}'",
+            iso(&v[0]),
+            iso(&v[1]),
+            v[2],
+            v[3],
+            v[4],
+            v[5]
+        );
+        let c = run(&mut conn, &sql, 10).await.unwrap();
+        assert_eq!(c.affected, Some(1), "{sql}");
+    }
+    run(&mut conn, "DROP TABLE dbo.databug_dates", 10).await.unwrap();
+}

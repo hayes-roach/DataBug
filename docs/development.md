@@ -66,6 +66,7 @@ The other engines have live tests that run when their variable is set; with Dock
 | `DATABUG_TEST_CASSANDRA=localhost:9042` | `docker run -d -p 9042:9042 cassandra:5` |
 | `DATABUG_TEST_COUCHDB=localhost:5984:admin:pw` | `docker run -d -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=pw couchdb:3` |
 | `DATABUG_TEST_REDIS=localhost:6379::pw` (host:port:user:password; the user may be empty) | `docker run -d -p 6379:6379 redis:8 redis-server --requirepass pw` (uses database 15 and `databug:` keys only) |
+| `DATABUG_TEST_MSSQL=localhost:1433:sa:Str0ng_Passw0rd` (host:port:user:password) | `docker run -d -p 1433:1433 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=Str0ng_Passw0rd mcr.microsoft.com/mssql/server:2022-latest` (on Apple silicon, `mcr.microsoft.com/azure-sql-edge`; uses one table in tempdb) |
 | `DATABUG_TEST_INFLUXDB=localhost:8086:example:store:dev-token` | `docker run -d -p 8086:8086 -e DOCKER_INFLUXDB_INIT_MODE=setup -e DOCKER_INFLUXDB_INIT_USERNAME=admin -e DOCKER_INFLUXDB_INIT_PASSWORD=password123 -e DOCKER_INFLUXDB_INIT_ORG=example -e DOCKER_INFLUXDB_INIT_BUCKET=store -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=dev-token influxdb:2.7` |
 | `DATABUG_TEST_ORACLE`, `DATABUG_TEST_DB2`, `DATABUG_TEST_SPARK` | need the client software above |
 

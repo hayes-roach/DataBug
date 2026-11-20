@@ -812,11 +812,26 @@ impl ResultView {
         self.order_dirty = true;
     }
 
-    fn literal(&self, v: Option<&str>, numeric: bool) -> String {
+    /// `v` as a SQL literal for column `c`.
+    fn literal(&self, v: Option<&str>, c: usize, numeric: bool) -> String {
         match v {
             None => "NULL".into(),
             Some(s) if numeric && s.parse::<f64>().is_ok() => s.to_string(),
-            Some(s) => self.dialect.quote_literal(s),
+            Some(s) => self.dialect.quote_literal(&self.portable_text(s, c)),
+        }
+    }
+
+    /// SQL Server reads 'YYYY-MM-DD hh:mm:ss' for datetime and smalldatetime
+    /// by the session's DATEFORMAT (so it can fail or swap day and month);
+    /// the ISO form with a T always converts the same way.
+    fn portable_text<'a>(&self, s: &'a str, c: usize) -> std::borrow::Cow<'a, str> {
+        let legacy = self.columns.get(c).is_some_and(|m| matches!(m.type_name.to_ascii_lowercase().as_str(), "datetime" | "smalldatetime"));
+        let b = s.as_bytes();
+        let looks = b.len() >= 16 && b[4] == b'-' && b[7] == b'-' && b[10] == b' ' && b[13] == b':' && b[..4].iter().all(u8::is_ascii_digit);
+        if self.dialect == Dialect::MsSql && legacy && looks {
+            format!("{}T{}", &s[..10], &s[11..]).into()
+        } else {
+            s.into()
         }
     }
 
@@ -835,7 +850,7 @@ impl ResultView {
                     let orig = self.data.cell(r as usize, pk);
                     match orig {
                         None => format!("{} IS NULL", q(&self.columns[pk].name)),
-                        Some(_) => format!("{} = {}", q(&self.columns[pk].name), self.literal(orig, t.numeric[pk])),
+                        Some(_) => format!("{} = {}", q(&self.columns[pk].name), self.literal(orig, pk, t.numeric[pk])),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -857,7 +872,7 @@ impl ResultView {
             if self.is_inserted(*r) {
                 continue;
             }
-            let set: Vec<String> = cols.iter().map(|(c, v)| format!("{} = {}", q(&self.columns[*c as usize].name), self.literal(v.map(|s| s.as_str()), t.numeric[*c as usize]))).collect();
+            let set: Vec<String> = cols.iter().map(|(c, v)| format!("{} = {}", q(&self.columns[*c as usize].name), self.literal(v.map(|s| s.as_str()), *c as usize, t.numeric[*c as usize]))).collect();
             out.push(format!("UPDATE {} SET {} WHERE {}", t.qualified, set.join(", "), key(*r)?));
         }
         if let Some(f) = self.inserted_from {
@@ -872,7 +887,7 @@ impl ResultView {
                     continue;
                 }
                 let names: Vec<String> = cols.iter().map(|(c, _)| q(&self.columns[*c as usize].name)).collect();
-                let vals: Vec<String> = cols.iter().map(|(c, v)| self.literal(v.map(|s| s.as_str()), t.numeric[*c as usize])).collect();
+                let vals: Vec<String> = cols.iter().map(|(c, v)| self.literal(v.map(|s| s.as_str()), *c as usize, t.numeric[*c as usize])).collect();
                 inserts.push(format!("INSERT INTO {} ({}) VALUES ({})", t.qualified, names.join(", "), vals.join(", ")));
             }
         }
@@ -948,7 +963,7 @@ impl ResultView {
                 let table = self.edit_target.as_ref().map(|t| t.qualified.clone()).unwrap_or_else(|| "my_table".into());
                 let cols: Vec<String> = names.iter().map(|n| self.dialect.quote_ident(n)).collect();
                 for &r in &self.order {
-                    let vals: Vec<String> = (0..names.len()).map(|c| self.literal(self.cell(r, c), self.is_numeric(c))).collect();
+                    let vals: Vec<String> = (0..names.len()).map(|c| self.literal(self.cell(r, c), c, self.is_numeric(c))).collect();
                     let _ = writeln!(out, "INSERT INTO {} ({}) VALUES ({});", table, cols.join(", "), vals.join(", "));
                 }
             }
@@ -1064,6 +1079,23 @@ mod tests {
         g.edit_target = Some(EditTarget { qualified: "public.t".into(), pk_cols: vec![0], numeric: vec![true, false] });
         g.set_cell(0, 1, Some("it's".into()));
         assert_eq!(g.update_statements().unwrap(), vec!["UPDATE public.t SET name = 'it''s' WHERE id = 7"]);
+    }
+
+    #[test]
+    fn sql_server_datetime_keys_use_the_iso_form() {
+        let cols = vec![ColumnMeta::new("id", "int"), ColumnMeta::new("at", "datetime"), ColumnMeta::new("at2", "datetime2")];
+        let mut g = ResultView::new("r".into(), cols, Dialect::MsSql, 1);
+        let mut rs = ResultSet::new(3);
+        rs.push(Some("7"));
+        rs.push(Some("2026-11-20 09:15:00.123"));
+        rs.push(Some("2026-11-20 09:15:00.1234567"));
+        g.append(rs);
+        g.edit_target = Some(EditTarget { qualified: "dbo.t".into(), pk_cols: vec![0, 1, 2], numeric: vec![true, false, false] });
+        g.toggle_delete(&[0].into());
+        assert_eq!(
+            g.update_statements().unwrap(),
+            vec!["DELETE FROM dbo.t WHERE id = 7 AND at = N'2026-11-20T09:15:00.123' AND at2 = N'2026-11-20 09:15:00.1234567'"]
+        );
     }
 
     fn three_rows() -> ResultView {

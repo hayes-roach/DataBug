@@ -171,6 +171,10 @@ fn type_name(c: &tiberius::Column) -> String {
         "bitn" => "bit".into(),
         "decimaln" | "numericn" => "decimal".into(),
         "datetimen" => "datetime".into(),
+        "datetime4" => "smalldatetime".into(),
+        "datetimeoffsetn" => "datetimeoffset".into(),
+        "timen" => "time".into(),
+        "daten" => "date".into(),
         "bigvarchar" => "varchar".into(),
         "bigchar" => "char".into(),
         "bigvarbin" => "varbinary".into(),
@@ -207,26 +211,45 @@ fn cell_text(d: &ColumnData<'static>, out: &mut String) -> bool {
             }
             true
         }
-        ColumnData::DateTime(Some(_)) | ColumnData::SmallDateTime(Some(_)) | ColumnData::DateTime2(Some(_)) => {
-            match chrono::NaiveDateTime::from_sql(d) {
-                Ok(Some(v)) => w!(v.format("%Y-%m-%d %H:%M:%S%.f")),
-                _ => false,
-            }
-        }
+        // seconds with as many decimals as the type stores (datetime: 3,
+        // datetime2/time/datetimeoffset: 7), so the text converts back to the
+        // same value when it's used in a WHERE clause
+        ColumnData::DateTime(Some(_)) | ColumnData::SmallDateTime(Some(_)) => match chrono::NaiveDateTime::from_sql(d) {
+            Ok(Some(v)) => w!(format_args!("{}{}", v.format("%Y-%m-%d %H:%M:%S"), fraction(v.and_utc().timestamp_subsec_nanos(), 3))),
+            _ => false,
+        },
+        ColumnData::DateTime2(Some(_)) => match chrono::NaiveDateTime::from_sql(d) {
+            Ok(Some(v)) => w!(format_args!("{}{}", v.format("%Y-%m-%d %H:%M:%S"), fraction(v.and_utc().timestamp_subsec_nanos(), 7))),
+            _ => false,
+        },
         ColumnData::Date(Some(_)) => match chrono::NaiveDate::from_sql(d) {
             Ok(Some(v)) => w!(v),
             _ => false,
         },
         ColumnData::Time(Some(_)) => match chrono::NaiveTime::from_sql(d) {
-            Ok(Some(v)) => w!(v),
+            Ok(Some(v)) => w!(format_args!("{}{}", v.format("%H:%M:%S"), fraction(chrono::Timelike::nanosecond(&v), 7))),
             _ => false,
         },
         ColumnData::DateTimeOffset(Some(_)) => match chrono::DateTime::<chrono::FixedOffset>::from_sql(d) {
-            Ok(Some(v)) => w!(v.format("%Y-%m-%d %H:%M:%S%.f %:z")),
+            Ok(Some(v)) => w!(format_args!("{}{} {}", v.format("%Y-%m-%d %H:%M:%S"), fraction(v.timestamp_subsec_nanos(), 7), v.format("%:z"))),
             _ => false,
         },
         _ => false,
     }
+}
+
+/// Fractional seconds rounded to `digits` decimals, trailing zeros dropped
+/// (".5", ".123"); empty for whole seconds.
+fn fraction(nanos: u32, digits: u32) -> String {
+    let scale = 10u64.pow(9 - digits);
+    // datetime keeps 1/300 s, so .003333333 shows as .003; rounding never
+    // reaches a whole second for values SQL Server stores
+    let v = ((nanos as u64 + scale / 2) / scale).min(10u64.pow(digits) - 1);
+    if v == 0 {
+        return String::new();
+    }
+    let s = format!(".{v:0width$}", width = digits as usize);
+    s.trim_end_matches('0').to_string()
 }
 
 /// DML without OUTPUT goes through `execute` so we get the affected row count;
@@ -553,5 +576,19 @@ mod auth_tests {
         assert!(!e.contains("Kerberos"), "kinit should succeed, then the TCP connect fails: {e}");
         let out = std::process::Command::new("klist").output().unwrap();
         assert!(String::from_utf8_lossy(&out.stdout).contains(&kerberos_principal(user)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fraction;
+
+    #[test]
+    fn fractions_fit_the_type() {
+        assert_eq!(fraction(0, 3), "");
+        assert_eq!(fraction(3_333_333, 3), ".003"); // datetime's 1/300 s
+        assert_eq!(fraction(996_666_667, 3), ".997");
+        assert_eq!(fraction(500_000_000, 7), ".5");
+        assert_eq!(fraction(123_456_700, 7), ".1234567");
     }
 }

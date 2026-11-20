@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- SQL Server: deleting or editing rows whose primary key includes a date or time column no longer fails with "Conversion failed when converting date and/or time from character string". Values show with the precision the column stores (3 decimals for datetime, up to 7 for datetime2, time and datetimeoffset), and datetime keys are written in a form that converts the same way under any DATEFORMAT
+
 ## [0.11.3] - 2026-11-20
 
 ### Fixed

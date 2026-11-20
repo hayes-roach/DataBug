@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows: Check for updates no longer freezes the app. The update window looked up how DataBug was installed on every frame, which ran a registry query each time; it is now worked out once, in the background
+
 ## [0.11.2] - 2026-11-19
 
 ### Changed

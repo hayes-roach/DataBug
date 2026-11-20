@@ -541,7 +541,11 @@ impl DataBugApp {
         let testing = (app.screenshot.is_some() || app.demo.is_some()) && std::env::var_os("DATABUG_UPDATE_URL").is_none();
         if !testing {
             // only one version on disk: drop the downloads of earlier updates
-            std::thread::spawn(crate::update::remove_old_downloads);
+            std::thread::spawn(|| {
+                crate::update::remove_old_downloads();
+                // worked out off the UI thread, before the update window needs it
+                let _ = crate::update::install_kind();
+            });
         }
         if app.settings.check_updates && !testing {
             if now_secs().saturating_sub(app.settings.last_update_check) > 6 * 3600 {

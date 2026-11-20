@@ -130,7 +130,14 @@ pub enum InstallKind {
     Manual(String),
 }
 
+/// How this copy was installed. Worked out once per run: the update window
+/// asks every frame, and on Windows the answer needs a registry query.
 pub fn install_kind() -> InstallKind {
+    static KIND: std::sync::OnceLock<InstallKind> = std::sync::OnceLock::new();
+    KIND.get_or_init(detect_install_kind).clone()
+}
+
+fn detect_install_kind() -> InstallKind {
     let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize().or(Ok(p))) else { return InstallKind::Manual("Can't tell where DataBug is running from".into()) };
     if exe.components().any(|c| c.as_os_str() == "target") {
         return InstallKind::Manual("This is a build from source. Update it with `git pull` and `cargo build --release`.".into());
@@ -168,12 +175,17 @@ fn linux_install_dir(home: &Path) -> Option<PathBuf> {
 
 /// Whether the Windows setup registered DataBug for this user only.
 fn windows_per_user_install() -> bool {
-    cfg!(windows)
-        && Command::new("reg")
-            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F0C1D8E-3B7A-4E52-9C1D-DA7ABA6B0001}_is1"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+    if !cfg!(windows) {
+        return false;
+    }
+    let mut c = Command::new("reg");
+    c.args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F0C1D8E-3B7A-4E52-9C1D-DA7ABA6B0001}_is1"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Delete what earlier updates left in the temp folder (`databug-update-*`:

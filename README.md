@@ -105,7 +105,7 @@ Needs Rust 1.89+ and a C compiler. Tests, architecture and the screenshot harnes
 
 Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
-If DataBug saves you time, you can [sponsor it](https://github.com/sponsors/hayes-roach). A star helps too.
+<a href="https://ko-fi.com/hroach"><img src="https://storage.ko-fi.com/cdn/kofi2.png?v=6" height="36" alt="Buy me a coffee at ko-fi.com"></a>
 
 ## License
 

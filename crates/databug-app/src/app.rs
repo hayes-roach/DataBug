@@ -3835,6 +3835,10 @@ impl DataBugApp {
                 if plan.scene == "light" {
                     self.settings.theme = ThemeKind::Light;
                 }
+                // any scene in another theme, by its menu name: DATABUG_SHOT_THEME=Purple
+                if let Some(k) = std::env::var("DATABUG_SHOT_THEME").ok().and_then(|t| ThemeKind::ALL.into_iter().find(|k| k.label().eq_ignore_ascii_case(&t))) {
+                    self.settings.theme = k;
+                }
                 // scenes against a live server: its password, kept in memory only
                 if let (Ok(pw), Some(c)) = (std::env::var("DATABUG_SHOT_PASSWORD"), self.connections.first()) {
                     let id = c.id.clone();

@@ -27,7 +27,7 @@ Everything DataBug does, in detail. Back to the [README](../README.md).
 - **Find in database**: press `Ctrl/⌘ + F` again in the find bar, outside the editor, or use *Find* in the explorer. Searches object names, columns, and optionally the definitions of views, routines and triggers, in one connection or all of them. Click a result to reveal it in the explorer, double-click to open it. *Search table data…* generates a query that counts matching rows in every text column.
 
 **Themes**
-- Six built-in themes: Dark (default), Light, Midnight, Forest, Paper and High contrast, picked from the toolbar's theme menu. *Customize colors…* lets you change any of the 25 interface and syntax colors per theme, with per-color and whole-theme reset.
+- Eight built-in themes: Dark (default), Light, Midnight, Forest, Pink, Purple, Paper and High contrast, picked from the toolbar's theme menu. *Customize colors…* lets you change any of the 25 interface and syntax colors per theme, with per-color and whole-theme reset.
 
 **Editor**
 - Syntax highlighting per dialect, line numbers, current-line highlight, toggle comment (`Ctrl/⌘ + /`), formatter (`Ctrl + Alt + L`).

@@ -14,10 +14,12 @@ pub enum ThemeKind {
     Forest,
     Paper,
     HighContrast,
+    Pink,
+    Purple,
 }
 
 impl ThemeKind {
-    pub const ALL: [ThemeKind; 6] = [ThemeKind::Dark, ThemeKind::Light, ThemeKind::Midnight, ThemeKind::Forest, ThemeKind::Paper, ThemeKind::HighContrast];
+    pub const ALL: [ThemeKind; 8] = [ThemeKind::Dark, ThemeKind::Light, ThemeKind::Midnight, ThemeKind::Forest, ThemeKind::Pink, ThemeKind::Purple, ThemeKind::Paper, ThemeKind::HighContrast];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -27,6 +29,8 @@ impl ThemeKind {
             ThemeKind::Forest => "Forest",
             ThemeKind::Paper => "Paper",
             ThemeKind::HighContrast => "High contrast",
+            ThemeKind::Pink => "Pink",
+            ThemeKind::Purple => "Purple",
         }
     }
 
@@ -241,6 +245,64 @@ pub const HIGH_CONTRAST: Palette = Palette {
     syn_operator: rgb(0xFFFFFF),
 };
 
+/// Dark plum-rose background with pink accents.
+pub const PINK: Palette = Palette {
+    canvas: rgb(0x1A1217),
+    island: rgb(0x22181F),
+    raised: rgb(0x30222C),
+    hover: rgb(0x382833),
+    selection: rgb(0x6A2E52),
+    border: rgb(0x43303D),
+    text: rgb(0xF2E4EC),
+    muted: rgb(0xAE95A5),
+    faint: rgb(0x766170),
+    accent: rgb(0xFF6FAE),
+    success: rgb(0x7FD6A4),
+    danger: rgb(0xFF6B6B),
+    warning: rgb(0xF5C26B),
+    grid_alt: rgb(0x271C24),
+    edited: rgb(0x40361E),
+    tree_selected: rgb(0x120C10),
+    syn_keyword: rgb(0xFF79B8),
+    syn_string: rgb(0xB8E2A0),
+    syn_number: rgb(0xF7A76C),
+    syn_comment: rgb(0x8A7083),
+    syn_ident: rgb(0xEBDCE5),
+    syn_quoted: rgb(0xD4A5FF),
+    syn_function: rgb(0x7FD8E6),
+    syn_param: rgb(0xFFD08A),
+    syn_operator: rgb(0xF4A6CF),
+};
+
+/// Deep violet background with lavender accents.
+pub const PURPLE: Palette = Palette {
+    canvas: rgb(0x14111F),
+    island: rgb(0x1B1729),
+    raised: rgb(0x272139),
+    hover: rgb(0x2E2744),
+    selection: rgb(0x4B3A8C),
+    border: rgb(0x362E4F),
+    text: rgb(0xE8E3F7),
+    muted: rgb(0x9C94B8),
+    faint: rgb(0x655D80),
+    accent: rgb(0x9D7BFF),
+    success: rgb(0x6FD3A0),
+    danger: rgb(0xFF6E8A),
+    warning: rgb(0xF0C46A),
+    grid_alt: rgb(0x1F1A30),
+    edited: rgb(0x3C3720),
+    tree_selected: rgb(0x0D0B16),
+    syn_keyword: rgb(0xB59CFF),
+    syn_string: rgb(0xA6E3A1),
+    syn_number: rgb(0xFAB387),
+    syn_comment: rgb(0x6F6790),
+    syn_ident: rgb(0xDCD6F0),
+    syn_quoted: rgb(0xF5A6D8),
+    syn_function: rgb(0x89DCEB),
+    syn_param: rgb(0xF9E2AF),
+    syn_operator: rgb(0xC4B5FD),
+};
+
 pub fn preset(kind: ThemeKind) -> &'static Palette {
     match kind {
         ThemeKind::Dark => &DARK,
@@ -249,6 +311,8 @@ pub fn preset(kind: ThemeKind) -> &'static Palette {
         ThemeKind::Forest => &FOREST,
         ThemeKind::Paper => &PAPER,
         ThemeKind::HighContrast => &HIGH_CONTRAST,
+        ThemeKind::Pink => &PINK,
+        ThemeKind::Purple => &PURPLE,
     }
 }
 

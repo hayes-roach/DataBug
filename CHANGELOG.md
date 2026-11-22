@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-22
+
 ### Added
 
 - Two new themes, Pink and Purple, in the toolbar's theme menu

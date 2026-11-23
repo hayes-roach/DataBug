@@ -4406,6 +4406,12 @@ impl DataBugApp {
 }
 
 impl eframe::App for DataBugApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let line = ctx.options(|o| o.line_scroll_speed);
+        let page = raw_input.screen_rect.map(|r| r.height()).unwrap_or(600.0);
+        raw_input.events = immediate_wheel(std::mem::take(&mut raw_input.events), line, page);
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let frame_start = Instant::now();
         self.update_inner(ctx, frame);
@@ -4420,6 +4426,30 @@ impl eframe::App for DataBugApp {
 struct FrameStats {
     update_ms: Vec<f32>,
     cpu_ms: Vec<f32>,
+}
+
+/// Mouse wheels (most Windows and Linux mice) report whole lines, and egui
+/// glides those over about a fifth of a second, so lists and the editor trail
+/// the wheel. Trackpads report small pixel steps that egui applies at once.
+/// Turn each wheel step into pixel steps that small, so a notch scrolls the
+/// same distance but lands in the same frame.
+fn immediate_wheel(events: Vec<egui::Event>, line: f32, page: f32) -> Vec<egui::Event> {
+    // egui applies pixel steps shorter than 8 points right away
+    const STEP: f32 = 7.5;
+    let mut out = Vec::with_capacity(events.len());
+    for e in events {
+        match e {
+            egui::Event::MouseWheel { unit: unit @ (egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page), delta, modifiers } => {
+                let delta = delta * if unit == egui::MouseWheelUnit::Line { line } else { page };
+                let n = (delta.length() / STEP).ceil().clamp(1.0, 2000.0) as usize;
+                for _ in 0..n {
+                    out.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: delta / n as f32, modifiers });
+                }
+            }
+            e => out.push(e),
+        }
+    }
+    out
 }
 
 impl FrameStats {
@@ -4633,4 +4663,19 @@ impl DataBugApp {
             edge_resize(ctx);
         }
     }
-}
+}    #[test]
+    fn wheel_lines_become_small_steps() {
+        let m = egui::Modifiers::NONE;
+        let e = vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -1.0), modifiers: m }, egui::Event::PointerGone];
+        let out = crate::app::immediate_wheel(e, 40.0, 600.0);
+        assert!(matches!(out.last(), Some(egui::Event::PointerGone)));
+        let steps: Vec<egui::Vec2> = out.iter().filter_map(|e| if let egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } = e { Some(delta.to_owned()) } else { None }).collect();
+        assert_eq!(steps.len(), 6);
+        assert!(steps.iter().all(|d| d.length() < 8.0));
+        assert!((steps.iter().map(|d| d.y).sum::<f32>() + 40.0).abs() < 0.01);
+        // trackpad steps pass through untouched
+        let px = vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 30.0), modifiers: m }];
+        assert_eq!(crate::app::immediate_wheel(px.clone(), 40.0, 600.0), px);
+    }
+
+

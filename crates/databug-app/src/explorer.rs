@@ -303,6 +303,11 @@ fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos,
         resp.scroll_to_me(Some(egui::Align::Center));
         st.scroll_to_selected = false;
     }
+    // scrolled out of view: keep the space, skip the drawing (large schemas
+    // have thousands of rows)
+    if !ui.is_rect_visible(rect) {
+        return RowOut { clicked: false, double: false, edit: false, resp };
+    }
     let selected = st.selected.as_deref() == Some(key);
     let open = st.open.contains(key);
     let painter = ui.painter_at(rect.expand2(egui::vec2(0.0, 0.0)));

@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-11-23
+
 ### Changed
 
 - Running a query that creates, alters, drops or renames something (or, on Redis and MongoDB, any write) reloads the schema in the explorer when it finishes

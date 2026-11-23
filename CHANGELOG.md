@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- Disconnecting a connection from the explorer while its node was expanded signed straight back in, so it still showed as connected. Disconnect now collapses the node and the status dot turns grey
+
 ## [0.13.0] - 2026-11-23
 
 ### Changed

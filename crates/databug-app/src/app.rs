@@ -1534,6 +1534,9 @@ impl DataBugApp {
             Action::Disconnect(id) => {
                 self.disconnect(&id);
                 self.disconnected.insert(id.clone());
+                // collapse it: an open node on a disconnected connection reads as
+                // "expanded again" and would sign back in
+                self.explorer.close_connection(&id);
                 let name = self.conn(&id).map(|c| c.name.clone()).unwrap_or_default();
                 self.toast(format!("Disconnected from {name}"));
             }

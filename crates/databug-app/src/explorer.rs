@@ -128,6 +128,14 @@ impl ExplorerState {
         self.open_after_connect.insert(conn_id.to_string());
     }
 
+    /// Close a connection's node, e.g. when it's disconnected. A node left
+    /// open on a disconnected connection reads as "expanded again" and would
+    /// sign straight back in.
+    pub fn close_connection(&mut self, conn_id: &str) {
+        self.open.remove(&format!("c:{conn_id}"));
+        self.open_after_connect.remove(conn_id);
+    }
+
     /// Open the schema picker for a connection (from a menu or command).
     pub fn request_picker(&mut self, conn_id: &str) {
         self.open.insert(format!("c:{conn_id}"));
@@ -1749,6 +1757,24 @@ mod tests {
         h.failed.insert("c1".into(), "password authentication failed".into());
         h.frame(0.0);
         assert!(h.st.open.contains("c:c1"));
+    }
+
+    #[test]
+    fn disconnecting_closes_the_node_without_signing_in_again() {
+        let mut h = Harness::new(catalog(30, 0, 0));
+        h.connected.insert("c1".into());
+        h.frame(0.0);
+        assert!(h.st.content_height > 500.0, "tables shown while connected");
+        // right-click → Disconnect: the app marks it disconnected and closes the node
+        h.connected.clear();
+        h.disconnected.insert("c1".into());
+        h.st.close_connection("c1");
+        for _ in 0..2 {
+            h.frame(0.0);
+            assert!(!h.actions.iter().any(|a| matches!(a, Action::Connect(_))), "it signed in again");
+        }
+        assert!(!h.st.open.contains("c:c1"));
+        assert!(h.st.content_height < 200.0, "tables still shown");
     }
 
     #[test]

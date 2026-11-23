@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- After an update, the Start menu, desktop and taskbar shortcuts on Windows, and Finder and the Dock on macOS, kept showing the previous version's icon from the system's icon cache. The Windows setup and the macOS updater now tell the system to refresh it
+
 ## [0.15.0] - 2026-11-23
 
 ### Added

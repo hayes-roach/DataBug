@@ -42,6 +42,9 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
+; tell Explorer to drop its cached icons when the setup ends, so the Start
+; menu, desktop and taskbar shortcuts show a new icon after an update
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -75,6 +78,8 @@ Name: "{autoprograms}\DataBug"; Filename: "{app}\DataBug.exe"
 Name: "{autodesktop}\DataBug"; Filename: "{app}\DataBug.exe"; Tasks: desktopicon
 
 [Run]
+; rebuild the shell's icon cache (Windows 10 and 11), also for silent updates
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
 Filename: "{app}\DataBug.exe"; Description: "{cm:LaunchProgram,DataBug}"; Flags: nowait postinstall skipifsilent
 ; DataBug's in-app updater runs this setup silently with /relaunch=1
 Filename: "{app}\DataBug.exe"; Flags: nowait; Check: ShouldRelaunch

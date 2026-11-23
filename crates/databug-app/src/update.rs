@@ -317,6 +317,9 @@ else
   rm -rf "$APP"; mv "$OLD" "$APP"
 fi
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+# a new icon shows in Finder and the Dock only once macOS re-reads the bundle
+touch "$APP"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 2>/dev/null || true
 # keep one DataBug: remove other copies in the Applications folders
 for other in /Applications/DataBug.app "$HOME/Applications/DataBug.app"; do
   [ -d "$other" ] && [ "$other" != "$APP" ] || continue

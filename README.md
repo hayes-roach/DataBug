@@ -4,7 +4,7 @@
 </h1>
 
 <p align="center">
-  <b>A fast, native database client for SQL and NoSQL.</b><br>
+  A fast, native database client for SQL and NoSQL.<br>
   Free and open source for macOS, Windows and Linux.
 </p>
 

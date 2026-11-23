@@ -2877,17 +2877,8 @@ impl DataBugApp {
         use crate::toolbar::{self as tb, Icon, Kind};
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            // logo: a small bug with a split shell
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), Sense::hover());
-            let c = rect.center() + egui::vec2(0.0, 1.5);
-            let leg = Stroke::new(1.4_f32, p.muted);
-            for dy in [-3.5_f32, 0.0, 3.5] {
-                ui.painter().line_segment([c + egui::vec2(-4.0, dy), c + egui::vec2(-9.0, dy + dy.signum() * 1.5)], leg);
-                ui.painter().line_segment([c + egui::vec2(4.0, dy), c + egui::vec2(9.0, dy + dy.signum() * 1.5)], leg);
-            }
-            ui.painter().circle_filled(c + egui::vec2(0.0, -7.0), 3.0, p.syn_keyword);
-            ui.painter().rect_filled(egui::Rect::from_center_size(c, egui::vec2(11.0, 13.0)), CornerRadius::same(5), p.accent);
-            ui.painter().line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], Stroke::new(1.2_f32, p.canvas));
+            // logo: the app icon's beetle, without its dark tile
+            ui.add(egui::Image::from_bytes("bytes://databug/mark.svg", include_bytes!("../assets/icon/mark.svg").as_slice()).fit_to_exact_size(egui::vec2(22.0, 22.0)));
             ui.label(RichText::new("DataBug").font(bold(14.0)));
 
             let active = self.tabs.get(self.active).filter(|t| t.tool.is_none());

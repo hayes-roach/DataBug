@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- New app icon: a geometric beetle whose shell reads as database rows, on a dark tile. It replaces the old icon on macOS, Windows and Linux, in the app's header, the README and the website
+
 ## [0.13.1] - 2026-11-23
 
 ### Fixed

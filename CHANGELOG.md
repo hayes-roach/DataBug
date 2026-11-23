@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-23
+
 ### Added
 
 - SSH tunnels: connect to a database through an SSH server (a bastion or jump host), signing in with a password, a private key file or your SSH agent. Host keys are checked against `~/.ssh/known_hosts` and trusted on first use otherwise; a changed key is refused

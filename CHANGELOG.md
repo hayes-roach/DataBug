@@ -6,6 +6,15 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Added
+
+- The editor shows tables, columns, procedures and functions that don't exist in red: unknown tables and columns as before, and now `EXEC` / `CALL` of a missing procedure and `schema.function(…)` calls of a missing function (built-in functions and system procedures are never flagged)
+- Copy several result rows at once: select rows with their numbers (Shift or Cmd/Ctrl for more) and press Ctrl/⌘+C, or right-click one and choose *Copy N rows* or *Copy N rows with column names*. Rows copy as tab-separated text that pastes into spreadsheet cells
+
+### Changed
+
+- Tooltips in the explorer tree show after the pointer rests on an item for 3 seconds, so they no longer pop up while moving through the tree
+
 ## [0.15.1] - 2026-11-23
 
 ### Fixed

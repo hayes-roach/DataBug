@@ -629,6 +629,8 @@ impl Editor {
                 _ => (p.syn_ident, false),
             };
             let underline = self.diagnostics.iter().find(|d| d.range.start <= t.start && t.end <= d.range.end && t.kind != TokKind::Whitespace).map(|d| if d.severity == Severity::Error { p.danger } else { p.warning });
+            // a table, column or routine that doesn't exist reads red, not just underlined
+            let color = if underline == Some(p.danger) && t.kind != TokKind::Punct { p.danger } else { color };
             job.sections.push(egui::text::LayoutSection { leading_space: 0.0, byte_range: t.start..t.end, format: fmt(color, italic, underline) });
         }
         self.job_cache = Some((key, wrap, job.clone()));

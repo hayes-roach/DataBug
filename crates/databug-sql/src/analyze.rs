@@ -4,7 +4,7 @@
 use crate::lexer::{tokenize, TokKind, Token};
 use crate::split::split_statements;
 use std::ops::Range;
-use databug_core::{Catalog, Dialect};
+use databug_core::{Catalog, Dialect, ObjectKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableRef {
@@ -453,8 +453,10 @@ pub fn inspect(src: &str, catalog: Option<&Catalog>, dialect: Dialect) -> Vec<Di
                 });
             }
         }
-        // qualified column references: alias.column
+        // procedures and functions that don't exist
         let toks = significant(&tokenize(stmt, dialect));
+        unknown_routines(stmt, base, &toks, &refs, cat, dialect, &mut out);
+        // qualified column references: alias.column
         for w in toks.windows(3) {
             if !(w[0].is_name() && w[1].is_punct(stmt, ".") && w[2].is_name()) {
                 continue;
@@ -479,9 +481,132 @@ pub fn inspect(src: &str, catalog: Option<&Catalog>, dialect: Dialect) -> Vec<Di
     out
 }
 
+fn is_routine(k: ObjectKind) -> bool {
+    matches!(
+        k,
+        ObjectKind::Procedure | ObjectKind::Function | ObjectKind::TableFunction | ObjectKind::ClrProcedure | ObjectKind::ClrFunction | ObjectKind::ClrTableFunction | ObjectKind::ClrAggregate
+    )
+}
+
+/// Flag `EXEC name` / `CALL name` of a procedure, and `schema.name(…)` calls
+/// of a function, that the catalog doesn't have. Only when the catalog lists
+/// routines at all (some engines' introspection doesn't), never for names in
+/// another database, and never for unqualified function calls (built-ins
+/// like `COUNT(…)` aren't in the catalog) or system procedures (`sp_…`).
+fn unknown_routines(stmt: &str, base: usize, toks: &[Token], refs: &[TableRef], cat: &Catalog, dialect: Dialect, out: &mut Vec<Diagnostic>) {
+    let has_routines = cat.schemas.iter().any(|s| s.objects.iter().any(|o| is_routine(o.kind)));
+    if !has_routines {
+        return;
+    }
+    let exists = |schema: Option<&str>, name: &str| -> bool {
+        let found = |s: &databug_core::SchemaInfo| s.objects.iter().any(|o| is_routine(o.kind) && o.name.eq_ignore_ascii_case(name)) || s.table(name).is_some();
+        match schema {
+            Some(sc) => cat.schema(sc).map(found).unwrap_or(true), // unknown schema: don't guess
+            None => cat.schemas.iter().any(found),
+        }
+    };
+    let mut flag = |start: usize, end: usize, what: &str, name: &str| {
+        if !out.iter().any(|d| d.range.start <= base + start && base + end <= d.range.end) {
+            out.push(Diagnostic { range: base + start..base + end, message: format!("Unknown {what} '{name}'"), severity: Severity::Error });
+        }
+    };
+    let mut i = 0;
+    while i < toks.len() {
+        let t = &toks[i];
+        let verb = t.text(stmt).to_ascii_uppercase();
+        let calls = match dialect {
+            Dialect::MsSql => verb == "EXEC" || verb == "EXECUTE",
+            _ => verb == "CALL",
+        };
+        if calls && t.kind == TokKind::Keyword {
+            let mut j = i + 1;
+            // EXEC @status = dbo.proc …
+            if toks.get(j).map(|x| x.kind == TokKind::Param).unwrap_or(false) && toks.get(j + 1).map(|x| x.text(stmt) == "=").unwrap_or(false) {
+                j += 2;
+            }
+            // a qualified name: up to three parts
+            let mut parts: Vec<&Token> = Vec::new();
+            while let Some(n) = toks.get(j).filter(|n| n.is_name()) {
+                parts.push(n);
+                if toks.get(j + 1).map(|x| x.is_punct(stmt, ".")).unwrap_or(false) {
+                    j += 2;
+                } else {
+                    j += 1;
+                    break;
+                }
+            }
+            if let (Some(first), Some(last)) = (parts.first(), parts.last()) {
+                let name = unquote(last.text(stmt));
+                let schema = (parts.len() == 2).then(|| unquote(first.text(stmt)));
+                let system = name.to_ascii_lowercase().starts_with("sp_") || name.to_ascii_lowercase().starts_with("xp_");
+                if parts.len() <= 2 && !system && !exists(schema.as_deref(), &name) {
+                    flag(first.start, last.end, "procedure", &name);
+                }
+            }
+            i = j.max(i + 1);
+            continue;
+        }
+        // schema.function( … ): only qualified calls, in a schema we know
+        if t.is_name()
+            && toks.get(i + 1).map(|x| x.is_punct(stmt, ".")).unwrap_or(false)
+            && toks.get(i + 2).map(|x| x.is_name()).unwrap_or(false)
+            && toks.get(i + 3).map(|x| x.is_punct(stmt, "(")).unwrap_or(false)
+            && !(i > 0 && toks[i - 1].is_punct(stmt, "."))
+        {
+            let schema = unquote(t.text(stmt));
+            let name = unquote(toks[i + 2].text(stmt));
+            let is_ref = refs.iter().any(|r| r.span.start <= t.start && toks[i + 2].end <= r.span.end);
+            if cat.schema(&schema).is_some() && !is_ref && !exists(Some(&schema), &name) {
+                flag(t.start, toks[i + 2].end, "function", &name);
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_tables_and_routines() {
+        use databug_core::{DbObject, SchemaInfo, TableInfo};
+        let obj = |name: &str, kind: ObjectKind| DbObject { name: name.into(), kind, detail: String::new(), ident: String::new(), table: None };
+        let cat = Catalog {
+            default_schema: "dbo".into(),
+            introspected_at: 1,
+            schemas: vec![
+                SchemaInfo { name: "dbo".into(), tables: vec![TableInfo::new(String::from("orders"), ObjectKind::Table)], objects: vec![obj("add_order", ObjectKind::Procedure), obj("fn_total", ObjectKind::Function)] },
+                SchemaInfo { name: "sales".into(), tables: vec![], objects: vec![obj("close_month", ObjectKind::Procedure)] },
+            ],
+        };
+        let errs = |sql: &str| inspect(sql, Some(&cat), Dialect::MsSql).into_iter().filter(|d| d.severity == Severity::Error).map(|d| (sql[d.range].to_string(), d.message)).collect::<Vec<_>>();
+        assert_eq!(errs("SELECT * FROM nope"), vec![("nope".to_string(), "Unknown table 'nope'".to_string())]);
+        assert_eq!(errs("EXEC dbo.missing_proc 1"), vec![("dbo.missing_proc".to_string(), "Unknown procedure 'missing_proc'".to_string())]);
+        assert_eq!(errs("EXEC @rc = gone"), vec![("gone".to_string(), "Unknown procedure 'gone'".to_string())]);
+        assert_eq!(errs("SELECT dbo.fn_nope(1) FROM orders"), vec![("dbo.fn_nope".to_string(), "Unknown function 'fn_nope'".to_string())]);
+        // all of these exist, are built in, or can't be checked
+        for ok in [
+            "EXEC dbo.add_order 1",
+            "EXEC add_order",
+            "EXECUTE sales.close_month",
+            "EXEC sp_rename 'a', 'b'",
+            "EXEC other_db.dbo.anything",
+            "EXEC nosuchschema.p",
+            "EXEC ('SELECT 1')",
+            "SELECT dbo.fn_total(1), COUNT(*), UPPER('a') FROM orders",
+        ] {
+            assert!(errs(ok).is_empty(), "{ok}: {:?}", errs(ok));
+        }
+        // an engine whose catalog lists no routines: no procedure checks
+        let mut bare = cat.clone();
+        for s in &mut bare.schemas {
+            s.objects.clear();
+        }
+        assert!(inspect("CALL whatever()", Some(&bare), Dialect::Postgres).is_empty());
+    }
 
     #[test]
     fn what_changes_the_schema() {

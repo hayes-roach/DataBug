@@ -115,6 +115,11 @@ pub struct ExplorerState {
     /// Height of the tree's content and its scroll offset in the last frame.
     content_height: f32,
     scroll_y: f32,
+    /// The tree item under the pointer and when the pointer reached it, for
+    /// the explorer's own (slower) tooltip delay.
+    hover_since: Option<(egui::Id, f64)>,
+    /// Whether anything in the tree was hovered this frame.
+    hover_seen: bool,
     /// Where each row was drawn in the last frame (tests click on them).
     #[cfg(test)]
     rects: HashMap<String, Rect>,
@@ -270,6 +275,35 @@ impl Skipper {
     }
 }
 
+/// How long the pointer has to rest on a tree item before its tooltip shows.
+/// egui's delay is app-wide and short (and once one tooltip is up the next
+/// shows at once), which made tooltips pop up while moving through the tree.
+const TIP_DELAY: f64 = 3.0;
+
+/// `resp.on_hover_text(text)`, but only after the pointer has stayed on this
+/// item for `TIP_DELAY` seconds.
+fn tip(st: &mut ExplorerState, resp: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
+    if !resp.hovered() {
+        return resp;
+    }
+    st.hover_seen = true;
+    let now = resp.ctx.input(|i| i.time);
+    let since = match st.hover_since {
+        Some((id, t)) if id == resp.id => t,
+        _ => {
+            st.hover_since = Some((resp.id, now));
+            now
+        }
+    };
+    let wait = TIP_DELAY - (now - since);
+    if wait > 0.0 {
+        resp.ctx.request_repaint_after_secs(wait as f32);
+        resp
+    } else {
+        resp.on_hover_text(text)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, key: &str, depth: usize, expandable: bool, glyph: Glyph, label: &str, detail: &str, editable: bool, strong: bool) -> RowOut {
     row_ex(ui, p, st, logos, key, depth, expandable, glyph, label, detail, editable, strong, Sense::click(), false)
@@ -413,7 +447,7 @@ fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos,
         if br.clicked() {
             edit = true;
         }
-        br.on_hover_text("Edit");
+        tip(st, br, "Edit");
     }
     if toggled || (resp.double_clicked() && expandable) {
         if open {
@@ -433,6 +467,7 @@ fn is_open(st: &ExplorerState, key: &str, filtering: bool) -> bool {
 }
 
 pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, connections: &[ConnectionConfig], catalogs: &HashMap<String, CatalogView<'_>>, cx: &ExplorerCtx<'_>) -> Vec<Action> {
+    st.hover_seen = false;
     let mut actions = Vec::new();
     ui.horizontal(|ui| {
         ui.label(RichText::new("Database explorer").font(bold(13.0)));
@@ -551,7 +586,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
                 "Drag to reorder"
             };
             let hover = format!("{}\n{}\n{state}", cfg.kind.label(), cfg.display_target());
-            r.resp.on_hover_text(hover).context_menu(|ui| {
+            tip(st, r.resp, hover).context_menu(|ui| {
                 if disconnected {
                     if ui.button(RichText::new("Connect").color(p.success)).clicked() {
                         actions.push(Action::Connect(cfg.id.clone()));
@@ -750,6 +785,10 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             }
         }
     });
+    // the pointer left the tree: the next item waits the full delay again
+    if !st.hover_seen {
+        st.hover_since = None;
+    }
     st.content_height = out.content_size.y;
     st.scroll_y = out.state.offset.y;
     actions
@@ -1040,7 +1079,7 @@ fn db_picker_row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
     let arrow = Rect::from_center_size(egui::pos2(x + g.size().x + 9.0, rect.center().y), egui::vec2(10.0, 10.0));
     painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, color);
     icons::paint_arrow(&painter, arrow, true, color);
-    let resp = resp.on_hover_text("Choose which databases on this server the explorer shows");
+    let resp = tip(st, resp, "Choose which databases on this server the explorer shows");
     if resp.clicked() || (requested && total > 0) {
         st.db_picker_request = None;
         st.db_picker_search.clear();
@@ -1198,7 +1237,7 @@ fn schema_picker(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
     let arrow = Rect::from_center_size(egui::pos2(x + g.size().x + 9.0, rect.center().y), egui::vec2(10.0, 10.0));
     painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, color);
     icons::paint_arrow(&painter, arrow, true, color);
-    let resp = resp.on_hover_text(format!("Choose which {noun} the explorer shows"));
+    let resp = tip(st, resp, format!("Choose which {noun} the explorer shows"));
     if resp.clicked() || st.picker_request.as_deref() == Some(cfg.id.as_str()) {
         st.picker_request = None;
         st.picker_search.clear();
@@ -1340,7 +1379,7 @@ fn schema_body(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &L
                 let name = o.name.clone();
                 let runnable = databug_sql::ddl::exec_template(cfg.kind.dialect(), &s.name, &o.name, o.kind, &o.detail).is_some();
                 let obj = o.clone();
-                r.resp.on_hover_text(format!("{} {}.{}{}", o.kind.label(), s.name, o.name, if o.detail.is_empty() { String::new() } else { format!(" {}", detail) })).context_menu(|ui| {
+                tip(st, r.resp, format!("{} {}.{}{}", o.kind.label(), s.name, o.name, if o.detail.is_empty() { String::new() } else { format!(" {}", detail) })).context_menu(|ui| {
                     if runnable {
                         let label = match (cfg.kind, obj.kind) {
                             (DbKind::MsSql, ObjectKind::Procedure | ObjectKind::ClrProcedure) => "Execute (EXEC)…",
@@ -1409,8 +1448,7 @@ fn table_node(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Lo
         actions.push(Action::SelectTop(cfg.id.clone(), schema.to_string(), t.name.clone()));
     }
     let sql = cfg.kind != DbKind::MongoDb;
-    r.resp
-        .on_hover_text(format!("{} {}.{} · {} columns\nDouble-click to open the first 100 rows", t.kind.label(), schema, t.name, t.columns.len()))
+    tip(st, r.resp, format!("{} {}.{} · {} columns\nDouble-click to open the first 100 rows", t.kind.label(), schema, t.name, t.columns.len()))
         .context_menu(|ui| {
             if ui.button("Open first 100 rows").clicked() {
                 actions.push(Action::SelectTop(cfg.id.clone(), schema.to_string(), t.name.clone()));
@@ -1467,8 +1505,7 @@ fn table_node(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Lo
             actions.push(Action::Insert(cfg.kind.dialect().quote_ident(&c.name)));
         }
         let col = c.name.clone();
-        r.resp
-            .on_hover_text(format!("{} {}{}{}", c.name, c.data_type, if c.nullable { "" } else { " NOT NULL" }, c.default.as_ref().map(|d| format!(" DEFAULT {d}")).unwrap_or_default()))
+        tip(st, r.resp, format!("{} {}{}{}", c.name, c.data_type, if c.nullable { "" } else { " NOT NULL" }, c.default.as_ref().map(|d| format!(" DEFAULT {d}")).unwrap_or_default()))
             .context_menu(|ui| {
                 if ui.button("Insert into console").clicked() {
                     actions.push(Action::Insert(cfg.kind.dialect().quote_ident(&col)));
@@ -1775,6 +1812,31 @@ mod tests {
         }
         assert!(!h.st.open.contains("c:c1"));
         assert!(h.st.content_height < 200.0, "tables still shown");
+    }
+
+    #[test]
+    fn tree_tooltips_wait_three_seconds() {
+        let ctx = egui::Context::default();
+        let mut st = ExplorerState::default();
+        let mut shown = Vec::new();
+        // the first frame lays the item out away from the pointer
+        for (time, pos) in [(-1.0, 300.0), (0.0, 50.0), (1.0, 50.0), (2.9, 50.0), (3.1, 50.0), (3.2, 300.0), (4.0, 50.0), (6.9, 50.0), (7.1, 50.0)] {
+            let input = egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))), events: vec![egui::Event::PointerMoved(egui::pos2(50.0, pos))], ..Default::default() };
+            let mut tip_open = false;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    st.hover_seen = false;
+                    let (_, resp) = ui.allocate_exact_size(egui::vec2(200.0, 100.0), Sense::click());
+                    tip_open = super::tip(&mut st, resp, "about this table").hovered() && st.hover_since.map(|(_, t)| time - t >= TIP_DELAY).unwrap_or(false);
+                    if !st.hover_seen {
+                        st.hover_since = None;
+                    }
+                });
+            });
+            shown.push(tip_open);
+        }
+        // shows after 3 s on the item; leaving and coming back starts over
+        assert_eq!(shown, vec![false, false, false, false, true, false, false, false, true]);
     }
 
     #[test]

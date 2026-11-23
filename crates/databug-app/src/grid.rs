@@ -180,6 +180,34 @@ impl ResultView {
         self.order_dirty = true;
     }
 
+    /// `rows` as tab-separated text in the order they're shown (what
+    /// spreadsheets paste into cells), optionally with a header line. A
+    /// value with a tab, line break or quote is quoted, as Excel does.
+    pub(crate) fn rows_text(&self, rows: &BTreeSet<u32>, header: bool) -> String {
+        fn field(v: &str) -> std::borrow::Cow<'_, str> {
+            if v.contains(['\t', '\n', '\r', '"']) {
+                format!("\"{}\"", v.replace('"', "\"\"")).into()
+            } else {
+                v.into()
+            }
+        }
+        let mut out = String::new();
+        if header {
+            let names: Vec<_> = self.columns.iter().map(|c| field(&c.name)).collect();
+            out.push_str(&names.join("\t"));
+            out.push('\n');
+        }
+        let shown: Vec<u32> = self.order.iter().copied().filter(|r| rows.contains(r)).collect();
+        for (i, &r) in shown.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let cells: Vec<_> = (0..self.columns.len()).map(|c| field(self.cell(r, c).unwrap_or(""))).collect();
+            out.push_str(&cells.join("\t"));
+        }
+        out
+    }
+
     /// Rows the row actions apply to: the selected rows, or the row of the
     /// selected cell.
     fn target_rows(&self) -> BTreeSet<u32> {
@@ -467,7 +495,10 @@ impl ResultView {
             }
             self.selected = Some((r, c));
             if copy {
-                if let Some(&dr) = self.order.get(r) {
+                if !self.selected_rows.is_empty() {
+                    // rows picked with the row numbers: copy them all
+                    ui.ctx().copy_text(self.rows_text(&self.selected_rows, false));
+                } else if let Some(&dr) = self.order.get(r) {
                     ui.ctx().copy_text(self.cell(dr, c).unwrap_or("").to_string());
                 }
             }
@@ -553,6 +584,7 @@ impl ResultView {
                     let vr = row.index();
                     let dr = self.order[vr];
                     let row_selected = self.selected_rows.contains(&dr);
+                    let n_selected = self.selected_rows.len();
                     let row_deleted = self.deleted.contains(&dr);
                     let row_inserted = self.is_inserted(dr);
                     row.col(|ui| {
@@ -663,8 +695,18 @@ impl ResultView {
                                 }
                             }
                             resp.context_menu(|ui| {
-                                for label in ["Copy value", "Copy row", "Copy column name", "Filter by this value"] {
-                                    if ui.button(label).clicked() {
+                                // on a selected row, the row copies apply to every selected row
+                                let rows = if row_selected { n_selected.max(1) } else { 1 };
+                                let copy_rows = if rows > 1 { format!("Copy {rows} rows") } else { "Copy row".to_string() };
+                                let copy_with = if rows > 1 { format!("Copy {rows} rows with column names") } else { "Copy row with column names".to_string() };
+                                for (text, label) in [
+                                    ("Copy value".to_string(), "Copy value"),
+                                    (copy_rows, "Copy row"),
+                                    (copy_with, "Copy rows with names"),
+                                    ("Copy column name".to_string(), "Copy column name"),
+                                    ("Filter by this value".to_string(), "Filter by this value"),
+                                ] {
+                                    if ui.button(text).clicked() {
                                         ctx_action = Some((vr, ci, label));
                                         ui.close_menu();
                                     }
@@ -756,9 +798,9 @@ impl ResultView {
             let dr = self.order[vr];
             match what {
                 "Copy value" => ui.ctx().copy_text(self.cell(dr, ci).unwrap_or("").to_string()),
-                "Copy row" => {
-                    let row: Vec<&str> = (0..self.columns.len()).map(|c| self.cell(dr, c).unwrap_or("")).collect();
-                    ui.ctx().copy_text(row.join("\t"));
+                "Copy row" | "Copy rows with names" => {
+                    let rows = if self.selected_rows.contains(&dr) { self.selected_rows.clone() } else { [dr].into() };
+                    ui.ctx().copy_text(self.rows_text(&rows, what == "Copy rows with names"));
                 }
                 "Copy column name" => ui.ctx().copy_text(self.columns[ci].name.clone()),
                 "Filter by this value" => {
@@ -1111,6 +1153,20 @@ mod tests {
         g.elapsed = Some(Duration::from_millis(1));
         g.edit_target = Some(EditTarget { qualified: "public.t".into(), pk_cols: vec![0], numeric: vec![true, false, true] });
         g
+    }
+
+    #[test]
+    fn copying_rows_as_tab_separated_text() {
+        let mut g = three_rows();
+        g.rebuild_order();
+        let rows: BTreeSet<u32> = [2, 0].into();
+        assert_eq!(g.rows_text(&rows, false), "1\ta\t5\n3\tc\t5");
+        assert_eq!(g.rows_text(&rows, true), "id\tname\tqty\n1\ta\t5\n3\tc\t5");
+        // values that would break the cells are quoted
+        g.set_cell(1, 1, Some("say \"hi\"\tthere".into()));
+        g.edits_applied();
+        g.rebuild_order();
+        assert_eq!(g.rows_text(&[1].into(), false), "2\t\"say \"\"hi\"\"\tthere\"\t5");
     }
 
     #[test]

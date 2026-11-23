@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-23
+
 ### Added
 
 - The editor shows tables, columns, procedures and functions that don't exist in red: unknown tables and columns as before, and now `EXEC` / `CALL` of a missing procedure and `schema.function(…)` calls of a missing function (built-in functions and system procedures are never flagged)

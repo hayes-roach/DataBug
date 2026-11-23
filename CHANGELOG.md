@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-23
+
 ### Changed
 
 - The explorer shows a connection's state once, on the dot by its logo (green when connected, amber while signing in); the second dot at the right edge is gone

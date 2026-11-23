@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-23
+
 ### Fixed
 
 - Scrolling with a mouse wheel (most Windows mice) is immediate in the explorer, the editor and the results, instead of gliding behind the wheel. The explorer also skips drawing rows scrolled out of view, so large schemas scroll smoothly

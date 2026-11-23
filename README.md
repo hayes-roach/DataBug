@@ -1,8 +1,7 @@
-<p align="center">
-  <img src="crates/databug-app/assets/icon/icon.png" width="88" alt="DataBug">
-</p>
-
-<h1 align="center">DataBug</h1>
+<h1 align="center">
+  <img src="site/logo.svg" width="76" alt=""><br>
+  DataBug
+</h1>
 
 <p align="center">
   <b>A fast, native database client for SQL and NoSQL.</b><br>

@@ -6,6 +6,12 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-11-23
+
+### Changed
+
+- Url 2.5.9 (RUSTSEC-2026-0592)
+
 ## [0.12.2] - 2026-11-23
 
 ### Changed

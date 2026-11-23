@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["postgres", "mysql", "mssql", "sqlite", "mongodb", "cockroachdb", "timescaledb", "questdb", "h2", "duckdb", "cassandra", "couchdb", "influxdb", "oracle", "db2", "spark", "redis"]
+default = ["postgres", "mysql", "mssql", "sqlite", "mongodb", "cockroachdb", "timescaledb", "questdb", "h2", "duckdb", "cassandra", "couchdb", "influxdb", "oracle", "db2", "spark", "redis", "ssh"]
 postgres = ["dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls", "dep:webpki-roots"]
 mysql = ["dep:mysql_async", "dep:rustls"]
 mssql = ["dep:tiberius", "dep:tokio-util", "dep:chrono"]
@@ -35,6 +35,8 @@ couchdb = ["dep:reqwest", "dep:json5", "dep:rustls"]
 influxdb = ["dep:reqwest", "dep:rustls"]
 # Redis over its own protocol; TLS through tokio-rustls like the other drivers.
 redis = ["dep:redis", "dep:tokio-rustls", "dep:rustls"]
+# SSH tunnels to databases behind a bastion host (pure Rust, ring crypto)
+ssh = ["dep:russh"]
 # Oracle loads Oracle Instant Client at run time, when you connect; building
 # needs only a C compiler (ODPI-C is compiled in).
 oracle = ["dep:oracle"]
@@ -46,6 +48,7 @@ db2 = ["dep:odbc-api"]
 spark = ["dep:odbc-api"]
 
 [dependencies]
+russh = { version = "0.65", optional = true, default-features = false, features = ["ring", "rsa", "flate2"] }
 databug-core.workspace = true
 databug-sql.workspace = true
 serde.workspace = true

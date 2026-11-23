@@ -122,6 +122,8 @@ impl Store {
         };
         // engine libraries downloaded on demand (DuckDB)
         databug_drivers::set_runtime_dir(data_dir.join("runtimes"));
+        // SSH host keys DataBug trusted on first use (known_hosts format)
+        databug_drivers::set_known_hosts_file(config_dir.join("known_hosts"));
         let store = Store { config_dir: config_dir.clone(), data_dir: data_dir.clone(), memory_secrets: HashMap::new(), keychain_cache: Default::default(), error: Default::default() };
         for dir in [&config_dir, &data_dir.join("catalogs")] {
             if let Err(e) = std::fs::create_dir_all(dir) {

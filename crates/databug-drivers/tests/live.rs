@@ -1103,3 +1103,79 @@ async fn mssql_batches_and_locked_refresh() {
     run(&mut a, "DROP PROCEDURE dbo.databug_add", 10).await.unwrap();
     run(&mut a, "DROP TABLE dbo.databug_go", 10).await.unwrap();
 }
+
+/// `DATABUG_TEST_SSH=host:port:user:password:key_dir` (an SSH server with
+/// `key_dir/id_ed25519` and the passphrase-protected `key_dir/id_locked`
+/// (passphrase `keypass`) in authorized_keys, and TCP forwarding on) and
+/// `DATABUG_TEST_SSH_REDIS=host:port:password`: a Redis the SSH server can
+/// reach (the host is resolved there).
+#[cfg(feature = "ssh")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh_tunnel_end_to_end() {
+    use databug_core::{SshAuth, SshTunnel};
+    use databug_drivers::connect_with;
+    let Some(s) = env_parts("DATABUG_TEST_SSH") else { return };
+    let Some(r) = env_parts("DATABUG_TEST_SSH_REDIS") else { return };
+    let known = std::env::temp_dir().join(format!("databug-known-hosts-{}", std::process::id()));
+    let _ = std::fs::remove_file(&known);
+    databug_drivers::set_known_hosts_file(known.clone());
+    let cfg = |auth: SshAuth, key: &str| {
+        let mut c = ConnectionConfig::new(DbKind::Redis);
+        c.host = r[0].clone();
+        c.port = r[1].parse().unwrap();
+        c.ssl = databug_core::SslMode::Disable;
+        c.ssh = Some(SshTunnel { host: s[0].clone(), port: s[1].parse().unwrap(), user: s[2].clone(), auth, key_path: key.into() });
+        c
+    };
+    async fn ping(c: &mut Box<dyn DbConnection>) -> Vec<String> {
+        run(c, "PING", 10).await.unwrap().messages
+    }
+    let err = |r: anyhow::Result<Box<dyn DbConnection>>| r.err().map(|e| format!("{e:#}")).unwrap_or_else(|| "connected".into());
+
+    // password; the first connection learns the host key
+    let mut a = connect_with(&cfg(SshAuth::Password, ""), Some(&r[2]), Some(&s[3])).await.unwrap();
+    assert_eq!(ping(&mut a).await, vec!["PONG"]);
+    assert!(std::fs::read_to_string(&known).unwrap().contains("ssh-"), "host key not remembered");
+    // a second session shares the tunnel
+    let mut b = connect_with(&cfg(SshAuth::Password, ""), Some(&r[2]), Some(&s[3])).await.unwrap();
+    assert_eq!(ping(&mut b).await, vec!["PONG"]);
+    drop((a, b));
+
+    // key files
+    let key = format!("{}/id_ed25519", s[4]);
+    let mut k = connect_with(&cfg(SshAuth::Key, &key), Some(&r[2]), None).await.unwrap();
+    assert_eq!(ping(&mut k).await, vec!["PONG"]);
+    drop(k);
+    let locked = format!("{}/id_locked", s[4]);
+    let e = err(connect_with(&cfg(SshAuth::Key, &locked), Some(&r[2]), None).await);
+    assert!(e.contains("passphrase"), "{e}");
+    let mut l = connect_with(&cfg(SshAuth::Key, &locked), Some(&r[2]), Some("keypass")).await.unwrap();
+    assert_eq!(ping(&mut l).await, vec!["PONG"]);
+    drop(l);
+
+    // an SSH agent holding id_ed25519 (DATABUG_TEST_SSH_AGENT=1 with SSH_AUTH_SOCK)
+    if std::env::var_os("DATABUG_TEST_SSH_AGENT").is_some() {
+        let mut g = connect_with(&cfg(SshAuth::Agent, ""), Some(&r[2]), None).await.unwrap();
+        assert_eq!(ping(&mut g).await, vec!["PONG"]);
+        drop(g);
+    }
+
+    // failures say where they happened
+    let e = err(connect_with(&cfg(SshAuth::Password, ""), Some(&r[2]), Some("wrong")).await);
+    assert!(e.contains("didn't accept the password"), "{e}");
+    let mut far = cfg(SshAuth::Password, "");
+    far.port = 1;
+    let e = err(connect_with(&far, Some(&r[2]), Some(&s[3])).await);
+    assert!(e.contains("couldn't reach the database"), "{e}");
+
+    // a changed host key is refused
+    let text = std::fs::read_to_string(&known).unwrap();
+    let other = "AAAAC3NzaC1lZDI1NTE5AAAAIEz6V3nk4m6QsJ8sT4f0Lr1i3R0b0d7m6mO0w0x8fE1o";
+    let mut parts: Vec<&str> = text.lines().find(|l| !l.trim().is_empty()).unwrap().split_whitespace().collect();
+    parts[1] = "ssh-ed25519";
+    parts[2] = other;
+    std::fs::write(&known, parts.join(" ") + "\n").unwrap();
+    let e = err(connect_with(&cfg(SshAuth::Password, ""), Some(&r[2]), Some(&s[3])).await);
+    assert!(e.contains("host key changed"), "{e}");
+    let _ = std::fs::remove_file(&known);
+}

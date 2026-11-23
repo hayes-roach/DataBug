@@ -668,7 +668,8 @@ impl DataBugApp {
 
     fn spawn_session(&self, id: SessionId, cfg: &ConnectionConfig, ctx: &egui::Context) -> Session {
         let pw = self.store.password(ConnectionConfig::base_id(&cfg.id));
-        Session::spawn(self.rt.handle(), id, cfg.clone(), pw, self.tx.clone(), ctx.clone())
+        let ssh = cfg.ssh.as_ref().and_then(|_| self.store.password(&databug_core::SshTunnel::secret_id(&cfg.id)));
+        Session::spawn(self.rt.handle(), id, cfg.clone(), pw, ssh, self.tx.clone(), ctx.clone())
     }
 
     fn refresh_catalog(&mut self, conn_id: &str, ctx: &egui::Context) {
@@ -1644,6 +1645,7 @@ impl DataBugApp {
                 if let Some(cfg) = self.conn(&id).cloned() {
                     let pw = self.store.password(&id).unwrap_or_default();
                     let mut d = ConnDialog::new(cfg, pw, false);
+                    d.ssh_secret = self.store.password(&databug_core::SshTunnel::secret_id(&id)).unwrap_or_default();
                     if let Some(cat) = self.catalog(&id) {
                         d.known_schemas = cat.schemas.iter().map(|s| s.name.clone()).collect();
                         d.default_schema = cat.default_schema.clone();
@@ -1662,9 +1664,12 @@ impl DataBugApp {
             Action::DuplicateConn(id) => {
                 if let Some(mut cfg) = self.conn(&id).cloned() {
                     let pw = self.store.password(&id).unwrap_or_default();
+                    let ssh = self.store.password(&databug_core::SshTunnel::secret_id(&id)).unwrap_or_default();
                     cfg.id = ConnectionConfig::new(cfg.kind).id;
                     cfg.name = format!("{} copy", cfg.name);
-                    self.dialog = Some(ConnDialog::new(cfg, pw, true));
+                    let mut d = ConnDialog::new(cfg, pw, true);
+                    d.ssh_secret = ssh;
+                    self.dialog = Some(d);
                     self.editing_conn = None;
                 }
             }
@@ -1672,6 +1677,7 @@ impl DataBugApp {
                 self.connections.retain(|c| c.id != id);
                 self.store.save_connections(&self.connections);
                 self.store.forget_password(&id);
+                self.store.forget_password(&databug_core::SshTunnel::secret_id(&id));
                 let ids: Vec<String> = self.catalogs.keys().filter(|k| ConnectionConfig::base_id(k) == id).cloned().collect();
                 for k in ids {
                     self.store.delete_catalog(&k);
@@ -3652,6 +3658,17 @@ impl DataBugApp {
                 } else if !d.is_new {
                     self.store.forget_password(&cfg.id);
                 }
+                // the SSH password or key passphrase: its own keychain entry
+                let ssh_id = databug_core::SshTunnel::secret_id(&cfg.id);
+                let old_ssh = self.store.password(&ssh_id).unwrap_or_default();
+                if cfg.ssh.is_some() && !d.ssh_secret.is_empty() {
+                    if !self.store.set_password(&ssh_id, &d.ssh_secret, d.save_password) {
+                        self.toast("The system keychain isn't available, so the SSH secret is kept for this session only");
+                    }
+                } else if !old_ssh.is_empty() {
+                    self.store.forget_password(&ssh_id);
+                }
+                let ssh_unchanged = (if cfg.ssh.is_some() { d.ssh_secret.as_str() } else { "" }) == old_ssh;
                 let only_view = self.conn(&cfg.id).map(|old| {
                     let mut a = serde_json::to_value(old).ok();
                     let mut b = serde_json::to_value(&cfg).ok();
@@ -3665,7 +3682,7 @@ impl DataBugApp {
                         }
                     }
                     a == b
-                }).unwrap_or(false) && d.password == self.store.password(&cfg.id).unwrap_or_default();
+                }).unwrap_or(false) && d.password == self.store.password(&cfg.id).unwrap_or_default() && ssh_unchanged;
                 match self.connections.iter_mut().find(|c| c.id == cfg.id) {
                     Some(existing) => *existing = cfg.clone(),
                     None => {
@@ -4167,6 +4184,15 @@ impl DataBugApp {
                             self.explorer.open_key(format!("s:{id}:analytics"));
                             self.explorer.open_key(format!("s:{id}:reporting"));
                             self.explorer.request_picker(&id);
+                        }
+                        "ssh-dialog" => {
+                            let mut cfg = ConnectionConfig::new(DbKind::Postgres);
+                            cfg.name = "Orders (production)".into();
+                            cfg.host = "localhost".into();
+                            cfg.database = "orders".into();
+                            cfg.user = "app".into();
+                            cfg.ssh = Some(databug_core::SshTunnel { host: "bastion.example.com".into(), port: 22, user: "alex".into(), auth: databug_core::SshAuth::Key, key_path: "~/.ssh/id_ed25519".into() });
+                            self.dialog = Some(ConnDialog::new(cfg, "secret".into(), false));
                         }
                         "ms-dialog" | "ms-dialog-integrated" => {
                             let mut cfg = ConnectionConfig::new(DbKind::MsSql);

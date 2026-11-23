@@ -34,6 +34,10 @@ mod couch_update;
 mod influx;
 #[cfg(feature = "redis")]
 mod redis_conn;
+#[cfg(feature = "ssh")]
+mod ssh;
+#[cfg(feature = "ssh")]
+pub use ssh::set_known_hosts_file;
 #[cfg(feature = "oracle")]
 mod oracle;
 #[cfg(any(feature = "db2", feature = "spark"))]
@@ -247,7 +251,32 @@ pub fn available() -> Vec<DbKind> {
     .collect()
 }
 
-/// Open a connection. Must be called inside a Tokio runtime.
+/// Open a connection, through its SSH tunnel when it has one: `ssh_secret`
+/// is the SSH password or key passphrase. Must be called inside a Tokio
+/// runtime.
+pub async fn connect_with(cfg: &ConnectionConfig, password: Option<&str>, ssh_secret: Option<&str>) -> anyhow::Result<Box<dyn DbConnection>> {
+    #[cfg(feature = "ssh")]
+    if cfg.ssh.is_some() && !cfg.kind.is_file_based() {
+        if cfg.kind == DbKind::MongoDb && !cfg.uri.trim().is_empty() {
+            anyhow::bail!("A MongoDB connection string can't go through an SSH tunnel: enter the host and port instead");
+        }
+        let tunnel = ssh::open(cfg, ssh_secret).await?;
+        let mut local = cfg.clone();
+        local.host = "127.0.0.1".into();
+        local.port = tunnel.port;
+        let inner = connect(&local, password).await?;
+        return Ok(Box::new(ssh::Tunneled { inner, _tunnel: tunnel }));
+    }
+    #[cfg(not(feature = "ssh"))]
+    if cfg.ssh.is_some() && !cfg.kind.is_file_based() {
+        let _ = ssh_secret;
+        anyhow::bail!("SSH tunnel support isn't included in this build");
+    }
+    connect(cfg, password).await
+}
+
+/// Open a connection directly (ignoring any SSH tunnel). Must be called
+/// inside a Tokio runtime.
 pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> anyhow::Result<Box<dyn DbConnection>> {
     init_crypto();
     let pw = password.unwrap_or("");

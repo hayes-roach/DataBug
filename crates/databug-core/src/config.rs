@@ -276,6 +276,63 @@ pub enum SslMode {
     Require,
 }
 
+/// How DataBug signs in to an SSH server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SshAuth {
+    /// A password, kept in the keychain.
+    #[default]
+    Password,
+    /// A private key file, with its passphrase (if any) in the keychain.
+    Key,
+    /// Keys held by a running SSH agent (`ssh-agent`, 1Password, Pageant…).
+    Agent,
+}
+
+impl SshAuth {
+    pub const ALL: [SshAuth; 3] = [SshAuth::Password, SshAuth::Key, SshAuth::Agent];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SshAuth::Password => "Password",
+            SshAuth::Key => "Private key",
+            SshAuth::Agent => "SSH agent",
+        }
+    }
+}
+
+/// Reach the database through an SSH server (a bastion or jump host): DataBug
+/// signs in to it and forwards a local port to the database's host and port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshTunnel {
+    pub host: String,
+    #[serde(default = "ssh_port")]
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuth,
+    /// Private key file (`SshAuth::Key`), e.g. `~/.ssh/id_ed25519`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_path: String,
+}
+
+fn ssh_port() -> u16 {
+    22
+}
+
+impl Default for SshTunnel {
+    fn default() -> Self {
+        SshTunnel { host: String::new(), port: 22, user: String::new(), auth: SshAuth::Password, key_path: String::new() }
+    }
+}
+
+impl SshTunnel {
+    /// The keychain entry for the SSH password or key passphrase of the
+    /// connection `id`.
+    pub fn secret_id(id: &str) -> String {
+        format!("{}#ssh", ConnectionConfig::base_id(id))
+    }
+}
+
 /// How SQL Server checks who you are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MsAuth {
@@ -364,6 +421,9 @@ pub struct ConnectionConfig {
     /// Schema visibility for the extra databases, by database name.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub database_schemas: std::collections::BTreeMap<String, Vec<String>>,
+    /// Connect through an SSH tunnel. `None` connects directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshTunnel>,
 }
 
 fn default_color() -> [u8; 3] {
@@ -402,6 +462,7 @@ impl ConnectionConfig {
             visible_schemas: None,
             visible_databases: None,
             database_schemas: Default::default(),
+            ssh: None,
         }
     }
 

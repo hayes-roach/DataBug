@@ -4,12 +4,17 @@ use crate::theme::{bold, connection_color, Palette, SWATCHES};
 use eframe::egui::{self, CornerRadius, Margin, RichText, Sense, Stroke};
 use std::sync::mpsc;
 use std::time::Instant;
-use databug_core::{ConnectionConfig, DbCategory, DbKind, MsAuth, SslMode};
+use databug_core::{ConnectionConfig, DbCategory, DbKind, MsAuth, SshAuth, SshTunnel, SslMode};
 
 pub struct ConnDialog {
     pub cfg: ConnectionConfig,
     pub password: String,
     pub save_password: bool,
+    /// The SSH tunnel's password or key passphrase (keychain, never the config).
+    pub ssh_secret: String,
+    /// SSH settings kept while the tunnel is switched off, so switching it
+    /// back on doesn't lose them.
+    ssh_draft: SshTunnel,
     pub is_new: bool,
     test: Option<Result<String, String>>,
     test_rx: Option<mpsc::Receiver<Result<String, String>>>,
@@ -29,7 +34,8 @@ pub enum DialogOutcome {
 
 impl ConnDialog {
     pub fn new(cfg: ConnectionConfig, password: String, is_new: bool) -> Self {
-        ConnDialog { cfg, password, save_password: true, is_new, test: None, test_rx: None, error: None, known_schemas: Vec::new(), default_schema: String::new(), open_engines: false }
+        let ssh_draft = cfg.ssh.clone().unwrap_or_default();
+        ConnDialog { cfg, password, save_password: true, ssh_secret: String::new(), ssh_draft, is_new, test: None, test_rx: None, error: None, known_schemas: Vec::new(), default_schema: String::new(), open_engines: false }
     }
 
     fn select_kind(&mut self, kind: DbKind) {
@@ -248,6 +254,7 @@ impl ConnDialog {
                                 }
                             });
                             ui.end_row();
+                            self.ssh_rows(ui, p);
                         }
                     }
                     if let Some(note) = engine_note(self.cfg.kind) {
@@ -306,11 +313,12 @@ impl ConnDialog {
                     if ui.add_enabled(!testing, egui::Button::new("Test connection")).clicked() {
                         let cfg = self.cfg.clone();
                         let pw = self.password.clone();
+                        let ssh = self.ssh_secret.clone();
                         let (tx, rx) = mpsc::channel();
                         let ctx2 = ui.ctx().clone();
                         rt.spawn(async move {
                             let start = Instant::now();
-                            let r = match databug_drivers::connect(&cfg, Some(&pw)).await {
+                            let r = match databug_drivers::connect_with(&cfg, Some(&pw), Some(&ssh)).await {
                                 Ok(_c) => Ok(format!("Connected in {}", crate::grid::fmt_duration(start.elapsed()))),
                                 Err(e) => Err(format!("{e:#}")),
                             };
@@ -393,7 +401,93 @@ impl ConnDialog {
         }
     }
 
+    /// The SSH tunnel rows of the form (network engines only).
+    fn ssh_rows(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        label_cell(ui, p, "SSH tunnel");
+        let mut on = self.cfg.ssh.is_some();
+        if crate::theme::checkbox(ui, p, &mut on, "Connect through an SSH server")
+            .on_hover_text("Sign in to an SSH server (a bastion or jump host) and reach the database from there, like ssh -L")
+            .changed()
+        {
+            if on {
+                self.cfg.ssh = Some(self.ssh_draft.clone());
+            } else if let Some(t) = self.cfg.ssh.take() {
+                self.ssh_draft = t;
+            }
+            self.test = None;
+        }
+        ui.end_row();
+        let Some(t) = self.cfg.ssh.as_mut() else { return };
+        label_cell(ui, p, "SSH host");
+        field_row(ui, |ui| {
+            input(ui, p, egui::TextEdit::singleline(&mut t.host).hint_text("bastion.example.com"), 280.0);
+            ui.add_space(8.0);
+            ui.label(RichText::new("Port").color(p.muted));
+            let mut port = t.port.to_string();
+            if input(ui, p, egui::TextEdit::singleline(&mut port), 64.0).changed() {
+                t.port = port.trim().parse().unwrap_or(t.port);
+            }
+        });
+        ui.end_row();
+        label_cell(ui, p, "SSH user");
+        input(ui, p, egui::TextEdit::singleline(&mut t.user), 380.0);
+        ui.end_row();
+        label_cell(ui, p, "Sign in with");
+        ui.horizontal(|ui| {
+            for a in SshAuth::ALL {
+                ui.selectable_value(&mut t.auth, a, a.label());
+            }
+        });
+        ui.end_row();
+        match t.auth {
+            SshAuth::Password => {
+                label_cell(ui, p, "SSH password");
+                input(ui, p, egui::TextEdit::singleline(&mut self.ssh_secret).password(true), 220.0);
+                ui.end_row();
+            }
+            SshAuth::Key => {
+                label_cell(ui, p, "Key file");
+                field_row(ui, |ui| {
+                    input(ui, p, egui::TextEdit::singleline(&mut t.key_path).hint_text("~/.ssh/id_ed25519"), 290.0);
+                    ui.add_space(6.0);
+                    if ui.add(egui::Button::new("Browse…").min_size(egui::vec2(76.0, FIELD_H))).clicked() {
+                        let mut d = rfd::FileDialog::new();
+                        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+                            d = d.set_directory(std::path::PathBuf::from(home).join(".ssh"));
+                        }
+                        if let Some(f) = d.pick_file() {
+                            t.key_path = f.display().to_string();
+                        }
+                    }
+                });
+                ui.end_row();
+                label_cell(ui, p, "Passphrase");
+                input(ui, p, egui::TextEdit::singleline(&mut self.ssh_secret).password(true).hint_text("if the key has one"), 220.0);
+                ui.end_row();
+            }
+            SshAuth::Agent => {
+                ui.label("");
+                ui.label(RichText::new("Uses the keys in your running SSH agent (ssh-agent, 1Password, Pageant or the Windows OpenSSH agent).").size(11.5).color(p.faint));
+                ui.end_row();
+            }
+        }
+        ui.label("");
+        ui.label(RichText::new("The database host and port above are reached from the SSH server, so use the address it knows the database by (often localhost).").size(11.5).color(p.faint));
+        ui.end_row();
+    }
+
     fn validate(&self) -> Option<String> {
+        if let Some(t) = self.cfg.ssh.as_ref().filter(|_| !self.cfg.kind.is_file_based()) {
+            if t.host.trim().is_empty() {
+                return Some("Enter the SSH server's host".into());
+            }
+            if t.user.trim().is_empty() {
+                return Some("Enter the SSH user".into());
+            }
+            if t.auth == SshAuth::Key && t.key_path.trim().is_empty() {
+                return Some("Choose the SSH private key file".into());
+            }
+        }
         match self.cfg.kind {
             DbKind::Sqlite if self.cfg.path.trim().is_empty() => Some("Choose a database file".into()),
             DbKind::DuckDb if self.cfg.path.trim().is_empty() => Some("Choose a database file, or enter :memory:".into()),
@@ -588,6 +682,12 @@ fn input(ui: &mut egui::Ui, p: &Palette, edit: egui::TextEdit<'_>, width: f32) -
 
 /// A form row holding a field and its extras, exactly as tall as a field so
 /// its label lines up.
+/// A form label in the left column (as `show`'s own `field`).
+fn label_cell(ui: &mut egui::Ui, p: &Palette, label: &str) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(110.0, FIELD_H), Sense::hover());
+    ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), p.muted);
+}
+
 fn field_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), FIELD_H), egui::Layout::left_to_right(egui::Align::Center), add).inner
 }

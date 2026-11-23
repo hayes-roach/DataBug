@@ -52,11 +52,11 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn spawn(rt: &tokio::runtime::Handle, id: SessionId, cfg: ConnectionConfig, password: Option<String>, out: EvSender, ctx: eframe::egui::Context) -> Session {
+    pub fn spawn(rt: &tokio::runtime::Handle, id: SessionId, cfg: ConnectionConfig, password: Option<String>, ssh_secret: Option<String>, out: EvSender, ctx: eframe::egui::Context) -> Session {
         let (tx, rx) = tmpsc::unbounded_channel();
         let abort = Arc::new(Notify::new());
         let canceller: Arc<Mutex<Option<Canceller>>> = Arc::default();
-        rt.spawn(worker(id, cfg, password, rx, abort.clone(), canceller.clone(), out, ctx));
+        rt.spawn(worker(id, cfg, password, ssh_secret, rx, abort.clone(), canceller.clone(), out, ctx));
         Session { id, tx, abort, canceller, cancel_requested: None }
     }
 
@@ -139,6 +139,7 @@ async fn worker(
     id: SessionId,
     cfg: ConnectionConfig,
     password: Option<String>,
+    ssh_secret: Option<String>,
     mut rx: tmpsc::UnboundedReceiver<Cmd>,
     abort: Arc<Notify>,
     canceller: Arc<Mutex<Option<Canceller>>>,
@@ -165,7 +166,7 @@ async fn worker(
         }
         if conn.is_none() {
             send(Ev::Connecting);
-            match databug_drivers::connect(&cfg, password.as_deref()).await {
+            match databug_drivers::connect_with(&cfg, password.as_deref(), ssh_secret.as_deref()).await {
                 Ok(c) => {
                     *canceller.lock().unwrap() = c.canceller();
                     send(Ev::Connected(c.capabilities()));

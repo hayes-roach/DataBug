@@ -206,8 +206,9 @@ struct RowOut {
 }
 
 enum Glyph {
-    /// Engine logo and whether the connection is signed in.
-    Engine(DbKind, bool),
+    /// Engine logo and the connection state dot's fill: green when signed
+    /// in, amber while signing in, `None` (a grey ring) when not connected.
+    Engine(DbKind, Option<Color32>),
     Database,
     Schema,
     Group(ObjectKind),
@@ -335,14 +336,15 @@ fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos,
     }
     let icon = Rect::from_center_size(egui::pos2(x0 + 21.0, rect.center().y), egui::vec2(15.0, 15.0));
     match glyph {
-        Glyph::Engine(kind, live) => {
+        Glyph::Engine(kind, state) => {
             logos.paint(ui, icon.shrink(0.5), kind);
             // connection state dot, ringed so it stays separate from the logo
             let dot = egui::pos2(icon.right() + 1.5, icon.bottom() - 0.5);
             painter.circle_filled(dot, 3.8, p.island);
-            // connection state: solid green while connected, a grey ring when not
-            if live {
-                painter.circle_filled(dot, 2.8, p.success);
+            // connection state: solid green while connected, amber while
+            // signing in, a grey ring when not
+            if let Some(fill) = state {
+                painter.circle_filled(dot, 2.8, fill);
             } else {
                 painter.circle_stroke(dot, 2.3, Stroke::new(1.3_f32, p.muted));
             }
@@ -486,7 +488,14 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             let renaming = st.conn_rename.as_ref().is_some_and(|(id, _, _)| *id == cfg.id);
             let sense = if filtering || renaming { Sense::click() } else { Sense::click_and_drag() };
             let label = if renaming { "" } else { cfg.name.as_str() };
-            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, connected && !disconnected), label, detail, false, true, sense, disconnected);
+            let connecting = cx.connecting.contains(&cfg.id);
+            let state = match (disconnected, connected, connecting) {
+                (true, _, _) => None,
+                (false, true, _) => Some(p.success),
+                (false, false, true) => Some(p.warning),
+                _ => None,
+            };
+            let r = row_ex(ui, p, st, logos, &ck, 0, true, Glyph::Engine(cfg.kind, state), label, detail, false, true, sense, disconnected);
             headers.push(r.resp.rect);
             if renaming {
                 if let Some(name) = rename_field(ui, p, st, r.resp.rect) {
@@ -497,12 +506,6 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             }
             if r.resp.hovered() && !renaming && ui.input(|i| i.key_pressed(egui::Key::F2)) && !ui.ctx().wants_keyboard_input() {
                 st.conn_rename = Some((cfg.id.clone(), cfg.name.clone(), true));
-            }
-            let connecting = cx.connecting.contains(&cfg.id);
-            if !disconnected && (connected || connecting) {
-                // status at the right edge: green when signed in, amber while signing in
-                let c = egui::pos2(r.resp.rect.right() - 9.0, r.resp.rect.center().y);
-                ui.painter().circle_filled(c, 3.0, if connected { p.success } else { p.warning });
             }
             if r.resp.drag_started() {
                 st.dragging = Some(cfg.id.clone());

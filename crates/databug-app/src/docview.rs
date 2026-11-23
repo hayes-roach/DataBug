@@ -207,7 +207,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
         let shown: Vec<usize> = (0..dv.docs.len()).filter(|&i| f.is_empty() || dv.docs[i].to_string().to_lowercase().contains(&f)).collect();
         ui.label(RichText::new(if shown.len() == dv.docs.len() { format!("{} documents", dv.docs.len()) } else { format!("{} of {} documents", shown.len(), dv.docs.len()) }).size(11.0).color(p.faint));
         ui.add_space(2.0);
-        egui::ScrollArea::vertical().id_salt(id.with("list-scroll")).auto_shrink([false, false]).show_rows(ui, 38.0, shown.len(), |ui, range| {
+        egui::ScrollArea::vertical().drag_to_scroll(false).id_salt(id.with("list-scroll")).auto_shrink([false, false]).show_rows(ui, 38.0, shown.len(), |ui, range| {
             for &i in &shown[range] {
                 let doc = &dv.docs[i];
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
@@ -313,7 +313,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, view: &mut ResultView, url_for: &dyn
             });
         });
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().id_salt(id.with(("detail", dv.selected))).auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().drag_to_scroll(false).id_salt(id.with(("detail", dv.selected))).auto_shrink([false, false]).show(ui, |ui| {
             // while editing, the JSON comes first; attachments return after saving
             if let Some(atts) = doc.get("_attachments").and_then(|a| a.as_object()).filter(|a| !a.is_empty() && dv.edit.is_none()) {
                 section(ui, p, &format!("Attachments  {}", atts.len()));

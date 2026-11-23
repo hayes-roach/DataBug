@@ -366,7 +366,7 @@ impl ConnDialog {
         if let Some(list) = self.cfg.visible_schemas.as_mut() {
             egui::Frame::new().fill(p.canvas).stroke(Stroke::new(1.0_f32, p.border)).corner_radius(CornerRadius::same(6)).inner_margin(6.0).show(ui, |ui| {
                 ui.set_width(368.0);
-                egui::ScrollArea::vertical().max_height(130.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).max_height(130.0).show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         for s in &self.known_schemas {
                             let mut on = list.contains(s);
@@ -540,7 +540,7 @@ fn engine_dropdown(ui: &mut egui::Ui, p: &Palette, logos: &crate::icons::Logos, 
     }
     egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_width(width - 12.0);
-        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().drag_to_scroll(false).max_height(420.0).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for cat in DbCategory::ALL {
                 let kinds: Vec<DbKind> = cat.kinds().collect();

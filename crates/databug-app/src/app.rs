@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use databug_core::{Capabilities, Catalog, ConnectionConfig, DbKind, DbObject, Dialect, ObjectKind, QueryEvent, TableInfo};
 use databug_drivers::{ExecOptions, SourceRef};
 use databug_sql::rename::{rename_references, target_at, RenameTarget};
-use databug_sql::{classify, dangers, name_at, single_table_source, split_batches, split_statements, statement_at, statement_parts, StatementKind};
+use databug_sql::{changes_schema, classify, dangers, name_at, single_table_source, split_batches, split_statements, statement_at, statement_parts, StatementKind};
 
 const META_BIT: u64 = 1 << 62;
 
@@ -69,6 +69,8 @@ struct Running {
     had_error: bool,
     /// reload the connection's schema when the job succeeds (DDL ran)
     refresh_after: bool,
+    /// the query may have changed the schema: reload it when the job ends
+    changes_schema: bool,
     done_toast: Option<String>,
     /// result views created for this job (by statement index)
     result_for_stmt: HashMap<usize, usize>,
@@ -1018,6 +1020,13 @@ impl DataBugApp {
             return;
         }
         let mut stmts = Self::targets(tab, script);
+        // Run (a toolbar button or menu) took the focus: give it back to the
+        // editor, which only shows its selection while focused, so the
+        // highlighted text stays selected and can run again
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.editor.focus();
+        }
+        let Some(tab) = self.tabs.get(self.active) else { return };
         if explain.is_some() {
             stmts.truncate(1);
         }
@@ -1083,7 +1092,7 @@ impl DataBugApp {
             let (sql, range) = stmts.remove(0);
             tab.editor.running = Some(range.clone());
             tab.output.push(LogLine { at: now_hms(), kind: LogKind::Info, text: if analyze { "Explain analyze".into() } else { "Explain plan".into() }, sql: Some(one_line(&sql, 200)) });
-            tab.running = Some(Running { job, started: Instant::now(), stmts: vec![(sql.clone(), range)], done: 0, explain: true, analyze, edit_refresh: None, had_error: false, refresh_after: false, done_toast: None, result_for_stmt: HashMap::new() });
+            tab.running = Some(Running { job, started: Instant::now(), stmts: vec![(sql.clone(), range)], done: 0, explain: true, analyze, edit_refresh: None, had_error: false, refresh_after: false, changes_schema: false, done_toast: None, result_for_stmt: HashMap::new() });
             tab.session.as_ref().unwrap().send(Cmd::Explain { job, stmt: sql, analyze });
             return;
         }
@@ -1109,7 +1118,11 @@ impl DataBugApp {
         });
         tab.session.as_ref().unwrap().send(Cmd::Execute { job, stmts: stmts.iter().map(|s| s.0.clone()).collect(), opts: ExecOptions { row_limit: limit } });
         let (refresh_after, done_toast) = tab.after_job.take().unwrap_or((false, None));
-        tab.running = Some(Running { job, started: Instant::now(), stmts, done: 0, explain: false, analyze: false, edit_refresh, had_error: false, refresh_after, done_toast, result_for_stmt: HashMap::new() });
+        // a query that creates, alters or drops something reloads the schema
+        // when it finishes, even if a later statement failed
+        let d = tab.editor.dialect;
+        let changes_schema = edit_refresh.is_none() && stmts.iter().any(|(s, _)| statement_parts(s, d).into_iter().any(|r| changes_schema(&s[r], d)));
+        tab.running = Some(Running { job, started: Instant::now(), stmts, done: 0, explain: false, analyze: false, edit_refresh, had_error: false, refresh_after, changes_schema, done_toast, result_for_stmt: HashMap::new() });
     }
 
     fn tx_command(&mut self, sql: &str, ctx: &egui::Context) {
@@ -1350,6 +1363,9 @@ impl DataBugApp {
                             if let Some(s) = tab.session.as_mut() {
                                 s.job_finished();
                             }
+                            if run.changes_schema {
+                                follow_refresh = true;
+                            }
                             if !run.had_error {
                                 if run.refresh_after {
                                     follow_refresh = true;
@@ -1450,10 +1466,20 @@ impl DataBugApp {
                     self.conn(&id).is_some().then_some(id)
                 });
                 let only = (self.connections.len() == 1).then(|| self.connections[0].id.clone());
-                match from_tab.or(from_tree).or(only) {
+                // what's selected in the explorer wins: the button sits there
+                match from_tree.or(from_tab).or(only) {
                     Some(id) => {
                         let name = self.conn(&id).map(|c| c.name.clone()).unwrap_or_default();
+                        // a connection's other databases shown in the tree reload too
+                        let extra: Vec<String> = if id.contains('@') {
+                            Vec::new()
+                        } else {
+                            self.catalogs.keys().filter(|k| k.split_once('@').map(|(b, _)| b == id).unwrap_or(false)).cloned().collect()
+                        };
                         self.apply(Action::Retry(id), ctx);
+                        for v in extra {
+                            self.refresh_catalog(&v, ctx);
+                        }
                         self.toast(format!("Refreshing {name}…"));
                     }
                     None => self.toast("Open a console or select a connection to refresh"),
@@ -2034,7 +2060,7 @@ impl DataBugApp {
                 if !r.notes.trim().is_empty() {
                     ui.label(RichText::new("What's new").color(p.muted));
                     egui::Frame::new().fill(p.raised).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(ui, |ui| {
-                        egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+                        egui::ScrollArea::vertical().drag_to_scroll(false).max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
                             ui.label(RichText::new(r.notes.chars().take(6000).collect::<String>()).size(12.0));
                         });
                     });
@@ -2335,7 +2361,7 @@ impl DataBugApp {
                 if ds.searched && rows.is_empty() && ds.pending.is_empty() {
                     ui.label(RichText::new("No matches").color(p.faint));
                 }
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 34.0, rows.len(), |ui, range| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).auto_shrink([false, false]).show_rows(ui, 34.0, rows.len(), |ui, range| {
                     for &i in &rows[range] {
                         let h = &ds.hits[i];
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), Sense::click());
@@ -2465,7 +2491,7 @@ impl DataBugApp {
                 ui.label(RichText::new("Changes apply instantly and are saved per theme.").size(11.0).color(p.faint));
                 ui.separator();
                 let base = *theme::preset(self.settings.theme);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
                     egui::Grid::new("colors").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
                         for (k, label, get) in theme::SLOTS {
                             let mut cur = *p;
@@ -2930,7 +2956,7 @@ impl DataBugApp {
                         }
                         if pickable {
                             section(ui, "Schema");
-                            egui::ScrollArea::vertical().id_salt("schemas").max_height(200.0).show(ui, |ui| {
+                            egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("schemas").max_height(200.0).show(ui, |ui| {
                                 for sname in &schemas {
                                     let text = if *sname == default { format!("{sname}   (default)") } else { sname.clone() };
                                     if ui.selectable_label(sname.eq_ignore_ascii_case(&current), text).clicked() {
@@ -3084,7 +3110,7 @@ impl DataBugApp {
         let live_tabs: HashSet<u64> = self.tabs.iter().filter(|t| self.liveness(ConnectionConfig::base_id(&t.conn_id)).0).map(|t| t.id).collect();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 34.0).show(ui, |ui| {
+            egui::ScrollArea::horizontal().drag_to_scroll(false).id_salt("tabs").max_width(ui.available_width() - 34.0).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (i, t) in self.tabs.iter().enumerate() {
                         let active = i == self.active;
@@ -3183,7 +3209,7 @@ impl DataBugApp {
                 return None;
             }
             let row_h = 44.0;
-            egui::ScrollArea::vertical().max_height(row_h * 8.0).auto_shrink([false, true]).show(ui, |ui| {
+            egui::ScrollArea::vertical().drag_to_scroll(false).max_height(row_h * 8.0).auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for e in rows {
                     let is_open = open.contains(&e.id);
@@ -3350,7 +3376,7 @@ impl DataBugApp {
                 });
                 let f = self.history_filter.to_lowercase();
                 let items: Vec<&HistoryEntry> = self.history.iter().rev().filter(|h| f.is_empty() || h.sql.to_lowercase().contains(&f) || h.connection.to_lowercase().contains(&f)).collect();
-                egui::ScrollArea::vertical().id_salt("history").auto_shrink([false, false]).show_rows(ui, 24.0, items.len(), |ui, range| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("history").auto_shrink([false, false]).show_rows(ui, 24.0, items.len(), |ui, range| {
                     for h in &items[range] {
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::click());
                         if resp.hovered() {
@@ -3369,7 +3395,7 @@ impl DataBugApp {
                 });
             }
             _ => {
-                egui::ScrollArea::vertical().id_salt(("output", tab.id)).stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt(("output", tab.id)).stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                     if tab.output.is_empty() {
                         ui.label(RichText::new("Run a statement with Ctrl/⌘ + Enter. Messages, timings and errors show up here.").color(p.faint));
                     }

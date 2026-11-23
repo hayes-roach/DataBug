@@ -38,7 +38,7 @@ impl PlanView {
         });
         ui.add_space(4.0);
         if self.show_raw || self.plan.root.is_none() {
-            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::both().drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
                 let mut raw = self.plan.raw.as_str();
                 ui.add(egui::TextEdit::multiline(&mut raw).font(FontId::monospace(12.0)).desired_width(f32::INFINITY).code_editor());
             });
@@ -62,7 +62,7 @@ impl PlanView {
         ui.horizontal_top(|ui| {
             let tree_w = (ui.available_width() - detail_w).max(200.0);
             ui.allocate_ui_with_layout(egui::vec2(tree_w, ui.available_height()), egui::Layout::top_down(egui::Align::Min), |ui| {
-                egui::ScrollArea::vertical().id_salt("plan-tree").auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("plan-tree").auto_shrink([false, false]).show(ui, |ui| {
                     // header
                     let (hr, _) = ui.allocate_exact_size(egui::vec2(tree_w - 12.0, 20.0), Sense::hover());
                     let col_x = hr.left() + tree_w - 280.0;

@@ -130,7 +130,7 @@ impl CompareView {
         ui.horizontal_top(|ui| {
             // ---- list ----
             ui.allocate_ui_with_layout(egui::vec2(avail.x * 0.42, avail.y - 40.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                egui::ScrollArea::vertical().id_salt("cmp-list").auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("cmp-list").auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     for group in [DiffKind::Added, DiffKind::Changed, DiffKind::Removed] {
                         let idx: Vec<usize> = (0..self.items.len()).filter(|&i| self.items[i].kind == group).collect();
@@ -178,7 +178,7 @@ impl CompareView {
                     }
                     ui.add_space(6.0);
                     let mut sql = databug_sql::ddl::script(self.target_dialect, &item.stmts);
-                    egui::ScrollArea::both().id_salt("cmp-sql").auto_shrink([false, false]).show(ui, |ui| {
+                    egui::ScrollArea::both().drag_to_scroll(false).id_salt("cmp-sql").auto_shrink([false, false]).show(ui, |ui| {
                         ui.add(egui::TextEdit::multiline(&mut sql).font(FontId::monospace(12.0)).desired_width(f32::INFINITY).code_editor());
                     });
                 }

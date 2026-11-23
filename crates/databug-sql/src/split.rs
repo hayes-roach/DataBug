@@ -48,16 +48,17 @@ pub fn split_batches(src: &str, dialect: Dialect) -> Vec<Range<usize>> {
         return split_statements(src, dialect);
     }
     let parts = split_parts(src, dialect);
-    let mut out: Vec<Range<usize>> = Vec::new();
+    let mut out: Vec<(Range<usize>, u32)> = Vec::new();
     let mut last_batch = usize::MAX;
     for p in parts {
         match out.last_mut() {
-            Some(r) if p.batch == last_batch => r.end = p.range.end,
-            _ => out.push(p.range.clone()),
+            Some((r, _)) if p.batch == last_batch => r.end = p.range.end,
+            _ => out.push((p.range.clone(), p.repeat)),
         }
         last_batch = p.batch;
     }
-    out
+    // `GO 3`: the batch runs three times
+    out.into_iter().flat_map(|(r, n)| std::iter::repeat_n(r, n as usize)).collect()
 }
 
 /// Each statement on its own, split at every `;` even inside a SQL Server
@@ -83,6 +84,8 @@ struct Part {
     range: Range<usize>,
     batch: usize,
     starts: Start,
+    /// `GO 5` after the batch: run it that many times.
+    repeat: u32,
 }
 
 fn split_parts(src: &str, dialect: Dialect) -> Vec<Part> {
@@ -101,22 +104,31 @@ fn split_parts(src: &str, dialect: Dialect) -> Vec<Part> {
 
     let flush = |out: &mut Vec<Part>, first: &mut Option<usize>, last_end: usize, batch: usize, starts: Start| {
         if let Some(s) = first.take() {
-            out.push(Part { range: s..last_end, batch, starts });
+            out.push(Part { range: s..last_end, batch, starts, repeat: 1 });
         }
     };
 
+    // the rest of a `GO` line (its count and comment) isn't part of any statement
+    let mut skip_until = 0usize;
     for (idx, t) in toks.iter().enumerate() {
-        if t.is_trivia() {
+        if t.is_trivia() || t.start < skip_until {
             continue;
         }
         let text = t.text(src);
-        // `GO` on its own line ends a batch in SQL Server.
-        if dialect == Dialect::MsSql && t.kind == TokKind::Keyword && text.eq_ignore_ascii_case("GO") && alone_on_line(src, t) {
-            flush(&mut out, &mut first, last_end, batch, starts);
-            batch += 1;
-            block_depth = 0;
-            prev_sig = None;
-            continue;
+        // `GO` on its own line ends a batch in SQL Server, optionally with a
+        // repeat count and a comment: `GO`, `GO 5`, `GO -- done`
+        if dialect == Dialect::MsSql && t.kind == TokKind::Keyword && text.eq_ignore_ascii_case("GO") {
+            if let Some((repeat, line_end)) = go_line(src, t) {
+                flush(&mut out, &mut first, last_end, batch, starts);
+                for p in out.iter_mut().filter(|p| p.batch == batch) {
+                    p.repeat = repeat;
+                }
+                batch += 1;
+                block_depth = 0;
+                prev_sig = None;
+                skip_until = line_end;
+                continue;
+            }
         }
         // `/` on its own line ends a PL/SQL block or package (as in SQL*Plus)
         if plsql && text == "/" && alone_on_line(src, t) {
@@ -265,6 +277,32 @@ fn statement_start(src: &str, toks: &[Token]) -> Start {
     }
 }
 
+/// A SQL Server `GO` line: `GO` alone on its line, then optionally a repeat
+/// count, a `;` and a `--` or `/* */` comment. Returns the count and where
+/// the line ends.
+fn go_line(src: &str, t: &Token) -> Option<(u32, usize)> {
+    let line_start = src[..t.start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = src[t.end..].find('\n').map(|p| t.end + p).unwrap_or(src.len());
+    if !src[line_start..t.start].trim().is_empty() {
+        return None;
+    }
+    let mut rest = src[t.end..line_end].trim();
+    if let Some(c) = rest.find("--") {
+        rest = rest[..c].trim();
+    }
+    if let (Some(a), Some(b)) = (rest.find("/*"), rest.rfind("*/")) {
+        if a < b && rest[b + 2..].trim().is_empty() {
+            rest = rest[..a].trim();
+        }
+    }
+    let rest = rest.trim_end_matches(';').trim();
+    if rest.is_empty() {
+        return Some((1, line_end));
+    }
+    // GO's count: SQL Server Management Studio runs the batch that many times
+    rest.parse::<u32>().ok().filter(|n| (1..=10_000).contains(n)).map(|n| (n, line_end))
+}
+
 fn alone_on_line(src: &str, t: &Token) -> bool {
     let line_start = src[..t.start].rfind('\n').map(|p| p + 1).unwrap_or(0);
     let line_end = src[t.end..].find('\n').map(|p| t.end + p).unwrap_or(src.len());
@@ -382,6 +420,20 @@ mod tests {
         assert_eq!(p, vec!["CREATE OR ALTER PROCEDURE dbo.p AS\nSET NOCOUNT ON;\nSELECT 1", "EXEC dbo.p"]);
         // a CREATE TABLE batch still splits
         assert_eq!(parts("CREATE TABLE t (a int); INSERT INTO t VALUES (1)", Dialect::MsSql).len(), 2);
+    }
+
+    #[test]
+    fn go_lines_with_a_count_or_comment() {
+        let batches = |src: &str| split_batches(src, Dialect::MsSql).into_iter().map(|r| src[r].to_string()).collect::<Vec<_>>();
+        let proc = "CREATE OR ALTER PROCEDURE dbo.p AS\r\nBEGIN\r\n  SELECT 1;\r\nEND";
+        for go in ["GO", "GO\r\n", "go", "  GO  ", "GO;", "GO -- done", "GO /* done */", "GO\t-- done\r\n"] {
+            assert_eq!(batches(&format!("{proc}\r\n{go}")), vec![proc], "{go:?}");
+        }
+        assert_eq!(batches("INSERT INTO t VALUES (1)\nGO 3\nSELECT 2"), vec!["INSERT INTO t VALUES (1)"; 3].into_iter().chain(["SELECT 2"]).collect::<Vec<_>>());
+        assert_eq!(batches("SELECT 1\nGO 2 -- twice"), vec!["SELECT 1", "SELECT 1"]);
+        // not a GO line: a column or label named go
+        assert_eq!(batches("SELECT go FROM t"), vec!["SELECT go FROM t"]);
+        assert_eq!(split_statements("SELECT 1\nGO 2\nSELECT 3", Dialect::MsSql).len(), 2);
     }
 
     #[test]

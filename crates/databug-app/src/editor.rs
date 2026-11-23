@@ -806,7 +806,7 @@ impl Editor {
 
         let mut changed = false;
         let mut text_rect = Rect::NOTHING;
-        egui::ScrollArea::both().id_salt(self.id.with("scroll")).auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::both().drag_to_scroll(false).id_salt(self.id.with("scroll")).auto_shrink([false, false]).show(ui, |ui| {
             if let Some((g, origin)) = self.last_galley.clone() {
                 if g.text() == self.text {
                     if let Some(r) = &self.running {
@@ -1106,7 +1106,7 @@ impl Editor {
                 egui::Frame::popup(ui.style()).fill(p.raised).inner_margin(Margin::same(4)).show(ui, |ui| {
                     ui.set_width(420.0);
                     let visible = pop.items.len().min(10);
-                    egui::ScrollArea::vertical().max_height(row_h * visible as f32 + 2.0).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().drag_to_scroll(false).max_height(row_h * visible as f32 + 2.0).auto_shrink([false, true]).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (i, item) in pop.items.iter().enumerate() {
                             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
@@ -1160,5 +1160,64 @@ fn kind_badge(k: ItemKind, p: &Palette) -> (&'static str, Color32) {
         ItemKind::Keyword => ("k", p.syn_keyword),
         ItemKind::Method => ("m", p.syn_function),
         ItemKind::Operator => ("$", p.syn_param),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One frame: the editor on the left, a button on the right (Run).
+    fn frame(ctx: &egui::Context, ed: &mut Editor, events: Vec<egui::Event>) -> bool {
+        let p = crate::theme::palette(crate::theme::ThemeKind::Dark, &Default::default());
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 500.0))), events, ..Default::default() };
+        let mut clicked = false;
+        let _ = ctx.run(input, |ctx| {
+            egui::SidePanel::right("run").exact_width(200.0).show(ctx, |ui| {
+                clicked = ui.add_sized([120.0, 40.0], egui::Button::new("Run")).clicked();
+            });
+            egui::CentralPanel::default().show(ctx, |ui| ed.show(ui, &p, None, 0, false, 14.0));
+        });
+        clicked
+    }
+
+    fn click(ctx: &egui::Context, ed: &mut Editor, pos: Pos2) -> bool {
+        let mut hit = false;
+        for ev in [
+            vec![egui::Event::PointerMoved(pos)],
+            vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+            vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }],
+        ] {
+            hit |= frame(ctx, ed, ev);
+        }
+        hit
+    }
+
+    #[test]
+    fn the_selection_survives_clicking_run() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut ed = Editor::new(egui::Id::new("ed"), "SELECT 1;\nSELECT 2;\n".into(), Dialect::Postgres);
+        for _ in 0..3 {
+            frame(&ctx, &mut ed, vec![]);
+        }
+        // select "SELECT 2;"
+        let mut state = egui::TextEdit::load_state(&ctx, ed.id).unwrap_or_default();
+        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(10), CCursor::new(19))));
+        state.store(&ctx, ed.id);
+        for _ in 0..2 {
+            frame(&ctx, &mut ed, vec![]);
+        }
+        assert_eq!(ed.selected_text(), Some("SELECT 2;"));
+        // clicking Run takes the focus; the app then hands it back
+        assert!(click(&ctx, &mut ed, Pos2::new(800.0, 30.0)), "Run wasn't clicked");
+        ed.focus();
+        for _ in 0..2 {
+            frame(&ctx, &mut ed, vec![]);
+        }
+        assert!(ctx.memory(|m| m.has_focus(ed.id)), "the editor didn't get the focus back");
+        assert_eq!(ed.selected_text(), Some("SELECT 2;"));
+        let kept = egui::TextEdit::load_state(&ctx, ed.id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.min(r.secondary.index)..r.primary.index.max(r.secondary.index));
+        assert_eq!(kept, Some(10..19), "the highlight is gone");
     }
 }

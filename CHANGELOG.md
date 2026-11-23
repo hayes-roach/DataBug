@@ -6,6 +6,19 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- Running a query that creates, alters, drops or renames something (or, on Redis and MongoDB, any write) reloads the schema in the explorer when it finishes
+- The explorer's Refresh button refreshes the database selected in the explorer first (then the open console's), and a connection's other databases shown in the tree with it
+- Running keeps the editor's selection highlighted, so the same text can run again
+- SQL Server: `GO` lines may have a repeat count (`GO 3` runs the batch three times, as in SQL Server Management Studio)
+
+### Fixed
+
+- SQL Server: a `GO` line with a comment after it (`GO -- done`) is recognized; `GO` was sent to the server and the batch failed
+- SQL Server: refreshing the schema while another session holds an uncommitted CREATE or ALTER no longer leaves the explorer loading forever; it stops after 15 seconds and says to commit or roll back
+- Windows: clicks in the explorer were often lost once the tree was scrolled, so schemas, tables and folders wouldn't close and ticking a schema in the schema list did nothing. A mouse click that moved a few pixels dragged the tree (drag-to-scroll, meant for touch screens). Scroll areas no longer scroll by dragging; the wheel and scroll bars do
+
 ## [0.12.1] - 2026-11-23
 
 ### Fixed

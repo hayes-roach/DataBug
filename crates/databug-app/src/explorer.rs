@@ -115,6 +115,9 @@ pub struct ExplorerState {
     /// Height of the tree's content and its scroll offset in the last frame.
     content_height: f32,
     scroll_y: f32,
+    /// Where each row was drawn in the last frame (tests click on them).
+    #[cfg(test)]
+    rects: HashMap<String, Rect>,
 }
 
 impl ExplorerState {
@@ -299,6 +302,8 @@ fn rename_field(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, row: Rec
 fn row_ex(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logos, key: &str, depth: usize, expandable: bool, glyph: Glyph, label: &str, detail: &str, editable: bool, strong: bool, sense: Sense, dim: bool) -> RowOut {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ROW_H), sense);
+    #[cfg(test)]
+    st.rects.insert(key.to_string(), rect);
     if st.scroll_to_selected && st.selected.as_deref() == Some(key) {
         resp.scroll_to_me(Some(egui::Align::Center));
         st.scroll_to_selected = false;
@@ -429,7 +434,7 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
             if icon_button(ui, p, HeaderIcon::Search, false).on_hover_text("Find in database: tables, columns, routines, definitions and data  (Ctrl/⌘ + F outside the editor)").clicked() {
                 actions.push(Action::SearchDatabase);
             }
-            if icon_button(ui, p, HeaderIcon::Refresh, false).on_hover_text("Refresh the current database: the open console's, or the one selected here").clicked() {
+            if icon_button(ui, p, HeaderIcon::Refresh, false).on_hover_text("Refresh the database selected here, or the open console's").clicked() {
                 actions.push(Action::RefreshCurrent);
             }
         });
@@ -448,7 +453,11 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, logos: &Logo
     }
     let filter = st.filter.to_lowercase();
     let filtering = !filter.is_empty();
-    let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    // a mouse click often moves a few pixels between press and release; with
+    // drag-to-scroll (meant for touch screens) that dragged the tree, rows
+    // shifted under the pointer and the click was lost. The wheel and the
+    // scroll bar scroll it.
+    let out = egui::ScrollArea::vertical().auto_shrink([false, false]).drag_to_scroll(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if connections.is_empty() {
             ui.add_space(20.0);
@@ -1053,7 +1062,7 @@ fn db_picker_row(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
         });
         ui.separator();
         let search = st.db_picker_search.to_lowercase();
-        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(420.0).drag_to_scroll(false).show(ui, |ui| {
             for name in &list.names {
                 if !search.is_empty() && !name.to_lowercase().contains(&search) {
                     continue;
@@ -1207,7 +1216,7 @@ fn schema_picker(ui: &mut egui::Ui, p: &Palette, st: &mut ExplorerState, cfg: &C
         });
         ui.separator();
         let search = st.picker_search.to_lowercase();
-        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(420.0).drag_to_scroll(false).show(ui, |ui| {
             for s in &cat.schemas {
                 if !search.is_empty() && !s.name.to_lowercase().contains(&search) {
                     continue;
@@ -1554,15 +1563,21 @@ mod tests {
 
         /// One frame; `wheel` scrolls by that many points.
         fn frame(&mut self, wheel: f32) {
+            let mut events = Vec::new();
+            if wheel != 0.0 {
+                events.push(egui::Event::PointerMoved(egui::pos2(150.0, 500.0)));
+                events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -wheel), modifiers: Default::default() });
+            }
+            self.frame_with(events);
+        }
+
+        fn frame_with(&mut self, events: Vec<egui::Event>) {
+            self.st.rects.clear();
             let p = crate::theme::palette(crate::theme::ThemeKind::Dark, &Default::default());
             let d = HashMap::new();
             let none: HashSet<String> = HashSet::new();
             let cx = ExplorerCtx { connected: &self.connected, connecting: &none, disconnected: &self.disconnected, failed: &self.failed, databases: &d, projects: &[], current_project: None };
-            let mut input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 1100.0))), ..Default::default() };
-            if wheel != 0.0 {
-                input.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 500.0)));
-                input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -wheel), modifiers: Default::default() });
-            }
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 1100.0))), events, ..Default::default() };
             let Harness { ctx, logos, cfg, cat, st, actions, .. } = self;
             let _ = ctx.run(input, |ctx| {
                 let l = logos.get_or_insert_with(|| Logos::discover(ctx));
@@ -1573,6 +1588,99 @@ mod tests {
                 });
             });
         }
+    }
+
+    impl Harness {
+        /// Press and release the mouse at `pos`, a frame for each step.
+        fn click(&mut self, pos: egui::Pos2) {
+            for ev in [
+                vec![egui::Event::PointerMoved(pos)],
+                vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+                vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }],
+                vec![],
+            ] {
+                self.frame_with(ev);
+            }
+        }
+    }
+
+    /// A SQL Server-like catalog: several schemas, the default one large.
+    fn mssql_catalog() -> Catalog {
+        let mut cat = catalog(400, 0, 0);
+        cat.schemas[0].name = "dbo".into();
+        cat.default_schema = "dbo".into();
+        for name in ["sales", "inventory"] {
+            let mut s = catalog(25, 0, 0).schemas.remove(0);
+            s.name = name.into();
+            cat.schemas.push(s);
+        }
+        cat
+    }
+
+    /// Click a row's expand arrow.
+    fn click_arrow(h: &mut Harness, key: &str, depth: f32) {
+        h.frame(0.0);
+        let r = h.st.rects[key];
+        h.click(egui::pos2(r.left() + 6.0 + depth * 14.0 + 6.0, r.center().y));
+    }
+
+    /// A mouse click often moves a few pixels between press and release.
+    /// That used to drag the scrolled tree (drag-to-scroll), so the rows
+    /// moved under the pointer and the click was lost.
+    #[test]
+    fn a_click_that_moves_a_little_still_counts() {
+        let mut h = Harness::new(catalog(400, 0, 0));
+        h.connected.insert("c1".into());
+        h.frame(0.0);
+        h.frame(3000.0);
+        for _ in 0..120 {
+            h.frame(0.0);
+        }
+        let scrolled = h.st.scroll_y;
+        assert!(scrolled > 2000.0);
+        let (_, key) = h
+            .st
+            .rects
+            .iter()
+            .filter(|(k, r)| k.starts_with("t:") && k.matches(':').count() == 3 && r.center().y > 300.0)
+            .map(|(k, r)| (r.center().y, k.clone()))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        let r = h.st.rects[&key];
+        let pos = egui::pos2(r.left() + 6.0 + 2.0 * 14.0 + 6.0, r.center().y);
+        h.frame_with(vec![egui::Event::PointerMoved(pos)]);
+        h.frame_with(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+        let mut at = pos;
+        for _ in 0..5 {
+            at += egui::vec2(0.0, 1.0);
+            h.frame_with(vec![egui::Event::PointerMoved(at)]);
+        }
+        h.frame_with(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+        h.frame_with(vec![]);
+        assert!(h.st.open.contains(&key), "the click on {key}'s arrow was lost");
+        assert_eq!(h.st.scroll_y, scrolled, "the click dragged the tree");
+    }
+
+    #[test]
+    fn clicking_an_arrow_closes_and_opens_the_row() {
+        let mut h = Harness::new(mssql_catalog());
+        h.cfg.kind = DbKind::MsSql;
+        h.connected.insert("c1".into());
+        h.st.open.insert("s:c1:sales".into());
+        h.st.open.insert("g:c1:sales:Table".into());
+        for _ in 0..3 {
+            h.frame(0.0);
+        }
+        for (key, depth) in [("g:c1:dbo:Table", 2.0), ("s:c1:dbo", 1.0), ("g:c1:sales:Table", 2.0), ("s:c1:sales", 1.0)] {
+            assert!(h.st.open.contains(key), "{key} starts open");
+            click_arrow(&mut h, key, depth);
+            assert!(!h.st.open.contains(key), "{key} didn't close");
+        }
+        for _ in 0..2 {
+            h.frame(0.0);
+        }
+        click_arrow(&mut h, "s:c1:sales", 1.0);
+        assert!(h.st.open.contains("s:c1:sales"), "sales didn't open again");
     }
 
     #[test]

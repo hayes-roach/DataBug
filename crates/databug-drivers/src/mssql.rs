@@ -111,6 +111,70 @@ pub fn integrated_auth_available() -> bool {
 }
 
 impl MsConn {
+    /// The catalog: tables and columns, indexes, keys and other objects.
+    async fn introspect_catalog(&mut self) -> anyhow::Result<Catalog> {
+        let rows = collect(self, INTROSPECT).await?;
+        let schemas = collect(self, "SELECT name FROM sys.schemas WHERE schema_id < 16384 AND name NOT IN ('sys','INFORMATION_SCHEMA','guest') ORDER BY name").await?;
+        let mut extras = Extras::default();
+        for r in collect(self, INDEXES).await? {
+            extras.indexes.push((cell(&r, 0), cell(&r, 1), IndexInfo { name: cell(&r, 2), unique: truthy(r[3].as_deref()), primary: truthy(r[4].as_deref()), columns: split_list(r[5].as_ref()) }));
+        }
+        for r in collect(self, FOREIGN_KEYS).await? {
+            let rule = cell(&r, 7).replace('_', " ");
+            extras.foreign_keys.push((
+                cell(&r, 0),
+                cell(&r, 1),
+                ForeignKey { name: cell(&r, 2), columns: split_list(r[3].as_ref()), ref_schema: cell(&r, 4), ref_table: cell(&r, 5), ref_columns: split_list(r[6].as_ref()), on_delete: if rule == "NO ACTION" { String::new() } else { rule } },
+            ));
+        }
+        for r in collect(self, OBJECTS).await? {
+            let kind = match cell(&r, 2).trim() {
+                "P" => ObjectKind::Procedure,
+                "FN" => ObjectKind::Function,
+                "IF" | "TF" => ObjectKind::TableFunction,
+                "PC" => ObjectKind::ClrProcedure,
+                "FS" => ObjectKind::ClrFunction,
+                "FT" => ObjectKind::ClrTableFunction,
+                "AF" => ObjectKind::ClrAggregate,
+                "TA" => ObjectKind::ClrTrigger,
+                "TR" => ObjectKind::Trigger,
+                "SO" => ObjectKind::Sequence,
+                "SN" => ObjectKind::Synonym,
+                _ => continue,
+            };
+            let parent = cell(&r, 3);
+            let detail = match kind {
+                ObjectKind::Trigger | ObjectKind::ClrTrigger => format!("on {parent}"),
+                ObjectKind::Synonym => cell(&r, 4),
+                _ => String::new(),
+            };
+            let table = matches!(kind, ObjectKind::Trigger | ObjectKind::ClrTrigger).then_some(parent).filter(|p| !p.is_empty());
+            extras.objects.push((cell(&r, 0), DbObject { name: cell(&r, 1), kind, detail, ident: String::new(), table }));
+        }
+        // parameter lists for routines, e.g. "@id int, @name nvarchar OUTPUT"
+        let mut params: std::collections::HashMap<(String, String), String> = Default::default();
+        for r in collect(self, PARAMS).await.unwrap_or_default() {
+            let e = params.entry((cell(&r, 0), cell(&r, 1))).or_default();
+            if !e.is_empty() {
+                e.push_str(", ");
+            }
+            e.push_str(&format!("{} {}{}", cell(&r, 2), cell(&r, 3), if truthy(r.get(4).and_then(|v| v.as_deref())) { " OUTPUT" } else { "" }));
+        }
+        for (schema, o) in extras.objects.iter_mut() {
+            if matches!(o.kind, ObjectKind::Procedure | ObjectKind::Function | ObjectKind::TableFunction | ObjectKind::ClrProcedure | ObjectKind::ClrFunction | ObjectKind::ClrTableFunction) {
+                if let Some(p) = params.get(&(schema.clone(), o.name.clone())) {
+                    o.detail = p.clone();
+                }
+            }
+        }
+        let current = collect(self, "SELECT SCHEMA_NAME()").await?;
+        let default = current.first().and_then(|r| r[0].clone()).unwrap_or_else(|| "dbo".into());
+        for r in collect(self, "SELECT name, permission_set_desc FROM sys.assemblies WHERE is_user_defined = 1").await.unwrap_or_default() {
+            extras.objects.push((default.clone(), DbObject { name: cell(&r, 0), kind: ObjectKind::Assembly, detail: cell(&r, 1).to_lowercase().replace('_', " "), ident: String::new(), table: None }));
+        }
+        Ok(build_catalog(rows, default, schemas.into_iter().filter_map(|r| r[0].clone()).collect(), extras))
+    }
+
     pub async fn connect(cfg: &ConnectionConfig, password: &str) -> anyhow::Result<Self> {
         let mut config = Config::new();
         config.host(&cfg.host);
@@ -323,66 +387,21 @@ impl DbConnection for MsConn {
     }
 
     async fn introspect(&mut self) -> anyhow::Result<Catalog> {
-        let rows = collect(self, INTROSPECT).await?;
-        let schemas = collect(self, "SELECT name FROM sys.schemas WHERE schema_id < 16384 AND name NOT IN ('sys','INFORMATION_SCHEMA','guest') ORDER BY name").await?;
-        let mut extras = Extras::default();
-        for r in collect(self, INDEXES).await? {
-            extras.indexes.push((cell(&r, 0), cell(&r, 1), IndexInfo { name: cell(&r, 2), unique: truthy(r[3].as_deref()), primary: truthy(r[4].as_deref()), columns: split_list(r[5].as_ref()) }));
-        }
-        for r in collect(self, FOREIGN_KEYS).await? {
-            let rule = cell(&r, 7).replace('_', " ");
-            extras.foreign_keys.push((
-                cell(&r, 0),
-                cell(&r, 1),
-                ForeignKey { name: cell(&r, 2), columns: split_list(r[3].as_ref()), ref_schema: cell(&r, 4), ref_table: cell(&r, 5), ref_columns: split_list(r[6].as_ref()), on_delete: if rule == "NO ACTION" { String::new() } else { rule } },
-            ));
-        }
-        for r in collect(self, OBJECTS).await? {
-            let kind = match cell(&r, 2).trim() {
-                "P" => ObjectKind::Procedure,
-                "FN" => ObjectKind::Function,
-                "IF" | "TF" => ObjectKind::TableFunction,
-                "PC" => ObjectKind::ClrProcedure,
-                "FS" => ObjectKind::ClrFunction,
-                "FT" => ObjectKind::ClrTableFunction,
-                "AF" => ObjectKind::ClrAggregate,
-                "TA" => ObjectKind::ClrTrigger,
-                "TR" => ObjectKind::Trigger,
-                "SO" => ObjectKind::Sequence,
-                "SN" => ObjectKind::Synonym,
-                _ => continue,
-            };
-            let parent = cell(&r, 3);
-            let detail = match kind {
-                ObjectKind::Trigger | ObjectKind::ClrTrigger => format!("on {parent}"),
-                ObjectKind::Synonym => cell(&r, 4),
-                _ => String::new(),
-            };
-            let table = matches!(kind, ObjectKind::Trigger | ObjectKind::ClrTrigger).then_some(parent).filter(|p| !p.is_empty());
-            extras.objects.push((cell(&r, 0), DbObject { name: cell(&r, 1), kind, detail, ident: String::new(), table }));
-        }
-        // parameter lists for routines, e.g. "@id int, @name nvarchar OUTPUT"
-        let mut params: std::collections::HashMap<(String, String), String> = Default::default();
-        for r in collect(self, PARAMS).await.unwrap_or_default() {
-            let e = params.entry((cell(&r, 0), cell(&r, 1))).or_default();
-            if !e.is_empty() {
-                e.push_str(", ");
+        // The catalog views wait for schema locks: a CREATE / ALTER another
+        // session hasn't committed (a console in manual-commit mode) kept the
+        // explorer loading forever. Give up after 15 s with a clear error, and
+        // put the default (wait) back for this session afterwards.
+        self.results("SET LOCK_TIMEOUT 15000").await?;
+        let r = self.introspect_catalog().await;
+        let _ = self.results("SET LOCK_TIMEOUT -1").await;
+        r.map_err(|e| {
+            let m = format!("{e:#}").to_ascii_lowercase();
+            if m.contains("lock request time out") || m.contains("1222") {
+                anyhow::anyhow!("The schema is locked by a change that isn't committed yet (a console in manual-commit mode or an open transaction). Commit or roll it back, then refresh.")
+            } else {
+                e
             }
-            e.push_str(&format!("{} {}{}", cell(&r, 2), cell(&r, 3), if truthy(r.get(4).and_then(|v| v.as_deref())) { " OUTPUT" } else { "" }));
-        }
-        for (schema, o) in extras.objects.iter_mut() {
-            if matches!(o.kind, ObjectKind::Procedure | ObjectKind::Function | ObjectKind::TableFunction | ObjectKind::ClrProcedure | ObjectKind::ClrFunction | ObjectKind::ClrTableFunction) {
-                if let Some(p) = params.get(&(schema.clone(), o.name.clone())) {
-                    o.detail = p.clone();
-                }
-            }
-        }
-        let current = collect(self, "SELECT SCHEMA_NAME()").await?;
-        let default = current.first().and_then(|r| r[0].clone()).unwrap_or_else(|| "dbo".into());
-        for r in collect(self, "SELECT name, permission_set_desc FROM sys.assemblies WHERE is_user_defined = 1").await.unwrap_or_default() {
-            extras.objects.push((default.clone(), DbObject { name: cell(&r, 0), kind: ObjectKind::Assembly, detail: cell(&r, 1).to_lowercase().replace('_', " "), ident: String::new(), table: None }));
-        }
-        Ok(build_catalog(rows, default, schemas.into_iter().filter_map(|r| r[0].clone()).collect(), extras))
+        })
     }
 
     async fn object_source(&mut self, schema: &str, obj: &SourceRef) -> anyhow::Result<String> {

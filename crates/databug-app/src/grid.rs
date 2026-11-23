@@ -494,7 +494,7 @@ impl ResultView {
 
         let sel = self.selected;
         let editable = self.edit_target.is_some();
-        egui::ScrollArea::horizontal().id_salt(("grid-h", self.table_id)).auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::horizontal().drag_to_scroll(false).id_salt(("grid-h", self.table_id)).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             // resize handles: invisible until hovered, so they don't read as gaps
             ui.visuals_mut().widgets.noninteractive.bg_stroke = Stroke::NONE;

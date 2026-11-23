@@ -16,7 +16,7 @@ pub mod redis;
 pub mod rename;
 pub mod split;
 
-pub use analyze::{classify, dangers, inspect, name_at, single_table_source, table_refs, Danger, Diagnostic, Severity, StatementKind, TableRef};
+pub use analyze::{changes_schema, classify, dangers, inspect, name_at, single_table_source, table_refs, Danger, Diagnostic, Severity, StatementKind, TableRef};
 pub use complete::{complete, Completion, CompletionItem, ItemKind};
 pub use format::format_sql;
 pub use lexer::{tokenize, TokKind, Token};

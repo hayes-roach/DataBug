@@ -306,7 +306,7 @@ impl CsvImport {
                 });
                 ui.add_space(6.0);
                 let headers = self.headers();
-                egui::ScrollArea::both().id_salt("csv-map").max_height(ui.available_height() - 60.0).show(ui, |ui| {
+                egui::ScrollArea::both().drag_to_scroll(false).id_salt("csv-map").max_height(ui.available_height() - 60.0).show(ui, |ui| {
                     egui::Grid::new("csv-cols").num_columns(3).spacing([12.0, 5.0]).striped(true).show(ui, |ui| {
                         ui.label(RichText::new("CSV column").size(11.5).color(p.muted));
                         ui.label(RichText::new(if self.target.is_some() { "Table column" } else { "New column and type" }).size(11.5).color(p.muted));

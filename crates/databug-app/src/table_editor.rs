@@ -211,7 +211,7 @@ impl TableEditor {
                 });
                 ui.add_space(6.0);
                 let list_h = (ui.available_height() - 230.0).max(160.0);
-                egui::ScrollArea::vertical().id_salt("te-list").max_height(list_h).auto_shrink([false, true]).show(ui, |ui| match self.section {
+                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("te-list").max_height(list_h).auto_shrink([false, true]).show(ui, |ui| match self.section {
                     Section::Columns => self.columns_ui(ui, p),
                     Section::Indexes => self.indexes_ui(ui, p),
                     Section::Keys => self.keys_ui(ui, p),
@@ -219,7 +219,7 @@ impl TableEditor {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.label(RichText::new("DDL preview").size(12.0).color(p.muted));
-                egui::ScrollArea::vertical().id_salt("te-ddl").max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+                egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("te-ddl").max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
                     let mut text = if script.trim().is_empty() { "-- no changes".to_string() } else { script.clone() };
                     ui.add(egui::TextEdit::multiline(&mut text).font(FontId::monospace(12.0)).desired_width(f32::INFINITY).interactive(true).code_editor());
                 });

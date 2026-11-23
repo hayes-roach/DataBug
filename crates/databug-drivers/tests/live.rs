@@ -1063,3 +1063,43 @@ async fn mssql_dates_round_trip() {
     }
     run(&mut conn, "DROP TABLE dbo.databug_dates", 10).await.unwrap();
 }
+
+/// `DATABUG_TEST_MSSQL`: a script with `GO` lines runs batch by batch (a
+/// procedure, `GO 3` repeats), and the schema refresh doesn't hang while
+/// another session holds an uncommitted CREATE TABLE.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mssql_batches_and_locked_refresh() {
+    let Some(p) = env_parts("DATABUG_TEST_MSSQL") else { return };
+    let mut cfg = ConnectionConfig::new(DbKind::MsSql);
+    cfg.host = p[0].clone();
+    cfg.port = p[1].parse().unwrap();
+    cfg.user = p[2].clone();
+    cfg.database = "tempdb".into();
+    cfg.trust_server_cert = true;
+    let mut a = connect(&cfg, Some(&p[3])).await.unwrap();
+    let script = "DROP TABLE IF EXISTS dbo.databug_go;\nCREATE TABLE dbo.databug_go (n int);\nGO\nCREATE OR ALTER PROCEDURE dbo.databug_add AS\nBEGIN\n  INSERT INTO dbo.databug_go VALUES (1);\nEND\nGO -- the procedure\nEXEC dbo.databug_add;\nGO 3\n";
+    for r in databug_sql::split_batches(script, Dialect::MsSql) {
+        run(&mut a, &script[r], 10).await.unwrap();
+    }
+    let c = run(&mut a, "SELECT COUNT(*) FROM dbo.databug_go", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("3"));
+    let cat = a.introspect().await.unwrap();
+    let dbo = cat.schemas.iter().find(|s| s.name == "dbo").unwrap();
+    assert!(dbo.objects.iter().any(|o| o.name == "databug_add"));
+
+    // another session creates a table in a transaction it doesn't commit
+    let mut b = connect(&cfg, Some(&p[3])).await.unwrap();
+    run(&mut b, "BEGIN TRANSACTION", 10).await.unwrap();
+    run(&mut b, "CREATE TABLE dbo.databug_locked (a int)", 10).await.unwrap();
+    let start = Instant::now();
+    let r = a.introspect().await;
+    eprintln!("refresh while locked: {:?} after {:?}", r.as_ref().map(|_| "ok").map_err(|e| e.to_string()), start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(30), "the refresh hung");
+    run(&mut b, "ROLLBACK", 10).await.unwrap();
+    // and the session's lock wait is back to normal afterwards
+    let c = run(&mut a, "SELECT @@LOCK_TIMEOUT", 10).await.unwrap();
+    assert_eq!(c.rows.cell(0, 0), Some("-1"));
+    assert!(a.introspect().await.is_ok());
+    run(&mut a, "DROP PROCEDURE dbo.databug_add", 10).await.unwrap();
+    run(&mut a, "DROP TABLE dbo.databug_go", 10).await.unwrap();
+}

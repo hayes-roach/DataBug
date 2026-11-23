@@ -293,6 +293,35 @@ pub fn classify(stmt: &str, dialect: Dialect) -> StatementKind {
     }
 }
 
+/// Whether running `stmt` may add, change or remove something the explorer
+/// shows, so the schema should be reloaded afterwards: DDL, `SELECT … INTO`
+/// (SQL Server), procedures that rename or create objects, and on Redis and
+/// MongoDB any write (it can create or remove a key or collection).
+pub fn changes_schema(stmt: &str, dialect: Dialect) -> bool {
+    let kind = classify(stmt, dialect);
+    match dialect {
+        Dialect::Mongo | Dialect::Redis => matches!(kind, StatementKind::Ddl | StatementKind::Write),
+        _ => match kind {
+            StatementKind::Ddl => true,
+            StatementKind::Write => {
+                let toks = significant(&tokenize(stmt, dialect));
+                let first = toks.first().map(|t| t.text(stmt).to_ascii_uppercase()).unwrap_or_default();
+                match first.as_str() {
+                    // SELECT … INTO creates a table
+                    "SELECT" | "WITH" => toks.iter().any(|t| t.is_kw(stmt, "INTO")),
+                    // stored procedures may create, rename or drop objects
+                    // (sp_rename, sp_addextendedproperty, a migration procedure…)
+                    "EXEC" | "EXECUTE" | "CALL" => true,
+                    _ => false,
+                }
+            }
+            // anonymous blocks (`BEGIN … END`, `DO $$ … $$`) may run DDL
+            StatementKind::Other => true,
+            StatementKind::Read | StatementKind::Transaction => false,
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Danger {
     DeleteWithoutWhere,
@@ -453,6 +482,29 @@ pub fn inspect(src: &str, catalog: Option<&Catalog>, dialect: Dialect) -> Vec<Di
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_changes_the_schema() {
+        let yes = |sql: &str, d: Dialect| assert!(changes_schema(sql, d), "{sql}");
+        let no = |sql: &str, d: Dialect| assert!(!changes_schema(sql, d), "{sql}");
+        yes("CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1", Dialect::MsSql);
+        yes("DROP TABLE t", Dialect::Postgres);
+        yes("ALTER TABLE t ADD c int", Dialect::MySql);
+        yes("SELECT * INTO dbo.copy FROM dbo.t", Dialect::MsSql);
+        yes("EXEC sp_rename 'dbo.a', 'b'", Dialect::MsSql);
+        yes("DO $$ BEGIN EXECUTE 'CREATE TABLE x (a int)'; END $$", Dialect::Postgres);
+        yes("SET k v", Dialect::Redis);
+        yes("DEL k", Dialect::Redis);
+        yes("db.orders.insertOne({a: 1})", Dialect::Mongo);
+        yes("db.orders.drop()", Dialect::Mongo);
+        no("SELECT * FROM t", Dialect::MsSql);
+        no("INSERT INTO t VALUES (1)", Dialect::Postgres);
+        no("UPDATE t SET a = 1", Dialect::MsSql);
+        no("DELETE FROM t", Dialect::MySql);
+        no("BEGIN TRANSACTION", Dialect::MsSql);
+        no("GET k", Dialect::Redis);
+        no("db.orders.find({})", Dialect::Mongo);
+    }
 
     #[test]
     fn refs_with_aliases() {

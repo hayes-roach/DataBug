@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- Result columns could stay as narrow as their headers (values cut off with …) when the table was first drawn before its rows arrived; the widths now follow the first rows
+
 ## [0.19.0] - 2026-11-24
 
 ### Changed

@@ -32,6 +32,11 @@ pub struct ResultView {
     filter: String,
     widths: Vec<f32>,
     widths_from_rows: usize,
+    /// Bumped each time the widths are recomputed: egui keeps a table's
+    /// column widths from its first frame and ignores later initial widths,
+    /// so the table's id changes with it (only while the first rows arrive;
+    /// widths you drag afterwards stay).
+    widths_gen: u32,
     /// Per column: right-align and sort numerically.
     numeric: Vec<bool>,
     selected: Option<(usize, usize)>,
@@ -82,6 +87,7 @@ impl ResultView {
             filter: String::new(),
             widths: Vec::new(),
             widths_from_rows: 0,
+            widths_gen: 0,
             numeric: Vec::new(),
             selected: None,
             edits: BTreeMap::new(),
@@ -307,6 +313,7 @@ impl ResultView {
             })
             .collect();
         self.widths_from_rows = sample;
+        self.widths_gen = self.widths_gen.wrapping_add(1);
         // columns without a declared type (expressions in SQLite, Mongo fields) are
         // numeric when every sampled value parses as a number
         self.numeric = self
@@ -532,7 +539,7 @@ impl ResultView {
             ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1.5_f32, p.accent);
             ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1.5_f32, p.accent);
             let mut tb = TableBuilder::new(ui)
-                .id_salt(("grid", self.table_id))
+                .id_salt(("grid", self.table_id, self.widths_gen))
                 .striped(true)
                 .resizable(true)
                 .auto_shrink([false, false])

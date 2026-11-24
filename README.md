@@ -15,7 +15,6 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat" alt="macOS, Windows, Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust-dea584?style=flat&logo=rust&logoColor=white" alt="Built with Rust">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/hayes-roach/DataBug?style=flat&color=555" alt="Apache-2.0"></a>
-  <a href="https://github.com/hayes-roach/DataBug/stargazers"><img src="https://img.shields.io/github/stars/hayes-roach/DataBug?style=flat&color=e3b341" alt="Stars"></a>
 </p>
 
 <p align="center">

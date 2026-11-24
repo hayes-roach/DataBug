@@ -96,6 +96,9 @@ pub struct Editor {
     popup: Option<Popup>,
     diagnostics: Vec<Diagnostic>,
     diag_key: (u64, u64),
+    /// Where the cursor was right after the last change of text: while it
+    /// stays there, the word being typed isn't marked as unknown yet.
+    typing_at: Option<usize>,
     version: u64,
     job_cache: Option<(u64, f32, egui::text::LayoutJob)>,
     last_galley: Option<(Arc<Galley>, Pos2)>,
@@ -179,6 +182,7 @@ impl Editor {
             popup: None,
             diagnostics: Vec::new(),
             diag_key: (u64::MAX, u64::MAX),
+            typing_at: None,
             version: 1,
             job_cache: None,
             last_galley: None,
@@ -527,8 +531,17 @@ impl Editor {
         (line, col)
     }
 
-    pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.diagnostics
+    /// The inspections to show: all of them except an unknown name the
+    /// cursor is still typing (until a space, `;` or a cursor move).
+    pub fn diagnostics(&self) -> Vec<&Diagnostic> {
+        let hidden = self.typing_diag();
+        self.diagnostics.iter().enumerate().filter(|(i, _)| Some(*i) != hidden).map(|(_, d)| d).collect()
+    }
+
+    /// The error under the word being typed, if any (see `typing_at`).
+    fn typing_diag(&self) -> Option<usize> {
+        let at = self.typing_at.filter(|&at| at == self.cursor)?;
+        self.diagnostics.iter().position(|d| d.severity == Severity::Error && d.range.start <= at && at <= d.range.end)
     }
 
     fn open_completion(&mut self, catalog: Option<&Catalog>, explicit: bool) {
@@ -592,6 +605,7 @@ impl Editor {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut h);
             self.diag_key.hash(&mut h);
+            self.typing_diag().hash(&mut h);
             // the theme: without it, switching themes kept the old colors
             // (light grey identifiers on the light background)
             crate::theme::fingerprint(p).hash(&mut h);
@@ -603,6 +617,8 @@ impl Editor {
                 return job.clone();
             }
         }
+        let hidden = self.typing_diag();
+        let shown: Vec<&Diagnostic> = self.diagnostics.iter().enumerate().filter(|(i, _)| Some(*i) != hidden).map(|(_, d)| d).collect();
         let mut job = egui::text::LayoutJob { text: text.to_string(), ..Default::default() };
         job.wrap.max_width = wrap;
         let toks = tokenize(text, self.dialect);
@@ -628,7 +644,7 @@ impl Editor {
                 TokKind::Ident if self.dialect == Dialect::Mongo && (s == "db" || s.starts_with('$')) => (p.syn_keyword, false),
                 _ => (p.syn_ident, false),
             };
-            let underline = self.diagnostics.iter().find(|d| d.range.start <= t.start && t.end <= d.range.end && t.kind != TokKind::Whitespace).map(|d| if d.severity == Severity::Error { p.danger } else { p.warning });
+            let underline = shown.iter().find(|d| d.range.start <= t.start && t.end <= d.range.end && t.kind != TokKind::Whitespace).map(|d| if d.severity == Severity::Error { p.danger } else { p.warning });
             // a table, column or routine that doesn't exist reads red, not just underlined
             let color = if underline == Some(p.danger) && t.kind != TokKind::Punct { p.danger } else { color };
             job.sections.push(egui::text::LayoutSection { leading_space: 0.0, byte_range: t.start..t.end, format: fmt(color, italic, underline) });
@@ -939,6 +955,13 @@ impl Editor {
                 self.cursor = a;
                 self.selection = if a != b { Some(a.min(b)..a.max(b)) } else { None };
             }
+            // typing keeps the mark off the current word; moving away shows it
+            if changed {
+                self.typing_at = Some(self.cursor);
+            } else if self.typing_at.is_some_and(|t| t != self.cursor) {
+                self.typing_at = None;
+                self.job_cache = None;
+            }
 
             // line numbers in the left margin
             let g = &out.galley;
@@ -982,7 +1005,8 @@ impl Editor {
             if let Some(pos) = out.response.hover_pos() {
                 let c = g.cursor_from_pos(pos - origin);
                 let b = char_to_byte(&self.text, c.ccursor.index);
-                if let Some(d) = self.diagnostics.iter().find(|d| d.range.start <= b && b < d.range.end) {
+                let hidden = self.typing_diag();
+                if let Some(d) = self.diagnostics.iter().enumerate().find(|(i, d)| Some(*i) != hidden && d.range.start <= b && b < d.range.end).map(|(_, d)| d) {
                     let color = if d.severity == Severity::Error { p.danger } else { p.warning };
                     let msg = d.message.clone();
                     out.response.clone().on_hover_ui_at_pointer(|ui| {
@@ -1171,6 +1195,10 @@ mod tests {
 
     /// One frame: the editor on the left, a button on the right (Run).
     fn frame(ctx: &egui::Context, ed: &mut Editor, events: Vec<egui::Event>) -> bool {
+        frame_with(ctx, ed, events, None)
+    }
+
+    fn frame_with(ctx: &egui::Context, ed: &mut Editor, events: Vec<egui::Event>, cat: Option<&Catalog>) -> bool {
         let p = crate::theme::palette(crate::theme::ThemeKind::Dark, &Default::default());
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 500.0))), events, ..Default::default() };
         let mut clicked = false;
@@ -1178,7 +1206,7 @@ mod tests {
             egui::SidePanel::right("run").exact_width(200.0).show(ctx, |ui| {
                 clicked = ui.add_sized([120.0, 40.0], egui::Button::new("Run")).clicked();
             });
-            egui::CentralPanel::default().show(ctx, |ui| ed.show(ui, &p, None, 0, false, 14.0));
+            egui::CentralPanel::default().show(ctx, |ui| ed.show(ui, &p, cat, 1, false, 14.0));
         });
         clicked
     }
@@ -1221,5 +1249,42 @@ mod tests {
         assert_eq!(ed.selected_text(), Some("SELECT 2;"));
         let kept = egui::TextEdit::load_state(&ctx, ed.id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.min(r.secondary.index)..r.primary.index.max(r.secondary.index));
         assert_eq!(kept, Some(10..19), "the highlight is gone");
+    }
+
+    #[test]
+    fn an_unknown_name_turns_red_only_once_the_word_is_done() {
+        use databug_core::{SchemaInfo, TableInfo};
+        let cat = Catalog { default_schema: "public".into(), introspected_at: 1, schemas: vec![SchemaInfo { name: "public".into(), tables: vec![TableInfo::new("orders", databug_core::ObjectKind::Table)], objects: vec![] }] };
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut ed = Editor::new(egui::Id::new("ed2"), String::new(), Dialect::Postgres);
+        for _ in 0..3 {
+            frame_with(&ctx, &mut ed, vec![], Some(&cat));
+        }
+        let errors = |ed: &Editor| ed.diagnostics().iter().filter(|d| d.severity == Severity::Error).count();
+        let typed = |ed: &mut Editor, text: &str| {
+            for ch in text.chars() {
+                frame_with(&ctx, ed, vec![egui::Event::Text(ch.to_string())], Some(&cat));
+            }
+            frame_with(&ctx, ed, vec![], Some(&cat));
+        };
+        typed(&mut ed, "SELECT * FROM ordrs");
+        assert_eq!(errors(&ed), 0, "marked while still typing the word");
+        typed(&mut ed, " ");
+        assert_eq!(errors(&ed), 1, "not marked after a space");
+        typed(&mut ed, "WHERE 1=1;");
+        assert_eq!(errors(&ed), 1);
+        // a known table never shows, a cursor move shows the word being typed
+        let mut ed = Editor::new(egui::Id::new("ed3"), String::new(), Dialect::Postgres);
+        for _ in 0..3 {
+            frame_with(&ctx, &mut ed, vec![], Some(&cat));
+        }
+        typed(&mut ed, "SELECT * FROM orders");
+        assert_eq!(errors(&ed), 0);
+        typed(&mut ed, " JOIN custs");
+        assert_eq!(errors(&ed), 0);
+        frame_with(&ctx, &mut ed, vec![egui::Event::Key { key: egui::Key::ArrowLeft, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }], Some(&cat));
+        frame_with(&ctx, &mut ed, vec![], Some(&cat));
+        assert_eq!(errors(&ed), 1, "not marked after moving the cursor");
     }
 }

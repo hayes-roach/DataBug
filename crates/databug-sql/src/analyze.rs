@@ -457,13 +457,21 @@ pub fn inspect(src: &str, catalog: Option<&Catalog>, dialect: Dialect) -> Vec<Di
         let toks = significant(&tokenize(stmt, dialect));
         unknown_routines(stmt, base, &toks, &refs, cat, dialect, &mut out);
         // qualified column references: alias.column
-        for w in toks.windows(3) {
+        // only queries and DML qualify columns with aliases (not EXEC schema.proc)
+        let first = toks.first().map(|t| t.text(stmt).to_ascii_uppercase()).unwrap_or_default();
+        let dml = matches!(classify(stmt, dialect), StatementKind::Read | StatementKind::Write) && matches!(first.as_str(), "SELECT" | "WITH" | "INSERT" | "UPDATE" | "DELETE" | "MERGE");
+        for (k, w) in toks.windows(3).enumerate() {
             if !(w[0].is_name() && w[1].is_punct(stmt, ".") && w[2].is_name()) {
                 continue;
             }
             let q = unquote(w[0].text(stmt));
             let col = unquote(w[2].text(stmt));
-            let Some(r) = refs.iter().find(|r| r.matches_qualifier(&q) && !r.is_cte) else { continue };
+            let Some(r) = refs.iter().find(|r| r.matches_qualifier(&q) && !r.is_cte) else {
+                if dml && unknown_qualifier(stmt, &toks, k, &q, &refs, cat) {
+                    out.push(Diagnostic { range: base + w[0].start..base + w[0].end, message: format!("Unknown table or alias '{q}'"), severity: Severity::Error });
+                }
+                continue;
+            };
             if r.span.start == w[0].start || r.span.start == w[2].start {
                 continue; // schema.table itself
             }
@@ -479,6 +487,32 @@ pub fn inspect(src: &str, catalog: Option<&Catalog>, dialect: Dialect) -> Vec<Di
         }
     }
     out
+}
+
+/// Whether the qualifier of `q.column` (at token `k`) names nothing this
+/// statement defines. Conservative: anything that could be an alias (the
+/// name appears in the statement other than before a dot), a schema, a
+/// table, a CTE, a pseudo-table (`inserted`, `excluded`, `NEW`…) or a method
+/// call (`geo.STDistance(…)`) counts as defined.
+fn unknown_qualifier(stmt: &str, toks: &[Token], k: usize, q: &str, refs: &[TableRef], cat: &Catalog) -> bool {
+    const PSEUDO: &[&str] = &["inserted", "deleted", "excluded", "new", "old", "sys", "information_schema", "pg_catalog", "dual", "mysql", "performance_schema", "dbo"];
+    if PSEUDO.iter().any(|p| p.eq_ignore_ascii_case(q)) {
+        return false;
+    }
+    // part of a longer name (db.schema.table, a.b.c) or a call (x.f(…))
+    if k > 0 && toks[k - 1].is_punct(stmt, ".") {
+        return false;
+    }
+    if toks.get(k + 3).map(|t| t.is_punct(stmt, ".") || t.is_punct(stmt, "(")).unwrap_or(false) {
+        return false;
+    }
+    if cat.schema(q).is_some() || refs.iter().any(|r| r.name.eq_ignore_ascii_case(q) || r.schema.as_deref().map(|s| s.eq_ignore_ascii_case(q)).unwrap_or(false)) {
+        return false;
+    }
+    // defined somewhere in the statement: `FROM t AS q`, `(SELECT …) q`,
+    // `CROSS APPLY f(…) q`, `JOIN t q`, a CTE `WITH q AS (…)`
+    let defined = toks.iter().enumerate().any(|(i, t)| t.is_name() && unquote(t.text(stmt)).eq_ignore_ascii_case(q) && !toks.get(i + 1).map(|n| n.is_punct(stmt, ".")).unwrap_or(false));
+    !defined
 }
 
 fn is_routine(k: ObjectKind) -> bool {
@@ -569,6 +603,39 @@ fn unknown_routines(stmt: &str, base: usize, toks: &[Token], refs: &[TableRef], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_aliases() {
+        use databug_core::{ColumnInfo, SchemaInfo, TableInfo};
+        let mut orders = TableInfo::new("orders", ObjectKind::Table);
+        for c in ["id", "total", "customer_id"] {
+            orders.columns.push(ColumnInfo { name: c.into(), data_type: "int".into(), nullable: true, primary_key: c == "id", default: None });
+        }
+        let mut customers = TableInfo::new("customers", ObjectKind::Table);
+        for c in ["id", "name"] {
+            customers.columns.push(ColumnInfo { name: c.into(), data_type: "int".into(), nullable: true, primary_key: c == "id", default: None });
+        }
+        let cat = Catalog { default_schema: "dbo".into(), introspected_at: 1, schemas: vec![SchemaInfo { name: "dbo".into(), tables: vec![orders, customers], objects: vec![] }] };
+        let errs = |sql: &str| inspect(sql, Some(&cat), Dialect::MsSql).into_iter().filter(|d| d.severity == Severity::Error).map(|d| (sql[d.range].to_string(), d.message)).collect::<Vec<_>>();
+        assert_eq!(errs("SELECT x.name FROM customers c"), vec![("x".to_string(), "Unknown table or alias 'x'".to_string())]);
+        assert_eq!(errs("SELECT o.total, z.id FROM orders o JOIN customers c ON c.id = o.customer_id"), vec![("z".to_string(), "Unknown table or alias 'z'".to_string())]);
+        for ok in [
+            "SELECT c.name FROM customers c",
+            "SELECT customers.name FROM customers",
+            "SELECT d.total FROM (SELECT total FROM orders) d",
+            "SELECT d.total FROM (SELECT total FROM orders) AS d",
+            "WITH big AS (SELECT * FROM orders) SELECT big.total FROM big",
+            "SELECT j.value FROM orders o CROSS APPLY OPENJSON(o.total) j",
+            "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM customers c WHERE c.id = o.customer_id)",
+            "SELECT inserted.id FROM orders",
+            "SELECT dbo.orders.id FROM dbo.orders",
+            "SELECT o.total.ToString() FROM orders o",
+            "SELECT * FROM sys.objects",
+            "CREATE VIEW v AS SELECT q.id FROM orders",
+        ] {
+            assert!(errs(ok).is_empty(), "{ok}: {:?}", errs(ok));
+        }
+    }
 
     #[test]
     fn missing_tables_and_routines() {

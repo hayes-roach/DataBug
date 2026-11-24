@@ -6,6 +6,14 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- An unknown table, column, procedure or alias isn't marked red while you're still typing its name; the mark appears once you type a space or `;`, or move the cursor away
+
+### Added
+
+- The editor marks an unknown table alias red: `x.name` when no table, alias, CTE or derived table in the statement is called `x`
+
 ## [0.17.1] - 2026-11-24
 
 ### Fixed

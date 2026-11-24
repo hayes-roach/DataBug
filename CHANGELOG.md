@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-24
+
 ### Changed
 
 - An unknown table, column, procedure or alias isn't marked red while you're still typing its name; the mark appears once you type a space or `;`, or move the cursor away

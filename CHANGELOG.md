@@ -6,6 +6,16 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- A DataGrip-style console toolbar, on its own slightly raised strip: compact Run, History, Explain and Stop buttons, `Tx: Auto ▾` for the transaction mode, Format, and the console's schema picker (`main ▾`) on the right, which also switches databases and connects a signed-out connection
+- Tabs show where they run: `console [store / public]`, and new consoles are named `console`, `console_2`, …
+- The console and schema menu left the top bar; consoles moved to a **Consoles** panel under the database explorer, beside the results: open tabs with their last run time, and saved consoles to reopen or delete
+
+### Added
+
+- Right-click a result row's number to copy it (or every selected row), with or without the column names
+
 ## [0.18.0] - 2026-11-24
 
 ### Changed

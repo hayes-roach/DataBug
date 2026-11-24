@@ -451,9 +451,138 @@ fn edge_resize(ctx: &egui::Context) {
 }
 
 /// What the user picked in the toolbar's consoles list.
+/// A console's database and schema choices (see `console_scope`).
+struct ConsoleScope {
+    base: String,
+    dbs: Vec<(String, String)>,
+    db_now: Option<String>,
+    default: String,
+    current: String,
+    schemas: Vec<String>,
+    pickable: bool,
+}
+
+/// A connection's entries in the Consoles panel.
+struct ConsoleGroup {
+    id: String,
+    name: String,
+    kind: DbKind,
+    live: bool,
+    rows: Vec<ConsoleRow>,
+}
+
+enum ConsoleRow {
+    /// An open tab: a console, or a table / routine / tool opened from the connection.
+    Open { tab: usize, tool: bool, active: bool, title: String, scope: String, detail: Option<(String, egui::Color32)> },
+    /// A console that isn't open: from an earlier session, or a closed tab.
+    Saved { id: u64, title: String, ago: String, preview: String },
+}
+
+/// The Consoles panel under the explorer, as DataGrip's Services: each
+/// connection's open tabs (state, last run time) and saved consoles.
+fn consoles_panel(ui: &mut egui::Ui, p: &Palette, logos: &crate::icons::Logos, groups: &[ConsoleGroup]) -> Option<ConsolePick> {
+    let mut pick = None;
+    ui.label(RichText::new("Consoles").font(bold(13.0)));
+    ui.add_space(4.0);
+    if groups.is_empty() {
+        ui.label(RichText::new("Open a console from a connection's menu or with Ctrl/⌘ + T. Consoles you keep show up here.").size(11.5).color(p.faint));
+        return None;
+    }
+    let collapsed: HashSet<String> = ui.data(|d| d.get_temp(egui::Id::new("consoles-collapsed"))).unwrap_or_default();
+    const ROW: f32 = 22.0;
+    egui::ScrollArea::vertical().drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let row = |ui: &mut egui::Ui, depth: f32| {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), Sense::click());
+            (rect, resp, rect.left() + 6.0 + depth * 16.0)
+        };
+        for g in groups {
+            let folded = collapsed.contains(&g.id);
+            let (rect, resp, x) = row(ui, 0.0);
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+            }
+            crate::icons::paint_arrow(ui.painter(), egui::Rect::from_center_size(egui::pos2(x + 5.0, rect.center().y), egui::vec2(10.0, 10.0)), !folded, p.muted);
+            logos.paint(ui, egui::Rect::from_center_size(egui::pos2(x + 21.0, rect.center().y), egui::vec2(14.0, 14.0)), g.kind);
+            if g.live {
+                ui.painter().circle_filled(egui::pos2(x + 28.5, rect.center().y + 5.0), 3.2, p.island);
+                ui.painter().circle_filled(egui::pos2(x + 28.5, rect.center().y + 5.0), 2.3, p.success);
+            }
+            ui.painter().text(egui::pos2(x + 36.0, rect.center().y), egui::Align2::LEFT_CENTER, &g.name, FontId::proportional(12.8), p.text);
+            if resp.clicked() {
+                pick = Some(ConsolePick::Toggle(g.id.clone()));
+            }
+            if folded {
+                continue;
+            }
+            for r in &g.rows {
+                let (rect, resp, x) = row(ui, 1.0);
+                let icon = egui::Rect::from_center_size(egui::pos2(x + 8.0, rect.center().y), egui::vec2(13.0, 13.0));
+                match r {
+                    ConsoleRow::Open { tab, tool, active, title, scope, detail } => {
+                        if *active {
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), p.selection.gamma_multiply(0.6));
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+                        }
+                        if *tool {
+                            crate::icons::paint_kind(ui.painter(), icon, databug_core::ObjectKind::Table, p);
+                        } else {
+                            crate::icons::paint_console(ui.painter(), icon, p.accent);
+                        }
+                        let name = ui.painter().layout_no_wrap(title.clone(), FontId::proportional(12.8), p.text);
+                        let name_w = name.size().x;
+                        ui.painter().galley(egui::pos2(x + 20.0, rect.center().y - name.size().y / 2.0), name, p.text);
+                        if let Some((text, color)) = detail {
+                            let d = ui.painter().layout_no_wrap(text.clone(), FontId::proportional(11.5), *color);
+                            let dx = (rect.right() - 8.0 - d.size().x).max(x + 26.0 + name_w);
+                            ui.painter().galley(egui::pos2(dx, rect.center().y - d.size().y / 2.0), d, *color);
+                        }
+                        let resp = resp.on_hover_text(if scope.is_empty() { title.clone() } else { format!("{title} [{scope}]") });
+                        if resp.clicked() {
+                            pick = Some(ConsolePick::Activate(*tab));
+                        }
+                    }
+                    ConsoleRow::Saved { id, title, ago, preview } => {
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+                        }
+                        crate::icons::paint_console(ui.painter(), icon, p.faint);
+                        ui.painter().text(egui::pos2(x + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, title, FontId::proportional(12.8), p.muted);
+                        let a = ui.painter().layout_no_wrap(ago.clone(), FontId::proportional(11.5), p.faint);
+                        ui.painter().galley(egui::pos2(rect.right() - 8.0 - a.size().x, rect.center().y - a.size().y / 2.0), a, p.faint);
+                        let resp = resp.on_hover_text(if preview.is_empty() { format!("{title} (closed)") } else { format!("{title} (closed)\n{preview}") });
+                        if resp.clicked() {
+                            pick = Some(ConsolePick::Open(*id));
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                pick = Some(ConsolePick::Open(*id));
+                                ui.close_menu();
+                            }
+                            if ui.button(RichText::new("Delete").color(p.danger)).clicked() {
+                                pick = Some(ConsolePick::Delete(*id));
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    });
+    pick
+}
+
+/// What was picked in the Consoles panel.
 enum ConsolePick {
+    /// Switch to an open tab.
+    Activate(usize),
+    /// Reopen a saved console.
     Open(u64),
+    /// Delete a saved console.
     Delete(u64),
+    /// Collapse or expand a connection's group.
+    Toggle(String),
 }
 
 /// Closed consoles kept for reopening; the oldest go first.
@@ -731,8 +860,17 @@ impl DataBugApp {
     fn open_console(&mut self, conn_id: &str, text: Option<String>, ctx: &egui::Context) -> usize {
         let Some(cfg) = self.conn(conn_id).cloned() else { return self.active };
         let id = self.id();
-        let n = self.tabs.iter().filter(|t| t.conn_id == conn_id).count();
-        let title = if n == 0 { cfg.name.clone() } else { format!("{} ({})", cfg.name, n + 1) };
+        // console, console_2, …: the first name no open or saved console of
+        // this connection uses (the tab's brackets say which database it is)
+        let base = ConnectionConfig::base_id(conn_id);
+        let taken: HashSet<String> = self
+            .tabs
+            .iter()
+            .filter(|t| ConnectionConfig::base_id(&t.conn_id) == base)
+            .map(|t| t.title.clone())
+            .chain(self.editors.iter().filter(|e| ConnectionConfig::base_id(&e.conn_id) == base).map(|e| e.title.clone()))
+            .collect();
+        let title = (1..).map(|n| if n == 1 { "console".to_string() } else { format!("console_{n}") }).find(|t| !taken.contains(t)).unwrap_or_default();
         let text = text.unwrap_or_else(|| if cfg.kind == DbKind::MongoDb { "db.".into() } else { String::new() });
         let mut editor = Editor::new(egui::Id::new(("editor", id)), text, cfg.kind.dialect());
         editor.set_text(editor.text.clone());
@@ -2771,21 +2909,79 @@ impl DataBugApp {
 
     /// The bar above the editor: Run, Explain, Cancel, the transaction mode
     /// (Commit and Rollback while a transaction is open) and Format.
+    /// The console's databases (when the connection shows several) and
+    /// schemas, for its schema picker: (databases as (conn id, name), the
+    /// default schema, the console's schema, its schemas, whether it can pick).
+    fn console_scope(&self, ti: usize) -> Option<ConsoleScope> {
+        let t = self.tabs.get(ti)?;
+        let cfg = self.conn(&t.conn_id)?;
+        let entry = self.catalogs.get(&t.conn_id);
+        let schemas: Vec<String> = entry.map(|e| e.catalog.schemas.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
+        let default = entry.map(|e| e.catalog.default_schema.clone()).unwrap_or_default();
+        let current = t.editor.schema().map(str::to_string).unwrap_or_else(|| default.clone());
+        let base = ConnectionConfig::base_id(&t.conn_id).to_string();
+        let base_db = self.databases.get(&base).map(|d| d.current.clone()).filter(|d| !d.is_empty()).or_else(|| self.conn(&base).map(|c| c.database.clone()).filter(|d| !d.is_empty()));
+        let mut dbs: Vec<(String, String)> = Vec::new();
+        if let Some(db) = base_db {
+            dbs.push((base.clone(), db));
+        }
+        dbs.extend(self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == base).filter_map(|v| v.id.split_once('@').map(|(_, db)| (v.id.clone(), db.to_string()))));
+        let db_now = dbs.iter().find(|(id, _)| *id == t.conn_id).map(|(_, d)| d.clone());
+        let pickable = !matches!(cfg.kind.dialect(), Dialect::Mongo | Dialect::Redis) && (!schemas.is_empty() || dbs.len() > 1);
+        Some(ConsoleScope { base, dbs, db_now, default, current, schemas, pickable })
+    }
+
+    /// What a tab's brackets say: the database (or file, or connection) and
+    /// the console's schema, e.g. `store / public`.
+    fn tab_scope(&self, t: &Tab) -> String {
+        let Some(cfg) = self.conn(&t.conn_id) else { return String::new() };
+        let db = if let Some((_, db)) = t.conn_id.split_once('@') {
+            db.to_string()
+        } else if cfg.kind.is_file_based() {
+            std::path::Path::new(&cfg.path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| cfg.name.clone())
+        } else {
+            self.databases.get(&t.conn_id).map(|d| d.current.clone()).filter(|d| !d.is_empty()).unwrap_or_else(|| {
+                let d = cfg.effective_database();
+                if d.is_empty() { cfg.name.clone() } else { d }
+            })
+        };
+        if t.tool.is_some() || matches!(cfg.kind.dialect(), Dialect::Mongo | Dialect::Redis) {
+            return db;
+        }
+        let schema = t.editor.schema().map(str::to_string).or_else(|| self.catalogs.get(&t.conn_id).map(|e| e.catalog.default_schema.clone())).unwrap_or_default();
+        if schema.is_empty() || schema.eq_ignore_ascii_case(&db) {
+            db
+        } else {
+            format!("{db} / {schema}")
+        }
+    }
+
+    /// The console's toolbar, as in DataGrip: run, history, explain, stop,
+    /// the transaction mode, format, and the console's schema on the right.
     fn editor_bar(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
         use crate::toolbar::{self as tb, Icon, Kind};
-        let Some(t) = self.tabs.get(self.active).filter(|t| t.tool.is_none()) else { return };
+        let ti = self.active;
+        let Some(t) = self.tabs.get(ti).filter(|t| t.tool.is_none()) else { return };
         let running = t.running.is_some();
         let (manual, in_tx) = (t.manual_tx, t.in_tx);
+        let scope = self.console_scope(ti);
+        let cfg = self.conn(&t.conn_id).cloned();
+        let (live, connecting) = scope.as_ref().map(|s| self.liveness(&s.base)).unwrap_or((false, false));
         let mut actions: Vec<u8> = Vec::new();
+        let mut pick_schema: Option<String> = None;
+        let mut pick_db: Option<String> = None;
+        let mut connect: Option<String> = None;
         ui.horizontal(|ui| {
             ui.set_height(tb::H);
-            ui.spacing_mut().item_spacing.x = 6.0;
-            // Run: the selection, or everything when nothing is selected
+            ui.spacing_mut().item_spacing.x = 2.0;
             let run_tip = "Run the selected code, or the whole console when nothing is selected  (Ctrl/⌘ + Shift + Enter)\nCtrl/⌘ + Enter runs only the statement at the cursor";
-            if tb::button(ui, p, Kind::Primary, Some(Icon::Play), "Run", false, !running).on_hover_text(run_tip).clicked() {
+            if tb::button(ui, p, Kind::Ghost, Some(Icon::Play), "", false, !running).on_hover_text(run_tip).clicked() {
                 actions.push(2);
             }
-            let ex = tb::button(ui, p, Kind::Normal, Some(Icon::Plan), "Explain", true, !running);
+            if tb::button(ui, p, Kind::Ghost, Some(Icon::Clock), "", false, true).on_hover_text("History of this console's statements").clicked() {
+                actions.push(11);
+            }
+            let ex = tb::button(ui, p, Kind::Ghost, Some(Icon::Plan), "", false, !running).on_hover_text("Explain plan");
             tb::dropdown(ui, &ex, 200.0, |ui| {
                 if ui.button("Explain plan").on_hover_text("Ctrl/⌘ + Shift + E").clicked() {
                     actions.push(3);
@@ -2796,12 +2992,11 @@ impl DataBugApp {
                     tb::close(ui);
                 }
             });
-            if tb::button(ui, p, if running { Kind::Danger } else { Kind::Normal }, Some(Icon::Stop), "Cancel", false, running).on_hover_text("Cancel on the server; press again to drop the connection").clicked() {
+            if tb::button(ui, p, Kind::Ghost, Some(Icon::Stop), "", false, running).on_hover_text("Cancel on the server; press again to drop the connection").clicked() {
                 actions.push(5);
             }
             tb::divider(ui, p);
-            let tx_label = if manual { "Manual commit" } else { "Auto-commit" };
-            let tx = tb::button(ui, p, Kind::Normal, Some(Icon::Commit), tx_label, true, true).on_hover_text("When changes are committed");
+            let tx = tb::button(ui, p, Kind::Ghost, None, if manual { "Tx: Manual" } else { "Tx: Auto" }, true, true).on_hover_text("When changes are committed");
             tb::dropdown(ui, &tx, 260.0, |ui| {
                 if ui.selectable_label(!manual, "Auto-commit").on_hover_text("Each statement commits on its own").clicked() {
                     actions.push(6);
@@ -2814,19 +3009,99 @@ impl DataBugApp {
             });
             if in_tx {
                 tb::badge(ui, p.warning, "Transaction open");
-                if tb::button(ui, p, Kind::Success, Some(Icon::Check), "Commit", false, true).clicked() {
+                if tb::button(ui, p, Kind::Ghost, Some(Icon::Check), "", false, true).on_hover_text("Commit").clicked() {
                     actions.push(8);
                 }
-                if tb::button(ui, p, Kind::Normal, Some(Icon::Undo), "Rollback", false, true).clicked() {
+                if tb::button(ui, p, Kind::Ghost, Some(Icon::Undo), "", false, true).on_hover_text("Roll back").clicked() {
                     actions.push(9);
                 }
             }
+            tb::divider(ui, p);
+            if tb::button(ui, p, Kind::Ghost, Some(Icon::Format), "", false, true).on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
+                actions.push(10);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if tb::button(ui, p, Kind::Normal, Some(Icon::Format), "Format", false, true).on_hover_text("Reformat the console  (Ctrl + Alt + L)").clicked() {
-                    actions.push(10);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                // the console's database and schema
+                if let Some(sc) = scope.as_ref().filter(|s| s.pickable || !live) {
+                    let show_db = sc.dbs.len() > 1;
+                    let label = match (&sc.db_now, show_db) {
+                        (Some(db), true) if !sc.current.is_empty() => format!("{db} / {}", sc.current),
+                        (Some(db), true) => db.clone(),
+                        _ if !sc.current.is_empty() => sc.current.clone(),
+                        _ => "Schema".to_string(),
+                    };
+                    let hover = if live { "The console's schema: unqualified names resolve in it" } else if connecting { "Connecting…" } else { "Disconnected: click to connect" };
+                    let btn = tb::button(ui, p, Kind::Ghost, Some(Icon::Schema), &label, true, !connecting).on_hover_text(hover);
+                    let menu = btn.id.with("menu");
+                    if !live {
+                        if ui.memory(|m| m.is_popup_open(menu)) {
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if btn.clicked() && !connecting {
+                            connect = Some(sc.base.clone());
+                        }
+                    } else if self.menu_after_connect.as_deref() == Some(sc.base.as_str()) {
+                        ui.memory_mut(|m| m.open_popup(menu));
+                    }
+                    if live {
+                        tb::dropdown(ui, &btn, 300.0, |ui| {
+                            let section = |ui: &mut egui::Ui, t: &str| {
+                                ui.label(RichText::new(t).size(11.5).color(p.muted));
+                            };
+                            if show_db {
+                                section(ui, "Database");
+                                for (id, db) in &sc.dbs {
+                                    if ui.selectable_label(*id == self.tabs[ti].conn_id, db).clicked() {
+                                        pick_db = Some(id.clone());
+                                        tb::close(ui);
+                                    }
+                                }
+                                ui.separator();
+                            }
+                            section(ui, "Schema");
+                            egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("schemas").max_height(260.0).show(ui, |ui| {
+                                for sname in &sc.schemas {
+                                    let text = if *sname == sc.default { format!("{sname}   (default)") } else { sname.clone() };
+                                    if ui.selectable_label(sname.eq_ignore_ascii_case(&sc.current), text).clicked() {
+                                        pick_schema = Some(sname.clone());
+                                        tb::close(ui);
+                                    }
+                                }
+                            });
+                            if sc.schemas.is_empty() {
+                                ui.label(RichText::new("Loading the schema…").size(12.0).color(p.faint));
+                            }
+                        });
+                    }
+                }
+                if let Some(cfg) = &cfg {
+                    if cfg.read_only {
+                        tb::badge(ui, p.muted, "Read-only").on_hover_text("Statements that change data or schema are blocked");
+                    }
+                    if cfg.production {
+                        tb::badge(ui, p.danger, "PRODUCTION").on_hover_text("Changes ask for confirmation on this connection");
+                    }
                 }
             });
         });
+        // the pending menu opened (or sign-in failed or was cancelled): forget it
+        if let Some(base) = self.menu_after_connect.clone() {
+            let (live, connecting) = self.liveness(&base);
+            if live || (!connecting && self.is_failed(&base)) || self.disconnected.contains(&base) {
+                self.menu_after_connect = None;
+            }
+        }
+        if let Some(id) = connect {
+            self.menu_after_connect = Some(id.clone());
+            self.apply(Action::Connect(id), ctx);
+        }
+        if let Some(id) = pick_db {
+            self.set_tab_database(ti, id, ctx);
+        }
+        if let Some(schema) = pick_schema {
+            self.set_tab_schema(ti, schema);
+        }
         self.run_actions(actions, ctx);
     }
 
@@ -2858,16 +3133,17 @@ impl DataBugApp {
                 8 => self.tx_command("COMMIT", ctx),
                 9 => self.tx_command("ROLLBACK", ctx),
                 10 => self.format_active(),
+                11 => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.bottom = if t.bottom == BottomTab::History { BottomTab::Output } else { BottomTab::History };
+                    }
+                }
                 _ => {}
             }
         }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
-        let mut pick_schema: Option<String> = None;
-        let mut pick_db: Option<String> = None;
-        let mut console_pick: Option<ConsolePick> = None;
-        let mut connect: Option<String> = None;
         let custom_frame = custom_window_frame();
         if custom_frame {
             // the empty parts of the toolbar act as the title bar; widgets added
@@ -2886,105 +3162,6 @@ impl DataBugApp {
             // logo: the app icon's beetle, without its dark tile
             ui.add(egui::Image::from_bytes("bytes://databug/mark.svg", include_bytes!("../assets/icon/mark.svg").as_slice()).fit_to_exact_size(egui::vec2(22.0, 22.0)));
             ui.label(RichText::new("DataBug").font(bold(14.0)));
-
-            let active = self.tabs.get(self.active).filter(|t| t.tool.is_none());
-            if let Some(t) = active {
-                if let Some(cfg) = self.conn(&t.conn_id) {
-                    tb::divider(ui, p);
-                    // the connection button: its menu holds the console's database
-                    // and schema, and the connection's consoles
-                    let entry = self.catalogs.get(&t.conn_id);
-                    let schemas: Vec<String> = entry.map(|e| e.catalog.schemas.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
-                    let default = entry.map(|e| e.catalog.default_schema.clone()).unwrap_or_default();
-                    let current = t.editor.schema().map(str::to_string).unwrap_or_else(|| default.clone());
-                    let base = ConnectionConfig::base_id(&t.conn_id).to_string();
-                    let base_db = self.databases.get(&base).map(|d| d.current.clone()).filter(|d| !d.is_empty()).or_else(|| self.conn(&base).map(|c| c.database.clone()).filter(|d| !d.is_empty()));
-                    let mut dbs: Vec<(String, String)> = Vec::new();
-                    if let Some(db) = base_db {
-                        dbs.push((base.clone(), db));
-                    }
-                    dbs.extend(self.virtuals.iter().filter(|v| ConnectionConfig::base_id(&v.id) == base).filter_map(|v| v.id.split_once('@').map(|(_, db)| (v.id.clone(), db.to_string()))));
-                    let db_now = dbs.iter().find(|(id, _)| *id == t.conn_id).map(|(_, d)| d.clone());
-                    let show_db = dbs.len() > 1;
-                    let pickable = !matches!(cfg.kind.dialect(), Dialect::Mongo | Dialect::Redis) && (!schemas.is_empty() || show_db);
-                    let detail = match (&db_now, show_db) {
-                        (Some(db), true) if !current.is_empty() => format!("{db} · {current}"),
-                        (Some(db), true) => db.clone(),
-                        _ if pickable => current.clone(),
-                        _ => String::new(),
-                    };
-                    let (live, connecting) = self.liveness(&base);
-                    let hover = if live {
-                        format!("{} · {}\nDatabase, schema and consoles", cfg.name, cfg.kind.label())
-                    } else if connecting {
-                        format!("{} · {}\nConnecting…", cfg.name, cfg.kind.label())
-                    } else {
-                        format!("{} · {}\nDisconnected: click to connect", cfg.name, cfg.kind.label())
-                    };
-                    let conn_btn = tb::connection_button(ui, p, &self.logos, cfg, live, &detail).on_hover_text(hover);
-                    let menu = conn_btn.id.with("menu");
-                    // screenshot scenes open the menu with a flag in egui's memory
-                    if ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("open-consoles-menu"))).unwrap_or(false) && live {
-                        ui.memory_mut(|m| m.open_popup(menu));
-                    }
-                    if !live {
-                        // signed out: no menu; a click signs in (once), and the
-                        // menu opens when that works
-                        if ui.memory(|m| m.is_popup_open(menu)) {
-                            ui.memory_mut(|m| m.close_popup());
-                        }
-                        if conn_btn.clicked() && !connecting {
-                            connect = Some(base.clone());
-                        }
-                    } else if self.menu_after_connect.as_deref() == Some(base.as_str()) {
-                        ui.memory_mut(|m| m.open_popup(menu));
-                    }
-                    if live {
-                    tb::dropdown(ui, &conn_btn, 420.0, |ui| {
-                        let section = |ui: &mut egui::Ui, t: &str| {
-                            ui.label(RichText::new(t).size(11.5).color(p.muted));
-                        };
-                        if show_db {
-                            section(ui, "Database");
-                            for (id, db) in &dbs {
-                                if ui.selectable_label(*id == t.conn_id, db).clicked() {
-                                    pick_db = Some(id.clone());
-                                    tb::close(ui);
-                                }
-                            }
-                            ui.separator();
-                        }
-                        if pickable {
-                            section(ui, "Schema");
-                            egui::ScrollArea::vertical().drag_to_scroll(false).id_salt("schemas").max_height(200.0).show(ui, |ui| {
-                                for sname in &schemas {
-                                    let text = if *sname == default { format!("{sname}   (default)") } else { sname.clone() };
-                                    if ui.selectable_label(sname.eq_ignore_ascii_case(&current), text).clicked() {
-                                        pick_schema = Some(sname.clone());
-                                        tb::close(ui);
-                                    }
-                                }
-                            });
-                            if schemas.is_empty() {
-                                ui.label(RichText::new("Loading the schema…").size(12.0).color(p.faint));
-                            }
-                            ui.separator();
-                        }
-                        section(ui, "Consoles");
-                        console_pick = self.consoles_list(ui, p, &base);
-                        if matches!(console_pick, Some(ConsolePick::Open(_))) {
-                            tb::close(ui);
-                        }
-                    });
-                    }
-                    if cfg.production {
-                        tb::badge(ui, p.danger, "PRODUCTION").on_hover_text("Changes ask for confirmation on this connection");
-                    }
-                    if cfg.read_only {
-                        tb::badge(ui, p.muted, "Read-only").on_hover_text("Statements that change data or schema are blocked");
-                    }
-                }
-            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -3077,29 +3254,6 @@ impl DataBugApp {
                 }
             });
         });
-        let ti = self.active;
-        // the pending menu opened (or sign-in failed or was cancelled): forget it
-        if let Some(base) = self.menu_after_connect.clone() {
-            let (live, connecting) = self.liveness(&base);
-            if live || (!connecting && self.is_failed(&base)) || self.disconnected.contains(&base) {
-                self.menu_after_connect = None;
-            }
-        }
-        if let Some(id) = connect {
-            self.menu_after_connect = Some(id.clone());
-            self.apply(Action::Connect(id), ctx);
-        }
-        if let Some(id) = pick_db {
-            self.set_tab_database(ti, id, ctx);
-        }
-        if let Some(schema) = pick_schema {
-            self.set_tab_schema(ti, schema);
-        }
-        match console_pick {
-            Some(ConsolePick::Open(id)) => self.reopen_request = Some(id),
-            Some(ConsolePick::Delete(id)) => self.delete_saved_editor(id),
-            None => {}
-        }
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui, p: &Palette) -> (Option<usize>, Vec<usize>, bool) {
@@ -3108,6 +3262,8 @@ impl DataBugApp {
         let mut new_tab = false;
         let n_tabs = self.tabs.len();
         let live_tabs: HashSet<u64> = self.tabs.iter().filter(|t| self.liveness(ConnectionConfig::base_id(&t.conn_id)).0).map(|t| t.id).collect();
+        // "console_2 [store / public]": the name, then where it runs
+        let scopes: Vec<String> = self.tabs.iter().map(|t| self.tab_scope(t)).collect();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             egui::ScrollArea::horizontal().drag_to_scroll(false).id_salt("tabs").max_width(ui.available_width() - 34.0).show(ui, |ui| {
@@ -3115,7 +3271,13 @@ impl DataBugApp {
                     for (i, t) in self.tabs.iter().enumerate() {
                         let active = i == self.active;
                         let color = self.conn(&t.conn_id).map(|c| connection_color(c.color)).unwrap_or(p.muted);
-                        let title_galley = ui.painter().layout_no_wrap(t.title.clone(), if active { bold(12.5) } else { FontId::proportional(12.5) }, if active { p.text } else { p.muted });
+                        let mut job = egui::text::LayoutJob::default();
+                        let name_fmt = egui::TextFormat { font_id: if active { bold(12.5) } else { FontId::proportional(12.5) }, color: if active { p.text } else { p.muted }, ..Default::default() };
+                        job.append(&t.title, 0.0, name_fmt);
+                        if !scopes[i].is_empty() {
+                            job.append(&format!("[{}]", scopes[i]), 5.0, egui::TextFormat { font_id: FontId::proportional(12.5), color: if active { p.muted } else { p.faint }, ..Default::default() });
+                        }
+                        let title_galley = ui.fonts(|f| f.layout_job(job));
                         let w = title_galley.size().x + 52.0;
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 30.0), Sense::click());
                         if active {
@@ -3187,75 +3349,29 @@ impl DataBugApp {
         (select, close, new_tab)
     }
 
-    /// The connection's consoles (open ones and ones left open when DataBug
-    /// quit), for the connection menu. Returns what the user picked.
-    fn consoles_list(&self, ui: &mut egui::Ui, p: &Palette, base: &str) -> Option<ConsolePick> {
-        let consoles = self.consoles_for(base);
-        let open: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
-        let mut pick = None;
-        {
-            let fid = ui.make_persistent_id("consoles-filter");
-            let mut filter: String = ui.data_mut(|d| d.get_temp(fid)).unwrap_or_default();
-            crate::theme::text_field(ui, p, egui::TextEdit::singleline(&mut filter).hint_text("Filter by name or text"), f32::INFINITY, crate::theme::FIELD_H_COMPACT);
-            ui.data_mut(|d| d.insert_temp(fid, filter.clone()));
-            ui.add_space(4.0);
-            let f = filter.to_lowercase();
-            let rows: Vec<&&SavedEditor> = consoles.iter().filter(|e| f.is_empty() || e.title.to_lowercase().contains(&f) || e.text.to_lowercase().contains(&f)).collect();
-            if rows.is_empty() {
-                let msg = if f.is_empty() { "No consoles with text yet. Consoles you don't close show up here, including after DataBug restarts." } else { "No consoles match." };
-                ui.add_space(4.0);
-                ui.label(RichText::new(msg).size(12.0).color(p.muted));
-                ui.add_space(4.0);
-                return None;
-            }
-            let row_h = 44.0;
-            egui::ScrollArea::vertical().drag_to_scroll(false).max_height(row_h * 8.0).auto_shrink([false, true]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for e in rows {
-                    let is_open = open.contains(&e.id);
-                    let (rect, row) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
-                    let del_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(20.0, 20.0));
-                    let del = (!is_open).then(|| ui.interact(del_rect, ui.id().with(("del-console", e.id)), Sense::click()));
-                    let del_hovered = del.as_ref().map(|d| d.hovered()).unwrap_or(false);
-                    let hot = row.hovered() || del_hovered;
-                    if hot {
-                        ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
-                    }
-                    let painter = ui.painter();
-                    let right = if hot && !is_open { del_rect.left() - 6.0 } else { rect.right() - 8.0 };
-                    let (tag, tag_color) = if is_open { ("open".to_string(), p.accent) } else { (ago(e.updated), p.faint) };
-                    let tag_g = painter.layout_no_wrap(tag, FontId::proportional(11.0), tag_color);
-                    let tag_w = tag_g.size().x;
-                    painter.galley(egui::pos2(right - tag_w, rect.top() + 7.0), tag_g, tag_color);
-                    let head = painter.layout_no_wrap(format!("{}   ", e.title), bold(12.5), p.text);
-                    let head_w = head.size().x;
-                    painter.galley(egui::pos2(rect.left() + 8.0, rect.top() + 5.0), head, p.text);
-                    if let Some(schema) = &e.schema {
-                        let max = ((right - tag_w - 10.0 - (rect.left() + 8.0 + head_w)) / 6.2).max(0.0) as usize;
-                        painter.text(egui::pos2(rect.left() + 8.0 + head_w, rect.top() + 6.0), egui::Align2::LEFT_TOP, schema.chars().take(max).collect::<String>(), FontId::proportional(11.5), p.muted);
-                    }
-                    let preview = e.text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| one_line(l, 120)).unwrap_or_default();
-                    let max_prev = ((right - rect.left() - 8.0) / 6.6) as usize;
-                    painter.text(egui::pos2(rect.left() + 8.0, rect.top() + 25.0), egui::Align2::LEFT_TOP, preview.chars().take(max_prev).collect::<String>(), FontId::monospace(11.0), p.muted);
-                    if let Some(del) = del {
-                        if hot {
-                            if del.hovered() {
-                                painter.rect_filled(del_rect, CornerRadius::same(4), p.danger.gamma_multiply(0.2));
-                            }
-                            painter.text(del_rect.center(), egui::Align2::CENTER_CENTER, "×", FontId::proportional(15.0), if del.hovered() { p.danger } else { p.muted });
-                        }
-                        if del.on_hover_text("Delete this console").clicked() {
-                            pick = Some(ConsolePick::Delete(e.id));
-                            continue;
-                        }
-                    }
-                    if row.clicked() {
-                        pick = Some(ConsolePick::Open(e.id));
-                    }
+    /// What the Consoles panel lists: per connection with an open tab or a
+    /// saved console (in the explorer's order), its tabs and saved consoles.
+    fn console_groups(&self, p: &Palette) -> Vec<ConsoleGroup> {
+        let open_docs: HashSet<u64> = self.tabs.iter().map(|t| t.doc).collect();
+        self.visible_connections()
+            .into_iter()
+            .filter_map(|c| {
+                let mut rows = Vec::new();
+                for (i, t) in self.tabs.iter().enumerate().filter(|(_, t)| ConnectionConfig::base_id(&t.conn_id) == c.id) {
+                    let detail = if t.running.is_some() {
+                        Some(("running…".to_string(), p.accent))
+                    } else {
+                        t.results.last().and_then(|r| r.elapsed).map(|d| (crate::grid::fmt_duration(d), p.faint))
+                    };
+                    rows.push(ConsoleRow::Open { tab: i, tool: t.tool.is_some(), active: i == self.active, title: t.title.clone(), scope: self.tab_scope(t), detail });
                 }
-            });
-        }
-        pick
+                for e in self.consoles_for(&c.id).into_iter().filter(|e| !open_docs.contains(&e.id)) {
+                    let preview = e.text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| one_line(l, 160)).unwrap_or_default();
+                    rows.push(ConsoleRow::Saved { id: e.id, title: e.title.clone(), ago: ago(e.updated), preview });
+                }
+                (!rows.is_empty()).then(|| ConsoleGroup { live: self.liveness(&c.id).0, id: c.id, name: c.name, kind: c.kind, rows })
+            })
+            .collect()
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui, p: &Palette) -> Vec<Action> {
@@ -4070,7 +4186,6 @@ impl DataBugApp {
                             let next = self.editors.iter().map(|e| e.id).max().unwrap_or(0) + 100;
                             self.editors.push(SavedEditor { id: next, conn_id: id, title: "Low stock".into(), text: "SELECT name, stock FROM products WHERE stock < 10;".into(), schema: None, updated: now_secs().saturating_sub(3 * 3600) });
                             self.active = 0;
-                            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open-consoles-menu"), true));
                         }
                         "usages" => {
                             // cursor on the alias `c`: its other uses are softly highlighted
@@ -4581,6 +4696,8 @@ impl DataBugApp {
             .iter()
             .map(|(k, e)| (k.clone(), CatalogView { catalog: &e.catalog, generation: e.generation, loading: e.loading, error: e.error.as_deref(), age: if e.catalog.introspected_at > 0 { ago(e.catalog.introspected_at) } else { String::new() } }))
             .collect();
+        let mut console_pick: Option<ConsolePick> = None;
+        let groups = self.console_groups(&p);
         let side = egui::SidePanel::left("explorer")
             .resizable(true)
             .default_width(width)
@@ -4588,19 +4705,52 @@ impl DataBugApp {
             .frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 8, right: 3, top: 0, bottom: 0 }))
             .show_separator_line(false)
             .show(ctx, |ui| {
-                island.show(ui, |ui| {
-                    ui.set_min_height(ui.available_height());
-                    let cx = ExplorerCtx { connected: &connected, connecting: &connecting, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
-                    let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
-                    // don't start another refresh while one is loading
-                    acts.retain(|a| match a {
-                        Action::Refresh(id) => !views.get(id).map(|e| e.loading).unwrap_or(false),
-                        _ => true,
+                // the Consoles panel at the bottom of the column, under the explorer
+                let h = ui.available_height();
+                egui::TopBottomPanel::bottom("consoles")
+                    .resizable(true)
+                    .default_height((h * 0.3).max(140.0))
+                    .height_range(80.0..=(h - 180.0).max(100.0))
+                    .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
+                    .show_separator_line(false)
+                    .show_inside(ui, |ui| {
+                        island.show(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            console_pick = consoles_panel(ui, &p, &self.logos, &groups);
+                        });
                     });
-                    actions.extend(acts);
+                egui::CentralPanel::default().frame(egui::Frame::new()).show_inside(ui, |ui| {
+                    island.show(ui, |ui| {
+                        ui.set_min_height(ui.available_height());
+                        let cx = ExplorerCtx { connected: &connected, connecting: &connecting, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
+                        let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
+                        // don't start another refresh while one is loading
+                        acts.retain(|a| match a {
+                            Action::Refresh(id) => !views.get(id).map(|e| e.loading).unwrap_or(false),
+                            _ => true,
+                        });
+                        actions.extend(acts);
+                    });
                 });
             });
         drop(views);
+        match console_pick {
+            Some(ConsolePick::Activate(i)) => {
+                if i < self.tabs.len() {
+                    self.active = i;
+                    self.tabs[i].editor.focus();
+                }
+            }
+            Some(ConsolePick::Open(id)) => self.reopen_request = Some(id),
+            Some(ConsolePick::Delete(id)) => self.delete_saved_editor(id),
+            Some(ConsolePick::Toggle(id)) => ctx.data_mut(|d| {
+                let set: &mut HashSet<String> = d.get_temp_mut_or_default(egui::Id::new("consoles-collapsed"));
+                if !set.remove(&id) {
+                    set.insert(id);
+                }
+            }),
+            None => {}
+        }
         let w = side.response.rect.width();
         if (w - self.settings.explorer_width).abs() > 4.0 && !ctx.input(|i| i.pointer.any_down()) {
             self.settings.explorer_width = w;
@@ -4661,8 +4811,17 @@ impl DataBugApp {
                     if !close.is_empty() {
                         self.close_tabs(close);
                     }
-                    self.editor_bar(ui, &p, ctx);
-                    ui.add_space(4.0);
+                    // the run bar sits on its own slightly raised strip, for depth
+                    egui::Frame::new()
+                        .fill(p.island.lerp_to_gamma(p.raised, 0.55))
+                        .stroke(Stroke::new(1.0_f32, p.border.gamma_multiply(0.6)))
+                        .corner_radius(CornerRadius::same(7))
+                        .inner_margin(Margin::symmetric(6, 2))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            self.editor_bar(ui, &p, ctx);
+                        });
+                    ui.add_space(6.0);
                     let mut goto = None;
                     let mut editor_request = None;
                     if let Some(tab) = self.tabs.get_mut(self.active) {

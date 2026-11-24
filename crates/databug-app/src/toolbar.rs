@@ -1,8 +1,8 @@
-//! Controls for the top toolbar. Every one is `H` tall with the same corners,
-//! border and text size, so the toolbar lines up: buttons (plain, primary,
-//! danger, success, accent, icon-only), dropdown buttons, a segmented switch,
-//! badges, the connection chip and dividers. Icons are painted, not emoji, so
-//! they look the same on every platform.
+//! Controls for the top bar and the console bar. Every one is `H` tall with
+//! the same corners and text size, so a bar lines up: icon buttons (with an
+//! optional label and dropdown chevron), the accent button, badges and
+//! dividers. Icons are painted, not emoji, so they look the same on every
+//! platform.
 
 use crate::theme::Palette;
 use eframe::egui::{self, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, Ui};
@@ -19,14 +19,6 @@ fn font() -> FontId {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// Panel fill with a thin border.
-    Normal,
-    /// The main action (Run): filled with the success color.
-    Primary,
-    /// Red tint (Cancel while something runs).
-    Danger,
-    /// Green tint (Commit).
-    Success,
     /// Filled with the accent color (Update).
     Accent,
     /// No fill until hovered (icon buttons on the right).
@@ -44,8 +36,10 @@ pub enum Icon {
     Sun,
     Check,
     Undo,
-    /// a dot on a line: when changes are committed
-    Commit,
+    /// a clock face: query history
+    Clock,
+    /// a database cylinder: the console's database and schema
+    Schema,
 }
 
 /// White or near-black text, whichever reads better on `fill`.
@@ -82,22 +76,22 @@ pub fn button(ui: &mut Ui, p: &Palette, kind: Kind, icon: Option<Icon>, label: &
     let none = Stroke::NONE;
     let thin = |c: Color32| Stroke::new(1.0_f32, c);
     let (fill, stroke, fg) = match (kind, enabled) {
+        (Kind::Ghost, false) => (Color32::TRANSPARENT, none, p.faint),
         (_, false) => (p.raised.gamma_multiply(0.7), thin(p.border.gamma_multiply(0.7)), p.faint),
-        (Kind::Normal, true) => (if pressed { p.selection } else if hovered || open { p.hover } else { p.raised }, thin(if hovered || open { p.muted.gamma_multiply(0.5) } else { p.border }), p.text),
         (Kind::Ghost, true) => (if pressed { p.selection } else if hovered || open { p.hover } else { Color32::TRANSPARENT }, none, if hovered || open { p.text } else { p.muted }),
-        (Kind::Primary, true) => {
-            let f = if pressed { p.success.gamma_multiply(0.8) } else if hovered { p.success.gamma_multiply(0.9) } else { p.success };
-            (f, none, on(p.success))
-        }
         (Kind::Accent, true) => {
             let f = if pressed { p.accent.gamma_multiply(0.8) } else if hovered { p.accent.gamma_multiply(0.9) } else { p.accent };
             (f, none, on(p.accent))
         }
-        (Kind::Danger, true) => (p.danger.gamma_multiply(if hovered { 0.26 } else { 0.16 }), thin(p.danger.gamma_multiply(0.5)), p.danger),
-        (Kind::Success, true) => (p.success.gamma_multiply(if hovered { 0.26 } else { 0.16 }), thin(p.success.gamma_multiply(0.5)), p.success),
     };
-    // a disabled Run still shows its play icon in green, faintly
-    let icon_color = if !enabled && kind == Kind::Primary { p.success.gamma_multiply(0.45) } else { fg };
+    // a disabled Run still shows its play icon in green, faintly; a ghost Run
+    // and Stop keep their colors (green to run, red while something can stop)
+    let icon_color = match (icon, kind, enabled) {
+        (Some(Icon::Play), Kind::Ghost, true) => p.success,
+        (Some(Icon::Play), Kind::Ghost, false) => p.success.gamma_multiply(0.45),
+        (Some(Icon::Stop), Kind::Ghost, true) => p.danger,
+        _ => fg,
+    };
     let painter = ui.painter();
     painter.rect(rect, CornerRadius::same(RADIUS), fill, stroke, egui::StrokeKind::Inside);
     let cy = rect.center().y;
@@ -158,44 +152,6 @@ pub fn divider(ui: &mut Ui, p: &Palette) {
     ui.add_space(4.0);
 }
 
-/// The active connection as a dropdown button: engine logo, live dot (filled)
-/// or ring, name, then `detail` (database · schema) in grey and a chevron.
-pub fn connection_button(ui: &mut Ui, p: &Palette, logos: &crate::icons::Logos, cfg: &databug_core::ConnectionConfig, live: bool, detail: &str) -> Response {
-    let color = crate::theme::connection_color(cfg.color);
-    let nw = ui.painter().layout_no_wrap(cfg.name.clone(), font(), p.text).size().x;
-    let dw = if detail.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(detail.to_string(), font(), p.muted).size().x + 8.0 };
-    let w = 8.0 + 16.0 + 8.0 + 8.0 + 6.0 + nw + dw + 8.0 + 14.0 + PAD;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, H), Sense::click());
-    let open = ui.memory(|m| m.is_popup_open(resp.id.with("menu")));
-    let hot = resp.hovered() || open;
-    let fill = if resp.is_pointer_button_down_on() { p.selection } else if hot { p.hover } else { p.raised };
-    ui.painter().rect(rect, CornerRadius::same(RADIUS), fill, Stroke::new(1.0_f32, if hot { p.muted.gamma_multiply(0.5) } else { p.border }), egui::StrokeKind::Inside);
-    let cy = rect.center().y;
-    let mut x = rect.left() + 8.0;
-    logos.paint(ui, Rect::from_min_size(egui::pos2(x, cy - 8.0), egui::vec2(16.0, 16.0)), cfg.kind);
-    x += 16.0 + 8.0;
-    let dot = egui::pos2(x + 4.0, cy);
-    if live {
-        ui.painter().circle_filled(dot, 4.0, color);
-    } else {
-        ui.painter().circle_stroke(dot, 3.4, Stroke::new(1.4_f32, color));
-    }
-    x += 8.0 + 6.0;
-    ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, &cfg.name, font(), p.text);
-    x += nw + 8.0;
-    if !detail.is_empty() {
-        ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, detail, font(), p.muted);
-    }
-    let c = egui::pos2(rect.right() - PAD - 3.0, cy + 1.0);
-    ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-3.5, -2.0), c + egui::vec2(3.5, -2.0), c + egui::vec2(0.0, 2.2)], p.muted, Stroke::NONE));
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
-}
-
-/// Paint `icon` in a 14×14 `r`, on a grid centred in it, with one stroke
-/// width throughout. `bg` is the color behind the icon (for cut-outs).
 pub fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color32, bg: Color32) {
     let o = r.center();
     let at = |x: f32, y: f32| o + egui::vec2(x, y);
@@ -255,10 +211,22 @@ pub fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color32, bg: 
         Icon::Check => {
             painter.add(egui::Shape::line(vec![at(-5.0, 0.0), at(-1.5, 3.5), at(5.0, -3.5)], Stroke::new(1.8_f32, c)));
         }
-        Icon::Commit => {
-            painter.circle_stroke(o, 3.0, st);
-            line(at(-6.5, 0.0), at(-3.0, 0.0));
-            line(at(3.0, 0.0), at(6.5, 0.0));
+        Icon::Clock => {
+            painter.circle_stroke(o, 6.0, st);
+            line(o, at(0.0, -3.8));
+            line(o, at(2.8, 1.6));
+        }
+        Icon::Schema => {
+            // a cylinder: top ellipse, sides and two bands
+            let w = 6.0;
+            let top = |y: f32| -> Vec<egui::Pos2> { (0..=24).map(|i| { let a = std::f32::consts::TAU * i as f32 / 24.0; at(a.cos() * w, y + a.sin() * 2.0) }).collect() };
+            painter.add(egui::Shape::closed_line(top(-4.5), st));
+            line(at(-w, -4.5), at(-w, 4.5));
+            line(at(w, -4.5), at(w, 4.5));
+            for y in [0.0_f32, 4.5] {
+                let half: Vec<egui::Pos2> = (0..=12).map(|i| { let a = std::f32::consts::PI * i as f32 / 12.0; at(a.cos() * w, y + a.sin() * 2.0) }).collect();
+                painter.add(egui::Shape::line(half, st));
+            }
         }
         Icon::Undo => {
             // an arrow curving back over the top: from the right, ending at the

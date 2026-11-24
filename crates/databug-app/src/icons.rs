@@ -333,6 +333,17 @@ pub fn paint_index(painter: &Painter, rect: Rect, unique: bool, p: &Palette) {
 }
 
 /// A pencil, for edit buttons.
+/// A console: a small window with a `>_` prompt.
+pub fn paint_console(painter: &Painter, rect: Rect, color: Color32) {
+    let r = Rect::from_center_size(rect.center(), egui::vec2(rect.width().min(13.0), rect.height().min(11.0)));
+    painter.rect_stroke(r, egui::CornerRadius::same(2), Stroke::new(1.2_f32, color), egui::StrokeKind::Inside);
+    let c = r.center();
+    let st = Stroke::new(1.2_f32, color);
+    painter.line_segment([c + egui::vec2(-3.6, -2.2), c + egui::vec2(-1.2, 0.0)], st);
+    painter.line_segment([c + egui::vec2(-1.2, 0.0), c + egui::vec2(-3.6, 2.2)], st);
+    painter.line_segment([c + egui::vec2(0.6, 2.4), c + egui::vec2(3.8, 2.4)], st);
+}
+
 pub fn paint_pencil(painter: &Painter, rect: Rect, color: Color32) {
     let c = rect.center();
     let a = c + egui::vec2(-4.0, 4.0);

@@ -607,16 +607,35 @@ impl ResultView {
                         if resp.clicked() {
                             gutter_click = Some((vr, ui.input(|i| i.modifiers)));
                         }
-                        if editable {
-                            resp.context_menu(|ui| {
+                        // right-clicking a row that isn't selected selects it, so the menu acts on it
+                        if resp.secondary_clicked() && !row_selected {
+                            gutter_click = Some((vr, egui::Modifiers::NONE));
+                        }
+                        let rows = if row_selected { n_selected.max(1) } else { 1 };
+                        resp.context_menu(|ui| {
+                            let (copy, with) = if rows > 1 {
+                                (format!("Copy {rows} rows"), format!("Copy {rows} rows with column names"))
+                            } else {
+                                ("Copy row".to_string(), "Copy row with column names".to_string())
+                            };
+                            if ui.button(copy).clicked() {
+                                ctx_action = Some((vr, 0, "Copy row"));
+                                ui.close_menu();
+                            }
+                            if ui.button(with).clicked() {
+                                ctx_action = Some((vr, 0, "Copy rows with names"));
+                                ui.close_menu();
+                            }
+                            if editable {
+                                ui.separator();
                                 for label in ["Add row", "Duplicate row", if row_deleted { "Restore row" } else { "Delete row" }] {
                                     if ui.button(label).clicked() {
                                         ctx_action = Some((vr, 0, label));
                                         ui.close_menu();
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     });
                     for ci in 0..self.columns.len() {
                         row.col(|ui| {

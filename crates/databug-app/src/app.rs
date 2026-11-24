@@ -3962,6 +3962,10 @@ impl DataBugApp {
 
     fn drive_screenshot(&mut self, ctx: &egui::Context) {
         let compare_done = self.tabs.last().map(|t| matches!(&t.tool, Some(Tool::Compare(c)) if c.phase == Phase::Done)).unwrap_or(false);
+        // servers queued to sign in (DATABUG_SHOT_PASSWORDS)
+        for id in ctx.data_mut(|d| d.remove_temp::<Vec<String>>(egui::Id::new("shot-connect"))).unwrap_or_default() {
+            self.refresh_catalog(&id, ctx);
+        }
         let Some(plan) = self.screenshot.as_mut() else { return };
         ctx.request_repaint();
         plan.wait_frames += 1;
@@ -3996,6 +4000,16 @@ impl DataBugApp {
                 if let (Ok(pw), Some(c)) = (std::env::var("DATABUG_SHOT_PASSWORD"), self.connections.first()) {
                     let id = c.id.clone();
                     self.store.set_password(&id, &pw, false);
+                }
+                // more servers, by connection name: `Name=password;Other=…`; they
+                // sign in so the explorer shows them connected
+                for pair in std::env::var("DATABUG_SHOT_PASSWORDS").unwrap_or_default().split(';') {
+                    if let Some((name, pw)) = pair.split_once('=') {
+                        if let Some(id) = self.connections.iter().find(|c| c.name == name).map(|c| c.id.clone()) {
+                            self.store.set_password(&id, pw, false);
+                            ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("shot-connect")).push(id));
+                        }
+                    }
                 }
                 plan.step = 1;
                 plan.wait_frames = 0;

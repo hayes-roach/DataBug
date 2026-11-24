@@ -7,8 +7,10 @@
 //!   -pix_fmt yuv420p -crf 22 -movflags +faststart demo.mp4
 //! ```
 //!
-//! `DATABUG_HOME` should hold connections named "Local Redis" (a Redis with
-//! the sample keys) and "Local CouchDB" (a `store` database with
+//! `DATABUG_HOME` should hold connections named "Local PostgreSQL" and
+//! "Local SQL Server" (a `store` database with the sample tables; SQL Server
+//! also a `sales` schema with a `monthly_revenue` view), "Local Redis" (a
+//! Redis with the sample keys) and "Local CouchDB" (a `store` database with
 //! `photo:0001`); `DATABUG_SHOT_PASSWORDS="Local Redis=…;Local CouchDB=…"`
 //! gives their passwords for this run only. The frame number is the clock,
 //! so the video plays at an even speed however fast frames are captured.
@@ -89,6 +91,27 @@ fn script() -> Vec<Step> {
         Hold(8),
         run(),
         Hold(84),
+        // PostgreSQL: the same store on a server, table completion
+        Do(|app, ctx| open_named(app, ctx, "Local PostgreSQL")),
+        Hold(30),
+        Type("-- PostgreSQL: revenue by order status\nSELECT status, COUNT(*) AS orders, SUM(total) AS revenue\nFROM ord"),
+        Hold(20),
+        enter(),
+        Type("\nGROUP BY status\nORDER BY revenue DESC;"),
+        Hold(6),
+        run(),
+        Hold(72),
+        // SQL Server: schemas, views and procedures
+        Do(|app, ctx| open_named(app, ctx, "Local SQL Server")),
+        Hold(30),
+        Type("-- SQL Server: a view in the sales schema\nSELECT TOP 6 * FROM sales.mon"),
+        Hold(20),
+        enter(),
+        Type(" ORDER BY month DESC;"),
+        Hold(6),
+        run(),
+        // the first query also signs the console in to SQL Server
+        Hold(150),
         // Redis: keys in the explorer, commands with key completion
         Do(|app, ctx| {
             open_named(app, ctx, "Local Redis");

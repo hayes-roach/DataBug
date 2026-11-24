@@ -134,7 +134,16 @@ cp LICENSE "$STAGE/LICENSE.txt"
 cp NOTICE "$STAGE/NOTICE.txt"
 DMG="dist/DataBug-macos-$ARCH.dmg"
 rm -f "$DMG"
-hdiutil create -volname "DataBug $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+# hdiutil sometimes fails with "Resource busy" on build machines (a disk
+# image still attached, Spotlight indexing): wait and try again
+for try in 1 2 3 4 5; do
+  if hdiutil create -volname "DataBug $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null; then
+    break
+  fi
+  [ "$try" = 5 ] && { echo "hdiutil couldn't create $DMG" >&2; exit 1; }
+  echo "hdiutil failed (attempt $try), retrying" >&2
+  sleep $((try * 5))
+done
 if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
   sign "$DMG"
 fi

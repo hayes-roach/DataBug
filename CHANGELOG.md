@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-24
+
 ### Changed
 
 - A bigger app icon: the beetle fills more of its tile, and on Windows and Linux the tile fills the whole icon, so it matches other apps in the taskbar and the Dock. On macOS the Dock now shows the app bundle's icon while DataBug runs, sized by macOS like every other app

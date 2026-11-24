@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-24
+
 ### Changed
 
 - A DataGrip-style console toolbar, on its own slightly raised strip: compact Run, History, Explain and Stop buttons, `Tx: Auto ▾` for the transaction mode, Format, and the console's schema picker (`main ▾`) on the right, which also switches databases and connects a signed-out connection

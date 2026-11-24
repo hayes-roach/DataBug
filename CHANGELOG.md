@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS: the Dock and the app switcher showed a generic "e" icon (egui's) instead of DataBug's while the app was running
+
 ## [0.17.0] - 2026-11-24
 
 ### Changed

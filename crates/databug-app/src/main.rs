@@ -71,11 +71,12 @@ fn main() -> eframe::Result<()> {
 }
 
 /// The taskbar and title bar icon on Windows and Linux. On macOS the Dock
-/// shows the app bundle's icon, which macOS sizes like every other app's;
-/// setting one here would replace it with this edge-to-edge image.
+/// and the app switcher show the app bundle's icon, which macOS sizes like
+/// every other app's: an empty icon tells eframe to leave it alone (with no
+/// icon at all, eframe puts its own "e" logo there instead).
 fn window_icon(b: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
     if cfg!(target_os = "macos") {
-        b
+        b.with_icon(eframe::egui::IconData::default())
     } else {
         b.with_icon(app_icon())
     }

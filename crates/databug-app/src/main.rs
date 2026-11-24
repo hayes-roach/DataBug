@@ -41,10 +41,9 @@ fn main() -> eframe::Result<()> {
     }
     #[allow(unused_mut)]
     let mut options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
+        viewport: window_icon(eframe::egui::ViewportBuilder::default()
             .with_title("DataBug")
-            .with_app_id("dev.databug.DataBug")
-            .with_icon(app_icon())
+            .with_app_id("dev.databug.DataBug"))
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
             // Linux: DataBug draws its own title bar (window toolkits' fallback
@@ -69,6 +68,17 @@ fn main() -> eframe::Result<()> {
         };
     }
     eframe::run_native("DataBug", options, Box::new(move |cc| Ok(Box::new(app::DataBugApp::new(cc, screenshot)))))
+}
+
+/// The taskbar and title bar icon on Windows and Linux. On macOS the Dock
+/// shows the app bundle's icon, which macOS sizes like every other app's;
+/// setting one here would replace it with this edge-to-edge image.
+fn window_icon(b: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    if cfg!(target_os = "macos") {
+        b
+    } else {
+        b.with_icon(app_icon())
+    }
 }
 
 fn app_icon() -> std::sync::Arc<eframe::egui::IconData> {

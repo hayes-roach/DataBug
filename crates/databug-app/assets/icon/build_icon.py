@@ -33,6 +33,7 @@ def path(g):
     return " ".join(out)
 
 top = pron.bounds[1]
+SCALE = 1.18  # beetle size inside the tile
 svg=f'''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="g" x1="330" y1="200" x2="700" y2="840" gradientUnits="userSpaceOnUse">
@@ -40,10 +41,13 @@ svg=f'''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewB
     </linearGradient>
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="#111214"/>
+  <!-- the beetle, enlarged {SCALE}x about its centre to fill more of the tile -->
+  <g transform="translate(512 514.5) scale({SCALE}) translate(-512 -514.5)">
   <path fill="url(#g)" d="{path(body)}"/>
   <g stroke="url(#g)" stroke-width="30" stroke-linecap="round" fill="none">
     <path d="M462 {top+6} Q438 {top-60} 370 {top-104}"/>
     <path d="M562 {top+6} Q586 {top-60} 654 {top-104}"/>
+  </g>
   </g>
 </svg>'''
 open('databug-icon.svg','w').write(svg)

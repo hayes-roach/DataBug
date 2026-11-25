@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-25
+
 ### Fixed
 
 - The panels had no gap above them (under the top bar) or below them (over the status bar); they now have the same 6 px spacing as between panels

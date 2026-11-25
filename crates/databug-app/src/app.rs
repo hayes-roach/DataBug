@@ -4793,7 +4793,7 @@ impl DataBugApp {
             .resizable(true)
             .default_width(width)
             .width_range(180.0..=520.0)
-            .frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 8, right: 3, top: 0, bottom: 0 }))
+            .frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 8, right: 3, top: 6, bottom: 6 }))
             .show_separator_line(false)
             .show_animated(ctx, show_left, |ui| {
                 // inline (a macro, not a closure) so it borrows only the fields it uses
@@ -4869,7 +4869,7 @@ impl DataBugApp {
             }
         }
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 3, right: 8, top: 0, bottom: 0 })).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 3, right: 8, top: 6, bottom: 6 })).show(ctx, |ui| {
             if self.tabs.is_empty() {
                 island.show(ui, |ui| {
                     ui.set_min_size(ui.available_size());

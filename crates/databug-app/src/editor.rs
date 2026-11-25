@@ -970,11 +970,15 @@ impl Editor {
             let mut line = 1;
             let mut new_line = true;
             let cur_line = self.line_col().0;
+            // an empty line is laid out at the default font's height, not the
+            // editor's: center its number on a monospace line, as typed lines are
+            let mono_h = ui.fonts(|f| f.row_height(&FontId::monospace(font_size)));
             for row in &g.rows {
                 let y = origin.y + row.rect.min.y;
-                if new_line && y + row.rect.height() >= clip.top() && y <= clip.bottom() {
+                let h = if row.glyphs.is_empty() { mono_h } else { row.rect.height() };
+                if new_line && y + h >= clip.top() && y <= clip.bottom() {
                     let color = if line == cur_line && has_focus { p.muted } else { p.faint };
-                    ui.painter().text(egui::pos2(origin.x - 12.0, y + row.rect.height() / 2.0), egui::Align2::RIGHT_CENTER, line.to_string(), FontId::monospace(font_size - 1.0), color);
+                    ui.painter().text(egui::pos2(origin.x - 12.0, y + h / 2.0), egui::Align2::RIGHT_CENTER, line.to_string(), FontId::monospace(font_size - 1.0), color);
                 }
                 if new_line && y > clip.bottom() {
                     break;

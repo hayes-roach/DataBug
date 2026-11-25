@@ -137,7 +137,8 @@ enum SourcePurpose {
 /// Messages from the update checker / installer threads.
 enum UpdateMsg {
     Checked { result: Result<Option<crate::update::Release>, String>, manual: bool },
-    Progress(String),
+    /// What's happening, and how far the download is (0 to 1) while it runs.
+    Progress(String, Option<f32>),
     Finished(Result<(), String>),
 }
 
@@ -150,6 +151,8 @@ struct Updates {
     window: bool,
     /// What the installer is doing right now.
     busy: Option<String>,
+    /// The download's progress (0 to 1), for the progress bar.
+    busy_frac: Option<f32>,
     error: Option<String>,
 }
 
@@ -376,8 +379,25 @@ pub fn ddl(dialect: Dialect, schema: &str, t: &TableInfo) -> String {
 /// Whether DataBug draws its own title bar (Linux; `DATABUG_CUSTOM_FRAME=1`
 /// elsewhere to try it): drag the toolbar to move, double-click to maximize,
 /// its own minimize / maximize / close buttons, and edges to resize.
+/// DataBug draws the title bar itself (with its own minimize, maximize and
+/// close buttons) on Windows and Linux, so the top bar is the title bar.
 pub fn custom_window_frame() -> bool {
-    cfg!(target_os = "linux") || std::env::var_os("DATABUG_CUSTOM_FRAME").is_some()
+    cfg!(any(target_os = "linux", windows)) || std::env::var_os("DATABUG_CUSTOM_FRAME").is_some()
+}
+
+/// macOS: the top bar extends into the title bar, next to the window's own
+/// close, minimize and zoom buttons (see `main.rs`).
+pub fn mac_title_bar() -> bool {
+    cfg!(target_os = "macos") && std::env::var_os("DATABUG_CUSTOM_FRAME").is_none()
+}
+
+/// Height of the top bar, which is also the window's title bar.
+pub fn top_bar_height() -> f32 {
+    if mac_title_bar() {
+        32.0
+    } else {
+        40.0
+    }
 }
 
 /// Minimize, maximize and close, drawn like the rest of the app.
@@ -650,7 +670,7 @@ impl DataBugApp {
             frame_stats: std::env::var_os("DATABUG_FRAME_STATS").map(|_| FrameStats::default()),
             updates: {
                 let (tx, rx) = mpsc::channel();
-                Updates { tx, rx, checking: false, available: None, window: false, busy: None, error: None }
+                Updates { tx, rx, checking: false, available: None, window: false, busy: None, busy_frac: None, error: None }
             },
             db_search: None,
             editors,
@@ -903,12 +923,12 @@ impl DataBugApp {
 
     fn close_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
+            // saved first: an empty console leaves the list here, any other
+            // stays in the Consoles panel (dimmed) until it's deleted, and
+            // Ctrl/⌘ + Shift + T reopens the last one closed
             self.sync_editor(idx);
-            // a closed console leaves the list of consoles; Ctrl/⌘ + Shift + T
-            // can still bring it back during this run
             let doc = self.tabs[idx].doc;
-            if let Some(i) = self.editors.iter().position(|e| e.id == doc) {
-                let e = self.editors.remove(i);
+            if let Some(e) = self.editors.iter().find(|e| e.id == doc).cloned() {
                 self.closed_stack.retain(|c| c.id != doc);
                 self.closed_stack.push(e);
                 if self.closed_stack.len() > 50 {
@@ -1042,6 +1062,7 @@ impl DataBugApp {
 
     fn delete_saved_editor(&mut self, id: u64) {
         self.editors.retain(|e| e.id != id);
+        self.closed_stack.retain(|e| e.id != id);
         self.editors_dirty.get_or_insert_with(Instant::now);
     }
 
@@ -2145,9 +2166,13 @@ impl DataBugApp {
                         }
                     }
                 }
-                UpdateMsg::Progress(t) => self.updates.busy = Some(t),
+                UpdateMsg::Progress(t, frac) => {
+                    self.updates.busy = Some(t);
+                    self.updates.busy_frac = frac;
+                }
                 UpdateMsg::Finished(Ok(())) => {
                     self.updates.busy = Some("Restarting…".into());
+                    self.updates.busy_frac = None;
                     // sign out of every database before this version quits
                     self.disconnect_all();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2164,14 +2189,15 @@ impl DataBugApp {
         let Some(r) = self.updates.available.clone() else { return };
         self.updates.error = None;
         self.updates.busy = Some("Starting…".into());
+        self.updates.busy_frac = None;
         let tx = self.updates.tx.clone();
         let ctx = self.ctx.clone();
         self.rt.spawn_blocking(move || {
             let p = {
                 let tx = tx.clone();
                 let ctx = ctx.clone();
-                move |s: &str| {
-                    let _ = tx.send(UpdateMsg::Progress(s.to_string()));
+                move |s: &str, frac: Option<f32>| {
+                    let _ = tx.send(UpdateMsg::Progress(s.to_string(), frac));
                     ctx.request_repaint();
                 }
             };
@@ -2225,8 +2251,19 @@ impl DataBugApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if let Some(b) = &self.updates.busy {
-                        ui.add(egui::Spinner::new().size(14.0));
-                        ui.label(RichText::new(b).color(p.accent));
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(14.0));
+                                ui.label(RichText::new(b).color(p.accent));
+                            });
+                            // the download's progress; a pulsing bar for the steps after it
+                            let bar = match self.updates.busy_frac {
+                                Some(f) => egui::ProgressBar::new(f).show_percentage(),
+                                None => egui::ProgressBar::new(1.0).animate(true),
+                            };
+                            ui.add(bar.desired_width(ui.available_width().min(460.0)).fill(p.accent));
+                            ui.label(RichText::new("DataBug closes and reopens by itself when the update is installed.").size(11.5).color(p.faint));
+                        });
                         return;
                     }
                     let can = !matches!(kind, crate::update::InstallKind::Manual(_));
@@ -3145,7 +3182,7 @@ impl DataBugApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
         let custom_frame = custom_window_frame();
-        if custom_frame {
+        if custom_frame || mac_title_bar() {
             // the empty parts of the toolbar act as the title bar; widgets added
             // later sit on top and get the clicks
             let bar = ui.interact(ui.max_rect().expand2(egui::vec2(12.0, 6.0)), egui::Id::new("title-bar"), Sense::click_and_drag());
@@ -3157,11 +3194,38 @@ impl DataBugApp {
             }
         }
         use crate::toolbar::{self as tb, Icon, Kind};
+        // the view toggles, centered in the bar: explorer, editor, Consoles, results
+        let bar = ui.max_rect();
+        let toggles = egui::Rect::from_center_size(bar.center(), egui::vec2(4.0 * (tb::H + 2.0) + 3.0 * 2.0, tb::H));
+        let mut views = self.settings.views;
+        // a child area: placing it doesn't push the rest of the bar down a row
+        {
+            let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(toggles).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (icon, on, tip) in [
+                    (Icon::Schema, &mut views.explorer, "Database explorer"),
+                    (Icon::Page, &mut views.editor, "Console editor"),
+                    (Icon::List, &mut views.consoles, "Consoles"),
+                    (Icon::Terminal, &mut views.results, "Results and output"),
+                ] {
+                    let state = if *on { "shown: click to hide" } else { "hidden: click to show" };
+                    if tb::toggle(ui, p, icon, *on).on_hover_text(format!("{tip} ({state})")).clicked() {
+                        *on = !*on;
+                    }
+                }
+            });
+        }
+        if views != self.settings.views {
+            self.settings.views = views;
+            self.store.save_settings(&self.settings);
+        }
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            // logo: the app icon's beetle, without its dark tile
-            ui.add(egui::Image::from_bytes("bytes://databug/mark.svg", include_bytes!("../assets/icon/mark.svg").as_slice()).fit_to_exact_size(egui::vec2(22.0, 22.0)));
-            ui.label(RichText::new("DataBug").font(bold(14.0)));
+            // macOS: the window's own buttons are at the left of this bar
+            if mac_title_bar() {
+                ui.add_space(70.0);
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -3246,7 +3310,17 @@ impl DataBugApp {
                     self.settings.skipped_version = None;
                     self.check_updates(true);
                 }
-                if let Some(r) = self.updates.available.as_ref() {
+                if self.updates.busy.is_some() {
+                    // an update in progress: how far along, and a click shows the details
+                    let label = match self.updates.busy_frac {
+                        Some(f) => format!("Updating {:.0}%", f * 100.0),
+                        None => "Updating…".to_string(),
+                    };
+                    if tb::button(ui, p, Kind::Ghost, None, &label, false, true).on_hover_text(self.updates.busy.clone().unwrap_or_default()).clicked() {
+                        self.updates.window = true;
+                    }
+                    ui.add(egui::Spinner::new().size(13.0));
+                } else if let Some(r) = self.updates.available.as_ref() {
                     let label = format!("Update to {}", r.version_string());
                     if tb::button(ui, p, Kind::Accent, None, &label, false, true).on_hover_text("A new version of DataBug is available").clicked() {
                         self.updates.window = true;
@@ -3976,7 +4050,7 @@ impl DataBugApp {
                 Ok(Some(r)) => {
                     eprintln!("update: {} available ({} assets)", r.version_string(), r.assets.len());
                     if std::env::var_os("DATABUG_UPDATE_INSTALL").is_some() {
-                        let res = crate::update::install(&r, &|s| eprintln!("update: {s}"));
+                        let res = crate::update::install(&r, &|s, _| eprintln!("update: {s}"));
                         eprintln!("update: install {}", match res { Ok(_) => "ok".to_string(), Err(e) => format!("failed: {e}") });
                     }
                 }
@@ -4684,7 +4758,7 @@ impl DataBugApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
-        egui::TopBottomPanel::top("toolbar").exact_height(44.0).frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin::symmetric(12, 6))).show(ctx, |ui| self.toolbar(ui, &p, ctx));
+        egui::TopBottomPanel::top("toolbar").exact_height(top_bar_height()).frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin::symmetric(10, 2))).show(ctx, |ui| self.toolbar(ui, &p, ctx));
         egui::TopBottomPanel::bottom("status").exact_height(24.0).frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin::symmetric(14, 2))).show(ctx, |ui| self.status_bar(ui, &p));
 
         let island = egui::Frame::new().fill(p.island).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(8));
@@ -4712,40 +4786,62 @@ impl DataBugApp {
             .collect();
         let mut console_pick: Option<ConsolePick> = None;
         let groups = self.console_groups(&p);
+        // the title bar's toggles: which views show
+        let shown = self.settings.views;
+        let show_left = shown.explorer || shown.consoles;
         let side = egui::SidePanel::left("explorer")
             .resizable(true)
             .default_width(width)
             .width_range(180.0..=520.0)
             .frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 8, right: 3, top: 0, bottom: 0 }))
             .show_separator_line(false)
-            .show(ctx, |ui| {
-                // the Consoles panel at the bottom of the column, under the explorer
-                let h = ui.available_height();
-                egui::TopBottomPanel::bottom("consoles")
-                    .resizable(true)
-                    .default_height((h * 0.3).max(140.0))
-                    .height_range(80.0..=(h - 180.0).max(100.0))
-                    .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
-                    .show_separator_line(false)
-                    .show_inside(ui, |ui| {
+            .show_animated(ctx, show_left, |ui| {
+                // inline (a macro, not a closure) so it borrows only the fields it uses
+                macro_rules! explorer {
+                    ($ui:expr) => {
+                        island.show($ui, |ui| {
+                            ui.set_min_height(ui.available_height());
+                            let cx = ExplorerCtx { connected: &connected, connecting: &connecting, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
+                            let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
+                            // don't start another refresh while one is loading
+                            acts.retain(|a| match a {
+                                Action::Refresh(id) => !views.get(id).map(|e| e.loading).unwrap_or(false),
+                                _ => true,
+                            });
+                            actions.extend(acts);
+                        })
+                    };
+                }
+                match (shown.explorer, shown.consoles) {
+                    // the Consoles panel at the bottom of the column, under the explorer
+                    (true, true) => {
+                        let h = ui.available_height();
+                        egui::TopBottomPanel::bottom("consoles")
+                            .resizable(true)
+                            .default_height((h * 0.3).max(140.0))
+                            .height_range(80.0..=(h - 180.0).max(100.0))
+                            .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
+                            .show_separator_line(false)
+                            .show_inside(ui, |ui| {
+                                island.show(ui, |ui| {
+                                    ui.set_min_size(ui.available_size());
+                                    console_pick = consoles_panel(ui, &p, &self.logos, &groups);
+                                });
+                            });
+                        egui::CentralPanel::default().frame(egui::Frame::new()).show_inside(ui, |ui| {
+                            explorer!(ui);
+                        });
+                    }
+                    (true, false) => {
+                        explorer!(ui);
+                    }
+                    _ => {
                         island.show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
                             console_pick = consoles_panel(ui, &p, &self.logos, &groups);
                         });
-                    });
-                egui::CentralPanel::default().frame(egui::Frame::new()).show_inside(ui, |ui| {
-                    island.show(ui, |ui| {
-                        ui.set_min_height(ui.available_height());
-                        let cx = ExplorerCtx { connected: &connected, connecting: &connecting, disconnected: &self.disconnected, failed: &self.failed, databases: &self.databases, projects: &self.projects, current_project: self.settings.current_project.as_deref() };
-                        let mut acts = crate::explorer::show(ui, &p, &mut self.explorer, &self.logos, &visible, &views, &cx);
-                        // don't start another refresh while one is loading
-                        acts.retain(|a| match a {
-                            Action::Refresh(id) => !views.get(id).map(|e| e.loading).unwrap_or(false),
-                            _ => true,
-                        });
-                        actions.extend(acts);
-                    });
-                });
+                    }
+                }
             });
         drop(views);
         match console_pick {
@@ -4765,10 +4861,12 @@ impl DataBugApp {
             }),
             None => {}
         }
-        let w = side.response.rect.width();
-        if (w - self.settings.explorer_width).abs() > 4.0 && !ctx.input(|i| i.pointer.any_down()) {
-            self.settings.explorer_width = w;
-            self.store.save_settings(&self.settings);
+        if let Some(side) = side {
+            let w = side.response.rect.width();
+            if (w - self.settings.explorer_width).abs() > 4.0 && !ctx.input(|i| i.pointer.any_down()) {
+                self.settings.explorer_width = w;
+                self.store.save_settings(&self.settings);
+            }
         }
 
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 3, right: 8, top: 0, bottom: 0 })).show(ctx, |ui| {
@@ -4796,18 +4894,20 @@ impl DataBugApp {
                 return;
             }
             let h = ui.available_height();
-            egui::TopBottomPanel::bottom("results")
-                .resizable(true)
-                .default_height(h * 0.45)
-                .height_range(120.0..=(h - 140.0).max(160.0))
-                .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
-                .show_separator_line(false)
-                .show_inside(ui, |ui| {
-                    island.show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        self.bottom_panel(ui, &p, ctx);
+            if shown.editor && shown.results {
+                egui::TopBottomPanel::bottom("results")
+                    .resizable(true)
+                    .default_height(h * 0.45)
+                    .height_range(120.0..=(h - 140.0).max(160.0))
+                    .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
+                    .show_separator_line(false)
+                    .show_inside(ui, |ui| {
+                        island.show(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            self.bottom_panel(ui, &p, ctx);
+                        });
                     });
-                });
+            }
             egui::CentralPanel::default().frame(egui::Frame::new()).show_inside(ui, |ui| {
                 island.show(ui, |ui| {
                     ui.set_min_size(ui.available_size());
@@ -4824,6 +4924,19 @@ impl DataBugApp {
                     ui.add_space(2.0);
                     if !close.is_empty() {
                         self.close_tabs(close);
+                    }
+                    if !shown.editor {
+                        // the editor is hidden: the results (or a note) fill the space
+                        if shown.results {
+                            self.bottom_panel(ui, &p, ctx);
+                        } else {
+                            ui.add_space(40.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(RichText::new("The editor and the results are hidden").color(p.muted));
+                                ui.label(RichText::new("Show them with the toggles in the middle of the top bar").size(12.0).color(p.faint));
+                            });
+                        }
+                        return;
                     }
                     // the run bar sits on its own slightly raised strip, for depth
                     egui::Frame::new()

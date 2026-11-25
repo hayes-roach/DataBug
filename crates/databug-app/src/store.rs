@@ -45,6 +45,32 @@ pub struct Settings {
     pub last_update_check: u64,
     /// A release the user chose to skip (its tag).
     pub skipped_version: Option<String>,
+    /// Which views show, from the toggles in the title bar.
+    #[serde(default)]
+    pub views: Views,
+}
+
+/// The views the title bar's toggles show or hide.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Views {
+    /// The database explorer.
+    #[serde(default = "yes")]
+    pub explorer: bool,
+    /// The console editor.
+    #[serde(default = "yes")]
+    pub editor: bool,
+    /// The Consoles panel.
+    #[serde(default = "yes")]
+    pub consoles: bool,
+    /// Results, output and history.
+    #[serde(default = "yes")]
+    pub results: bool,
+}
+
+impl Default for Views {
+    fn default() -> Self {
+        Views { explorer: true, editor: true, consoles: true, results: true }
+    }
 }
 
 impl Default for Settings {
@@ -61,6 +87,7 @@ impl Default for Settings {
             check_updates: true,
             last_update_check: 0,
             skipped_version: None,
+            views: Views::default(),
         }
     }
 }

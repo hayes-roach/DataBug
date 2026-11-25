@@ -31,6 +31,8 @@ pub struct Release {
     pub page: String,
     /// (file name, download URL)
     pub assets: Vec<(String, String)>,
+    /// (file name, size in bytes), for the download's progress
+    pub sizes: Vec<(String, u64)>,
 }
 
 impl Release {
@@ -82,6 +84,32 @@ fn fetch_text(url: &str) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|_| "GitHub sent an unreadable answer".to_string())
 }
 
+/// Download `url` to `to`, reporting how far it got (bytes so far, and the
+/// fraction when the size is known) about four times a second.
+fn download_progress(url: &str, to: &Path, size: Option<u64>, progress: &dyn Fn(u64, Option<f32>)) -> Result<(), String> {
+    let _ = std::fs::remove_file(to);
+    let mut child = curl().arg("--output").arg(to).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("Couldn't run curl: {e}"))?;
+    loop {
+        let got = std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+        progress(got, size.filter(|&s| s > 0).map(|s| (got as f32 / s as f32).min(1.0)));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                }
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    use std::io::Read as _;
+                    let _ = e.read_to_string(&mut err);
+                }
+                return Err(format!("Download failed: {}", err.trim().lines().last().unwrap_or("request failed")));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(250)),
+            Err(e) => return Err(format!("Download failed: {e}")),
+        }
+    }
+}
+
 fn download(url: &str, to: &Path) -> Result<(), String> {
     let out = curl().arg("--output").arg(to).arg(url).output().map_err(|e| format!("Couldn't run curl: {e}"))?;
     if out.status.success() {
@@ -100,12 +128,14 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
         .as_array()
         .map(|a| a.iter().filter_map(|x| Some((x["name"].as_str()?.to_string(), x["browser_download_url"].as_str()?.to_string()))).collect())
         .unwrap_or_default();
+    let sizes = v["assets"].as_array().map(|a| a.iter().filter_map(|x| Some((x["name"].as_str()?.to_string(), x["size"].as_u64()?))).collect()).unwrap_or_default();
     Ok(Release {
         tag,
         version,
         notes: v["body"].as_str().unwrap_or("").to_string(),
         page: v["html_url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://github.com/{REPO}/releases/latest")),
         assets,
+        sizes,
     })
 }
 
@@ -242,7 +272,9 @@ pub enum Installed {
 }
 
 /// Download, verify and install `r`. Runs for a while; call it off the UI thread.
-pub fn install(r: &Release, progress: &dyn Fn(&str)) -> Result<Installed, String> {
+/// Download, verify and install `r`. `progress` gets a line to show and,
+/// while downloading, how far along it is (0 to 1).
+pub fn install(r: &Release, progress: &dyn Fn(&str, Option<f32>)) -> Result<Installed, String> {
     let kind = install_kind();
     if let InstallKind::Manual(why) = &kind {
         return Err(why.clone());
@@ -253,10 +285,18 @@ pub fn install(r: &Release, progress: &dyn Fn(&str)) -> Result<Installed, String
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let file = dir.join(name);
 
-    progress(&format!("Downloading DataBug {}…", r.version_string()));
-    download(url, &file)?;
+    let size = r.sizes.iter().find(|(n, _)| n == name).map(|(_, s)| *s);
+    let mb = |b: u64| b as f64 / 1_048_576.0;
+    let version = r.version_string();
+    download_progress(url, &file, size, &|got, frac| {
+        let line = match size {
+            Some(total) if total > 0 => format!("Downloading DataBug {version}: {:.1} of {:.1} MB", mb(got), mb(total)),
+            _ => format!("Downloading DataBug {version}: {:.1} MB", mb(got)),
+        };
+        progress(&line, frac);
+    })?;
 
-    progress("Verifying the download…");
+    progress("Verifying the download…", None);
     let sums_url = r.asset("SHA256SUMS.txt").ok_or("The release has no SHA256SUMS.txt, so the download can't be verified")?;
     let sums_file = dir.join("SHA256SUMS.txt");
     download(sums_url, &sums_file)?;
@@ -267,9 +307,9 @@ pub fn install(r: &Release, progress: &dyn Fn(&str)) -> Result<Installed, String
         return Err(format!("The download is damaged or was changed (checksum {got} instead of {want}). Nothing was installed."));
     }
 
-    progress("Installing…");
+    progress("Installing…", None);
     match kind {
-        InstallKind::MacApp(app) => install_mac(&app, &file, &dir),
+        InstallKind::MacApp(app) => install_mac(&app, &file, &dir, progress),
         InstallKind::WindowsSetup(all_users) => install_windows(&file, all_users),
         InstallKind::LinuxLocal(exe) => install_linux(&exe, &file, &dir),
         InstallKind::Manual(why) => Err(why),
@@ -290,7 +330,7 @@ fn relaunch_wanted() -> bool {
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn install_mac(app: &Path, zip: &Path, dir: &Path) -> Result<Installed, String> {
+fn install_mac(app: &Path, zip: &Path, dir: &Path, progress: &dyn Fn(&str, Option<f32>)) -> Result<Installed, String> {
     let parent = app.parent().ok_or("Can't find the folder DataBug.app is in")?;
     let probe = parent.join(".databug-update-check");
     std::fs::write(&probe, b"").map_err(|_| format!("DataBug can't write to {}. Move DataBug.app to a folder you can change (like Applications), or update from the release page.", parent.display()))?;
@@ -299,6 +339,13 @@ fn install_mac(app: &Path, zip: &Path, dir: &Path) -> Result<Installed, String> 
     let _ = std::fs::remove_dir_all(&unpacked);
     run(Command::new("ditto").arg("-x").arg("-k").arg(zip).arg(&unpacked), "Couldn't unpack the update")?;
     let new_app = find_named(&unpacked, "DataBug.app", 3).ok_or("The download doesn't contain DataBug.app")?;
+    // macOS checks a new app's signature and notarization the first time it
+    // opens, which left a long pause with nothing on screen after the
+    // restart: do it now, while this window still shows what's happening
+    progress("Checking the new version…", None);
+    let _ = Command::new("codesign").arg("--verify").arg("--deep").arg(&new_app).output();
+    let _ = Command::new("spctl").arg("--assess").arg("--type").arg("execute").arg(&new_app).output();
+    progress("Installing…", None);
     // A helper waits for DataBug to quit, swaps the app (keeping the old one
     // until the new one is in place) and opens the new version.
     let script = dir.join("swap.sh");
@@ -414,6 +461,25 @@ pub fn open_page(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloads_report_their_progress() {
+        let dir = std::env::temp_dir().join(format!("databug-dl-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.bin");
+        std::fs::write(&src, vec![7u8; 3 * 1024 * 1024]).unwrap();
+        let to = dir.join("out.bin");
+        let seen = std::sync::Mutex::new(Vec::new());
+        let url = format!("file://{}", src.display());
+        download_progress(&url, &to, Some(3 * 1024 * 1024), &|got, frac| seen.lock().unwrap().push((got, frac))).unwrap();
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(std::fs::metadata(&to).unwrap().len(), 3 * 1024 * 1024);
+        assert!(seen.iter().all(|(_, f)| f.map(|f| (0.0..=1.0).contains(&f)).unwrap_or(false)));
+        assert_eq!(seen.last().map(|(g, f)| (*g, *f)), Some((3 * 1024 * 1024, Some(1.0))));
+        // a failing download says so
+        assert!(download_progress(&format!("file://{}/missing", dir.display()), &dir.join("x"), None, &|_, _| {}).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn old_downloads_are_removed() {

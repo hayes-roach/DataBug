@@ -40,6 +40,12 @@ pub enum Icon {
     Clock,
     /// a database cylinder: the console's database and schema
     Schema,
+    /// a page of text: the console editor
+    Page,
+    /// a list of rows: the Consoles panel
+    List,
+    /// a window with a `>_` prompt: results and output
+    Terminal,
 }
 
 /// White or near-black text, whichever reads better on `fill`.
@@ -112,6 +118,24 @@ pub fn button(ui: &mut Ui, p: &Palette, kind: Kind, icon: Option<Icon>, label: &
         painter.add(egui::Shape::convex_polygon(pts, if enabled { p.muted } else { p.faint }, Stroke::NONE));
     }
     if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// An on/off icon button (the title bar's view toggles): tinted while on.
+pub fn toggle(ui: &mut Ui, p: &Palette, icon: Icon, on: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(H + 2.0, H - 2.0), Sense::click());
+    let fill = match (on, resp.hovered()) {
+        (true, true) => p.selection,
+        (true, false) => p.selection.gamma_multiply(0.75),
+        (false, true) => p.hover,
+        (false, false) => Color32::TRANSPARENT,
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+    let fg = if on { p.text } else { p.faint };
+    paint_icon(ui.painter(), Rect::from_center_size(rect.center(), egui::vec2(ICON, ICON)), icon, fg, if fill == Color32::TRANSPARENT { p.canvas } else { fill });
+    if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp
@@ -227,6 +251,26 @@ pub fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color32, bg: 
                 let half: Vec<egui::Pos2> = (0..=12).map(|i| { let a = std::f32::consts::PI * i as f32 / 12.0; at(a.cos() * w, y + a.sin() * 2.0) }).collect();
                 painter.add(egui::Shape::line(half, st));
             }
+        }
+        Icon::Page => {
+            let r = Rect::from_center_size(o, egui::vec2(10.0, 13.0));
+            painter.rect_stroke(r, CornerRadius::same(2), st, egui::StrokeKind::Inside);
+            for y in [-2.5_f32, 0.5, 3.5] {
+                line(at(-2.5, y), at(2.5, y));
+            }
+        }
+        Icon::List => {
+            for y in [-4.0_f32, 0.0, 4.0] {
+                painter.circle_filled(at(-4.5, y), 1.2, c);
+                line(at(-1.8, y), at(5.5, y));
+            }
+        }
+        Icon::Terminal => {
+            let r = Rect::from_center_size(o, egui::vec2(14.0, 11.0));
+            painter.rect_stroke(r, CornerRadius::same(2), st, egui::StrokeKind::Inside);
+            line(at(-4.0, -2.2), at(-1.5, 0.0));
+            line(at(-1.5, 0.0), at(-4.0, 2.2));
+            line(at(0.5, 2.5), at(4.0, 2.5));
         }
         Icon::Undo => {
             // an arrow curving back over the top: from the right, ending at the

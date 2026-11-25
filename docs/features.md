@@ -27,7 +27,7 @@ Everything DataBug does, in detail. Back to the [README](../README.md).
 - **Find in database**: press `Ctrl/⌘ + F` again in the find bar, outside the editor, or use *Find* in the explorer. Searches object names, columns, and optionally the definitions of views, routines and triggers, in one connection or all of them. Click a result to reveal it in the explorer, double-click to open it. *Search table data…* generates a query that counts matching rows in every text column.
 
 **Themes**
-- Eight built-in themes: Dark (default), Light, Midnight, Forest, Pink, Purple, Paper and High contrast, picked from the toolbar's theme menu. *Customize colors…* lets you change any of the 25 interface and syntax colors per theme, with per-color and whole-theme reset.
+- Eight built-in themes: Dark (default), Light, Midnight, Forest, Pink, Purple, Paper and High contrast, picked from the theme menu at the right of the top bar. *Customize colors…* lets you change any of the 25 interface and syntax colors per theme, with per-color and whole-theme reset.
 
 **Editor**
 - Syntax highlighting per dialect, line numbers, current-line highlight, toggle comment (`Ctrl/⌘ + /`), formatter (`Ctrl + Alt + L`).
@@ -44,7 +44,7 @@ Everything DataBug does, in detail. Back to the [README](../README.md).
 
 **Tabs and consoles**
 - Right-click a tab: *Close*, *Close other tabs*, *Close tabs to the left*, *Close tabs to the right*, *Close all tabs*. Middle-click closes a tab.
-- Consoles you don't close are kept, with their text, connection and schema, and survive restarts (`editors.json` in the data folder). The **Consoles** panel under the database explorer lists them by connection: the open tabs (with the time of their last run; click to switch) and the consoles still open when DataBug last quit (dimmed; click to reopen, right-click to delete). New consoles are named `console`, `console_2`, … like DataGrip's. Closing a tab removes its console from the list; `Ctrl/⌘ + Shift + T` brings back the last one closed during this run. Empty consoles aren't kept, nor are consoles of a deleted connection.
+- Consoles are kept, open or closed, with their text, connection and schema, and survive restarts (`editors.json` in the data folder). The **Consoles** panel under the database explorer lists them by connection: the open tabs (with the time of their last run; click to switch) and the consoles still open when DataBug last quit (dimmed; click to reopen, right-click to delete). New consoles are named `console`, `console_2`, … like DataGrip's. Closing a tab keeps its console in the list (dimmed), so it can be reopened later; only deleting it removes it, and `Ctrl/⌘ + Shift + T` reopens the last one closed. Empty consoles aren't kept, nor are consoles of a deleted connection.
 
 **Results**
 - Virtualized grid (only visible rows are laid out), with column types in the header, click-to-sort (numeric and natural ordering), row filter, keyboard navigation, and copy cell/row.
@@ -77,6 +77,9 @@ Everything DataBug does, in detail. Back to the [README](../README.md).
 - Engine logos ship with DataBug: they live in `crates/databug-app/assets/logos`, are compiled into the binary, and every release download includes them in a `logos` folder next to the application (next to `DataBug.exe` / `databug`; on macOS next to `DataBug.app`, and inside it). To swap one, replace `postgresql`, `mysql`, `sqlserver`, `sqlite`, `mongodb`, `couchdb`, `oracle`, `db2`, `duckdb`, `cassandra`, `cockroachdb`, `timescaledb`, `questdb`, `influxdb`, `spark` or `h2` (`.svg` or `.png`) in that folder and restart DataBug. Every engine has its logo, from the [Devicon](https://github.com/devicons/devicon) (MIT) and [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0) sets or the project's own Apache-2.0 repository; [`SOURCES.md`](../crates/databug-app/assets/logos/SOURCES.md) lists where each file comes from and its license. `mariadb.png` is included for later (MariaDB detection).
 
 **Connections**
+- **The top bar is the window's title bar**: on macOS it sits beside the window's own buttons; on Windows and Linux DataBug draws minimize, maximize and close itself, and the bar moves the window (double-click to maximize). Settings and the theme are at its right.
+- **View toggles** in the middle of the top bar show or hide the database explorer, the console editor, the Consoles panel and the results and output. The choice is kept across restarts.
+- Updates show how far the download is (megabytes and a progress bar), then verifying and installing; on macOS DataBug checks the new version before restarting so it opens without a long pause.
 - Passwords go to the OS keychain (macOS Keychain, Windows Credential Manager, Secret Service on Linux), never into config files. If no keychain is available, they're kept in memory for the session.
 - `connections.json` and `settings.json` are plain JSON with no secrets, so they can live in Git.
 - TLS for Postgres (`prefer`/`require`, encrypt without verifying, like libpq), MySQL (`require`) and SQL Server (with an optional *trust server certificate*).

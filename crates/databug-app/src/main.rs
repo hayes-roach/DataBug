@@ -46,9 +46,14 @@ fn main() -> eframe::Result<()> {
             .with_app_id("dev.databug.DataBug"))
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
-            // Linux: DataBug draws its own title bar (window toolkits' fallback
-            // decorations look out of place, especially on Wayland)
-            .with_decorations(!app::custom_window_frame()),
+            // Windows and Linux: DataBug draws its own title bar, so the top
+            // bar (view toggles, settings, window buttons) is the title bar
+            .with_decorations(!app::custom_window_frame())
+            // macOS: the top bar extends into the title bar, beside the
+            // window's own buttons, with no title text
+            .with_fullsize_content_view(app::mac_title_bar())
+            .with_titlebar_shown(!app::mac_title_bar())
+            .with_title_shown(!app::mac_title_bar()),
         // repaint only when something changes: idle CPU stays at zero
         run_and_return: false,
         vsync: true,

@@ -6,6 +6,16 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- Closed consoles stay in the Consoles panel (dimmed) to reopen later; a console leaves the list only when you delete it, or when it was empty
+- The top bar is the window's title bar: on macOS beside the window's buttons, on Windows (now like Linux) with DataBug's own minimize, maximize and close. The DataBug logo and name left it, settings and the theme moved into it, and everything below moved up
+- Updates show their progress: megabytes downloaded with a progress bar, then verifying and installing, also in the top bar; on macOS the new version is checked before restarting, so it opens without a long pause
+
+### Added
+
+- View toggles in the middle of the top bar: show or hide the database explorer, the console editor, the Consoles panel and the results
+
 ## [0.19.1] - 2026-11-24
 
 ### Fixed

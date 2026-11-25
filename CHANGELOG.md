@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-25
+
 ### Changed
 
 - Closed consoles stay in the Consoles panel (dimmed) to reopen later; a console leaves the list only when you delete it, or when it was empty

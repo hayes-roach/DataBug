@@ -26,12 +26,12 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# two jobs, as GitHub's own template: the site's files are fully uploaded
+# before the deploy looks for them (in one job, deploy-pages sometimes didn't
+# find the artifact it had just uploaded)
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - name: Assemble the site
@@ -49,5 +49,12 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5

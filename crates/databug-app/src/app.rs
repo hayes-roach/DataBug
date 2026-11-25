@@ -4761,7 +4761,8 @@ impl DataBugApp {
         egui::TopBottomPanel::top("toolbar").exact_height(top_bar_height()).frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin::symmetric(10, 2))).show(ctx, |ui| self.toolbar(ui, &p, ctx));
         egui::TopBottomPanel::bottom("status").exact_height(24.0).frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin::symmetric(14, 2))).show(ctx, |ui| self.status_bar(ui, &p));
 
-        let island = egui::Frame::new().fill(p.island).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(8));
+        // panels fill the window edge to edge, divided by 1 px border lines
+        let island = egui::Frame::new().fill(p.island).inner_margin(Margin::same(8));
         let mut actions = Vec::new();
         let width = self.settings.explorer_width;
         let visible = self.visible_connections();
@@ -4793,8 +4794,8 @@ impl DataBugApp {
             .resizable(true)
             .default_width(width)
             .width_range(180.0..=520.0)
-            .frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 8, right: 3, top: 6, bottom: 6 }))
-            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(p.island))
+            .show_separator_line(true)
             .show_animated(ctx, show_left, |ui| {
                 // inline (a macro, not a closure) so it borrows only the fields it uses
                 macro_rules! explorer {
@@ -4820,8 +4821,8 @@ impl DataBugApp {
                             .resizable(true)
                             .default_height((h * 0.3).max(140.0))
                             .height_range(80.0..=(h - 180.0).max(100.0))
-                            .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
-                            .show_separator_line(false)
+                            .frame(egui::Frame::new())
+                            .show_separator_line(true)
                             .show_inside(ui, |ui| {
                                 island.show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
@@ -4869,7 +4870,7 @@ impl DataBugApp {
             }
         }
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.canvas).inner_margin(Margin { left: 3, right: 8, top: 6, bottom: 6 })).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.island)).show(ctx, |ui| {
             if self.tabs.is_empty() {
                 island.show(ui, |ui| {
                     ui.set_min_size(ui.available_size());
@@ -4899,8 +4900,8 @@ impl DataBugApp {
                     .resizable(true)
                     .default_height(h * 0.45)
                     .height_range(120.0..=(h - 140.0).max(160.0))
-                    .frame(egui::Frame::new().inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 0 }))
-                    .show_separator_line(false)
+                    .frame(egui::Frame::new())
+                    .show_separator_line(true)
                     .show_inside(ui, |ui| {
                         island.show(ui, |ui| {
                             ui.set_min_size(ui.available_size());

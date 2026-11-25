@@ -6,6 +6,10 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- The panels fill the window edge to edge, divided by 1 px border lines (as DataGrip), instead of rounded boxes with gaps between them
+
 ## [0.20.2] - 2026-11-25
 
 ### Fixed

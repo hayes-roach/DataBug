@@ -6,6 +6,8 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-25
+
 ### Changed
 
 - The connection dialog no longer has a Color row, nor a *Save in system keychain* switch: passwords are always saved in the keychain

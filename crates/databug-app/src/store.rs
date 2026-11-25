@@ -284,23 +284,54 @@ impl Store {
         }
         let found = keyring::Entry::new("databug", id).ok().and_then(|e| e.get_password().ok());
         self.keychain_cache.borrow_mut().insert(id.to_string(), found.clone());
+        // macOS: an entry saved by an older DataBug belongs to that build's
+        // signature, so reading it asks for the login password. Save it again,
+        // once, so it belongs to this signed DataBug (the same identity in
+        // every release) and later reads, after updates too, don't ask.
+        if cfg!(target_os = "macos") {
+            if let Some(pw) = &found {
+                if self.keychain_owned_add(id) {
+                    keychain_write(id, pw);
+                }
+            }
+        }
         found
     }
 
-    /// Store a password. Returns false when it could only be kept in memory.
+    /// Store a password in the system keychain (in memory too, for this
+    /// run). Returns false when it could only be kept in memory.
     pub fn set_password(&mut self, id: &str, password: &str, persist: bool) -> bool {
         self.memory_secrets.insert(id.to_string(), password.to_string());
         self.keychain_cache.borrow_mut().remove(id);
         if !persist || std::env::var_os("DATABUG_NO_KEYRING").is_some() {
             return !persist;
         }
-        match keyring::Entry::new("databug", id) {
-            Ok(e) => e.set_password(password).is_ok(),
-            Err(_) => false,
+        let ok = keychain_write(id, password);
+        if ok {
+            self.keychain_owned_add(id);
         }
+        ok
+    }
+
+    /// Record that this DataBug wrote the keychain entry `id` (see
+    /// `password`). Returns true when it wasn't recorded yet.
+    fn keychain_owned_add(&self, id: &str) -> bool {
+        let path = self.config_dir.join("keychain-owned");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.lines().any(|l| l == id) {
+            return false;
+        }
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| writeln!(f, "{id}"));
+        true
     }
 
     pub fn forget_password(&mut self, id: &str) {
+        // a later save writes a new entry, owned by this DataBug
+        let path = self.config_dir.join("keychain-owned");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let kept: Vec<&str> = text.lines().filter(|l| *l != id).collect();
+            let _ = std::fs::write(&path, kept.iter().map(|l| format!("{l}\n")).collect::<String>());
+        }
         self.memory_secrets.remove(id);
         self.keychain_cache.borrow_mut().remove(id);
         if std::env::var_os("DATABUG_NO_KEYRING").is_none() {
@@ -309,6 +340,18 @@ impl Store {
             }
         }
     }
+}
+
+/// Write a password to the system keychain as a new entry. On macOS the
+/// old entry is deleted first: updating an entry in place keeps the list of
+/// apps allowed to read it, which may name an earlier DataBug build, and then
+/// every read asks for the login password. A new entry belongs to this app.
+fn keychain_write(id: &str, password: &str) -> bool {
+    let Ok(e) = keyring::Entry::new("databug", id) else { return false };
+    if cfg!(target_os = "macos") {
+        let _ = e.delete_credential();
+    }
+    e.set_password(password).is_ok()
 }
 
 fn yes() -> bool {

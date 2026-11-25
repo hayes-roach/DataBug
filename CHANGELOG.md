@@ -6,6 +6,15 @@ Add a line under **Unreleased** in the same pull request as the change, in the s
 
 ## [Unreleased]
 
+### Changed
+
+- The connection dialog no longer has a Color row, nor a *Save in system keychain* switch: passwords are always saved in the keychain
+- Placeholder text in fields is grey, so it doesn't look like a value
+
+### Fixed
+
+- macOS asked for the login keychain password to read saved passwords, including after updates. DataBug now writes each password as a new keychain entry that belongs to it (like DataGrip), and re-saves once any entry an earlier build wrote, so reads stop asking
+
 ## [0.20.0] - 2026-11-25
 
 ### Changed

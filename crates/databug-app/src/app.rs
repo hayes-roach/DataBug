@@ -3841,7 +3841,7 @@ impl DataBugApp {
                 let d = self.dialog.take().unwrap();
                 let cfg = d.cfg.clone();
                 if !d.password.is_empty() {
-                    let ok = self.store.set_password(&cfg.id, &d.password, d.save_password);
+                    let ok = self.store.set_password(&cfg.id, &d.password, true);
                     if !ok {
                         self.toast("The system keychain isn't available, so the password is kept for this session only");
                     }
@@ -3852,7 +3852,7 @@ impl DataBugApp {
                 let ssh_id = databug_core::SshTunnel::secret_id(&cfg.id);
                 let old_ssh = self.store.password(&ssh_id).unwrap_or_default();
                 if cfg.ssh.is_some() && !d.ssh_secret.is_empty() {
-                    if !self.store.set_password(&ssh_id, &d.ssh_secret, d.save_password) {
+                    if !self.store.set_password(&ssh_id, &d.ssh_secret, true) {
                         self.toast("The system keychain isn't available, so the SSH secret is kept for this session only");
                     }
                 } else if !old_ssh.is_empty() {

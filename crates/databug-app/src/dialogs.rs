@@ -1,6 +1,6 @@
 //! The connection dialog.
 
-use crate::theme::{bold, connection_color, Palette, SWATCHES};
+use crate::theme::{bold, Palette};
 use eframe::egui::{self, CornerRadius, Margin, RichText, Sense, Stroke};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -9,7 +9,6 @@ use databug_core::{ConnectionConfig, DbCategory, DbKind, MsAuth, SshAuth, SshTun
 pub struct ConnDialog {
     pub cfg: ConnectionConfig,
     pub password: String,
-    pub save_password: bool,
     /// The SSH tunnel's password or key passphrase (keychain, never the config).
     pub ssh_secret: String,
     /// SSH settings kept while the tunnel is switched off, so switching it
@@ -35,7 +34,7 @@ pub enum DialogOutcome {
 impl ConnDialog {
     pub fn new(cfg: ConnectionConfig, password: String, is_new: bool) -> Self {
         let ssh_draft = cfg.ssh.clone().unwrap_or_default();
-        ConnDialog { cfg, password, save_password: true, ssh_secret: String::new(), ssh_draft, is_new, test: None, test_rx: None, error: None, known_schemas: Vec::new(), default_schema: String::new(), open_engines: false }
+        ConnDialog { cfg, password, ssh_secret: String::new(), ssh_draft, is_new, test: None, test_rx: None, error: None, known_schemas: Vec::new(), default_schema: String::new(), open_engines: false }
     }
 
     fn select_kind(&mut self, kind: DbKind) {
@@ -195,7 +194,7 @@ impl ConnDialog {
                                     field_row(ui, |ui| {
                                         input(ui, p, egui::TextEdit::singleline(&mut self.password).password(true), 220.0);
                                         ui.add_space(8.0);
-                                        crate::theme::checkbox(ui, p, &mut self.save_password, "Save in system keychain");
+                                        ui.label(RichText::new("Saved in the system keychain").size(11.5).color(p.faint));
                                     });
                                     ui.end_row();
                                 }
@@ -270,20 +269,6 @@ impl ConnDialog {
                         ui.vertical(|ui| self.schema_list(ui, p));
                         ui.end_row();
                     }
-                    field(ui, "Color");
-                    ui.horizontal(|ui| {
-                        for sw in SWATCHES {
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), Sense::click());
-                            ui.painter().circle_filled(rect.center(), 8.0, connection_color(sw));
-                            if self.cfg.color == sw {
-                                ui.painter().circle_stroke(rect.center(), 10.0, Stroke::new(1.5_f32, p.text));
-                            }
-                            if resp.clicked() {
-                                self.cfg.color = sw;
-                            }
-                        }
-                    });
-                    ui.end_row();
                     field(ui, "Safety");
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 16.0;

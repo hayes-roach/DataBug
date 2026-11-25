@@ -469,17 +469,6 @@ pub fn connection_color(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
 }
 
-pub const SWATCHES: [[u8; 3]; 8] = [
-    [86, 156, 214],
-    [95, 184, 101],
-    [224, 176, 74],
-    [199, 125, 187],
-    [42, 172, 184],
-    [207, 142, 109],
-    [140, 143, 150],
-    [247, 84, 100],
-];
-
 /// Height of single-line text fields in forms.
 pub const FIELD_H: f32 = 30.0;
 /// Height of text fields in rows of fields (table editor, CSV column mapping).
@@ -493,7 +482,16 @@ pub fn text_field(ui: &mut egui::Ui, p: &Palette, edit: egui::TextEdit<'_>, widt
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let bg = ui.painter().add(egui::Shape::Noop);
     let inner = rect.shrink2(egui::vec2(9.0, 1.0));
-    let r = ui.put(inner, edit.frame(false).margin(Margin::ZERO).vertical_align(egui::Align::Center).desired_width(inner.width()));
+    // typed text in the text color, the placeholder (hint) in grey: the theme
+    // forces every text to one color, which made hints look like values
+    let r = ui
+        .scope(|ui| {
+            ui.visuals_mut().override_text_color = None;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = p.faint;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color = p.faint;
+            ui.put(inner, edit.text_color(p.text).frame(false).margin(Margin::ZERO).vertical_align(egui::Align::Center).desired_width(inner.width()))
+        })
+        .inner;
     let stroke = if r.has_focus() {
         Stroke::new(1.0_f32, p.accent)
     } else if ui.rect_contains_pointer(rect) && ui.is_enabled() {

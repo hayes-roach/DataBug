@@ -406,7 +406,7 @@ impl Editor {
                     ui.spacing_mut().item_spacing.y = 3.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 3.0;
-                        let te = egui::TextEdit::singleline(&mut self.find.query).id(qid).hint_text("Find").desired_width(220.0).font(FontId::monospace(12.0));
+                        let te = egui::TextEdit::singleline(&mut self.find.query).id(qid).hint_text(RichText::new("Find").color(p.faint)).desired_width(220.0).font(FontId::monospace(12.0));
                         let r = crate::theme::text_field(ui, p, te, 220.0, crate::theme::FIELD_H_COMPACT);
                         if self.find.focus_query {
                             r.request_focus();
